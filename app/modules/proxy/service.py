@@ -858,6 +858,16 @@ class ProxyService:
                             reset_after_seconds=sec_reset_after_seconds,
                             reset_at=sec_reset_at,
                         )
+                    else:
+                        # Secondary-only limit without reset metadata: still
+                        # emit a snapshot so the exhaustion check works even
+                        # when upstream omits optional reset_at/window fields.
+                        secondary_window_snapshot = RateLimitWindowSnapshotData(
+                            used_percent=int(max(0.0, min(100.0, sec_avg))),
+                            limit_window_seconds=0,
+                            reset_after_seconds=0,
+                            reset_at=0,
+                        )
 
             rate_limit_details = None
             if avg_used_percent is not None or secondary_window_snapshot is not None:

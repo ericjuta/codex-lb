@@ -91,21 +91,27 @@ class DashboardService:
         # Fetch additional usage data
         additional_quotas, additional_sync_ts = await self._build_additional_quotas()
 
-        # Compute depletion from primary usage history.
-        # Only include accounts that survived normalization (weekly-only accounts
-        # are remapped to secondary and excluded from primary depletion).
+        # Compute depletion from usage history.
+        # Primary accounts use primary history; weekly-only accounts (remapped
+        # to secondary by normalization) use secondary history so they still
+        # contribute to the aggregate depletion indicator.
         normalized_primary_ids = {row.account_id for row in primary_rows}
-        primary_history: dict[str, list[UsageHistory]] = {}
+        usage_history: dict[str, list[UsageHistory]] = {}
         for account_id, usage_entry in primary_usage.items():
-            if account_id not in normalized_primary_ids:
-                continue
-            acct_window = usage_entry.window_minutes if usage_entry.window_minutes else 300
-            acct_since = now - timedelta(minutes=acct_window)
-            rows = await self._repo.usage_history_since(account_id, "primary", acct_since)
+            if account_id in normalized_primary_ids:
+                acct_window = usage_entry.window_minutes if usage_entry.window_minutes else 300
+                acct_since = now - timedelta(minutes=acct_window)
+                rows = await self._repo.usage_history_since(account_id, "primary", acct_since)
+            else:
+                # Weekly-only: use secondary history with weekly window
+                sec_entry = secondary_usage.get(account_id)
+                acct_window = sec_entry.window_minutes if sec_entry and sec_entry.window_minutes else 10080
+                acct_since = now - timedelta(minutes=acct_window)
+                rows = await self._repo.usage_history_since(account_id, "secondary", acct_since)
             if rows:
-                primary_history[account_id] = rows
+                usage_history[account_id] = rows
 
-        depletion_response = _build_depletion(primary_history, now)
+        depletion_response = _build_depletion(usage_history, now)
 
         return DashboardOverviewResponse(
             last_sync_at=_latest_recorded_at(primary_usage, secondary_usage, additional_sync_ts),
