@@ -231,8 +231,7 @@ class UsageUpdater:
             # Mark fresh when additional_rate_limits was present (even if empty),
             # so explicit empty lists don't cause tight re-polling (R8-F3).
             additional_synced = self._additional_usage_repo is not None and payload.additional_rate_limits is not None
-            if additional_synced:
-                return AccountRefreshResult(usage_written=additional_synced)
+            return AccountRefreshResult(usage_written=additional_synced)
 
         primary = rate_limit.primary_window
         secondary = rate_limit.secondary_window

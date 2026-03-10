@@ -837,14 +837,10 @@ class ProxyService:
                             reset_at=reset_at,
                         )
                     else:
-                        # Primary usage data without reset metadata: emit a
-                        # minimal snapshot so the exhaustion check still works.
-                        window_snapshot = RateLimitWindowSnapshotData(
-                            used_percent=int(max(0.0, min(100.0, avg_used_percent))),
-                            limit_window_seconds=0,
-                            reset_after_seconds=0,
-                            reset_at=0,
-                        )
+                        # Primary usage data without reset metadata: leave
+                        # window_snapshot as None rather than fabricating
+                        # reset_at=0 which clients render as "resets now".
+                        pass
 
             secondary_window_snapshot = None
             if filtered_secondary:
@@ -866,15 +862,10 @@ class ProxyService:
                             reset_at=sec_reset_at,
                         )
                     else:
-                        # Secondary-only limit without reset metadata: still
-                        # emit a snapshot so the exhaustion check works even
-                        # when upstream omits optional reset_at/window fields.
-                        secondary_window_snapshot = RateLimitWindowSnapshotData(
-                            used_percent=int(max(0.0, min(100.0, sec_avg))),
-                            limit_window_seconds=0,
-                            reset_after_seconds=0,
-                            reset_at=0,
-                        )
+                        # Secondary-only limit without reset metadata: leave
+                        # snapshot as None rather than fabricating reset_at=0
+                        # which clients render as "resets now".
+                        pass
 
             rate_limit_details = None
             if avg_used_percent is not None or secondary_window_snapshot is not None:
