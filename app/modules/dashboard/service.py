@@ -97,44 +97,91 @@ class DashboardService:
         # frontend which donut to render the safe-line marker on.
         normalized_primary_ids = {row.account_id for row in primary_rows}
         all_account_ids = set(primary_usage.keys()) | set(secondary_usage.keys())
-        primary_history: dict[str, list[UsageHistory]] = {}
-        secondary_history: dict[str, list[UsageHistory]] = {}
+
+        # Batch fetch: collect account IDs and determine the widest lookback
+        # per window so we can issue at most 2 bulk queries instead of O(N).
+        pri_fetch_ids: list[str] = []
+        sec_fetch_ids: list[str] = []
+        pri_since = now  # will be narrowed to the earliest needed
+        sec_since = now
+        # Per-account cutoffs for in-memory filtering after bulk fetch
+        pri_cutoffs: dict[str, datetime] = {}
+        sec_cutoffs: dict[str, datetime] = {}
+        weekly_only_ids: set[str] = set()
+
         for account_id in all_account_ids:
             if account_id in normalized_primary_ids:
                 usage_entry = primary_usage[account_id]
                 acct_window = usage_entry.window_minutes if usage_entry.window_minutes else 300
                 acct_since = now - timedelta(minutes=acct_window)
-                rows = await self._repo.usage_history_since(account_id, "primary", acct_since)
-                if rows:
-                    primary_history[account_id] = rows
-                # Also load secondary history when the account has both windows
-                # so the 7d depletion is not missed.
+                pri_fetch_ids.append(account_id)
+                pri_cutoffs[account_id] = acct_since
+                if acct_since < pri_since:
+                    pri_since = acct_since
                 if account_id in secondary_usage:
                     sec_entry = secondary_usage[account_id]
                     sec_window = sec_entry.window_minutes if sec_entry.window_minutes else 10080
-                    sec_since = now - timedelta(minutes=sec_window)
-                    sec_rows = await self._repo.usage_history_since(account_id, "secondary", sec_since)
-                    if sec_rows:
-                        secondary_history[account_id] = sec_rows
+                    s_since = now - timedelta(minutes=sec_window)
+                    sec_fetch_ids.append(account_id)
+                    sec_cutoffs[account_id] = s_since
+                    if s_since < sec_since:
+                        sec_since = s_since
             elif account_id in primary_usage:
-                # Weekly-only: newer samples stored as window="primary", older
-                # ones may be under "secondary".  Merge both for full series.
+                # Weekly-only: needs both primary and secondary rows
+                weekly_only_ids.add(account_id)
                 sec_entry = secondary_usage.get(account_id)
                 acct_window = sec_entry.window_minutes if sec_entry and sec_entry.window_minutes else 10080
                 acct_since = now - timedelta(minutes=acct_window)
-                pri_rows = await self._repo.usage_history_since(account_id, "primary", acct_since)
-                sec_rows = await self._repo.usage_history_since(account_id, "secondary", acct_since)
-                merged = sorted(
-                    (pri_rows or []) + (sec_rows or []),
-                    key=lambda r: r.recorded_at,
-                )
-                if merged:
-                    secondary_history[account_id] = merged
+                pri_fetch_ids.append(account_id)
+                sec_fetch_ids.append(account_id)
+                pri_cutoffs[account_id] = acct_since
+                sec_cutoffs[account_id] = acct_since
+                if acct_since < pri_since:
+                    pri_since = acct_since
+                if acct_since < sec_since:
+                    sec_since = acct_since
             else:
                 sec_entry = secondary_usage[account_id]
                 acct_window = sec_entry.window_minutes if sec_entry.window_minutes else 10080
                 acct_since = now - timedelta(minutes=acct_window)
-                rows = await self._repo.usage_history_since(account_id, "secondary", acct_since)
+                sec_fetch_ids.append(account_id)
+                sec_cutoffs[account_id] = acct_since
+                if acct_since < sec_since:
+                    sec_since = acct_since
+
+        # Issue at most 2 bulk queries
+        all_pri_rows = (
+            await self._repo.bulk_usage_history_since(pri_fetch_ids, "primary", pri_since) if pri_fetch_ids else {}
+        )
+        all_sec_rows = (
+            await self._repo.bulk_usage_history_since(sec_fetch_ids, "secondary", sec_since) if sec_fetch_ids else {}
+        )
+
+        # Filter in-memory to each account's actual cutoff
+        primary_history: dict[str, list[UsageHistory]] = {}
+        secondary_history: dict[str, list[UsageHistory]] = {}
+
+        for account_id in all_account_ids:
+            if account_id in normalized_primary_ids:
+                cutoff = pri_cutoffs[account_id]
+                rows = [r for r in all_pri_rows.get(account_id, []) if r.recorded_at >= cutoff]
+                if rows:
+                    primary_history[account_id] = rows
+                if account_id in sec_cutoffs:
+                    s_cutoff = sec_cutoffs[account_id]
+                    s_rows = [r for r in all_sec_rows.get(account_id, []) if r.recorded_at >= s_cutoff]
+                    if s_rows:
+                        secondary_history[account_id] = s_rows
+            elif account_id in weekly_only_ids:
+                cutoff = pri_cutoffs[account_id]
+                pri_rows_filtered = [r for r in all_pri_rows.get(account_id, []) if r.recorded_at >= cutoff]
+                sec_rows_filtered = [r for r in all_sec_rows.get(account_id, []) if r.recorded_at >= cutoff]
+                merged = sorted(pri_rows_filtered + sec_rows_filtered, key=lambda r: r.recorded_at)
+                if merged:
+                    secondary_history[account_id] = merged
+            else:
+                cutoff = sec_cutoffs[account_id]
+                rows = [r for r in all_sec_rows.get(account_id, []) if r.recorded_at >= cutoff]
                 if rows:
                     secondary_history[account_id] = rows
 

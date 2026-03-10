@@ -83,7 +83,7 @@ export function AdditionalQuotas({ items }: AdditionalQuotasProps) {
 						{item.secondaryUsedPercent != null ? (
 							<WindowRow
 								label={formatWindowLabel(
-									"secondary",
+									"additional",
 									item.secondaryWindowMinutes,
 								)}
 								usedPercent={item.secondaryUsedPercent}

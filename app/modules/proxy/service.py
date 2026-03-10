@@ -824,10 +824,10 @@ class ProxyService:
                     window_minutes_values = [e.window_minutes for e in filtered_entries.values() if e.window_minutes]
                     reset_at_values = [e.reset_at for e in filtered_entries.values() if e.reset_at is not None]
 
-                    if window_minutes_values or reset_at_values:
-                        window_minutes = max(window_minutes_values) if window_minutes_values else 300
+                    if window_minutes_values and reset_at_values:
+                        window_minutes = max(window_minutes_values)
                         limit_window_seconds = int(window_minutes * 60)
-                        reset_at = int(min(reset_at_values)) if reset_at_values else 0
+                        reset_at = int(min(reset_at_values))
                         reset_after_seconds = max(0, reset_at - now_epoch)
 
                         window_snapshot = RateLimitWindowSnapshotData(
@@ -836,11 +836,6 @@ class ProxyService:
                             reset_after_seconds=reset_after_seconds,
                             reset_at=reset_at,
                         )
-                    else:
-                        # Primary usage data without reset metadata: leave
-                        # window_snapshot as None rather than fabricating
-                        # reset_at=0 which clients render as "resets now".
-                        pass
 
             secondary_window_snapshot = None
             if filtered_secondary:
@@ -850,10 +845,10 @@ class ProxyService:
                     sec_window_values = [e.window_minutes for e in filtered_secondary.values() if e.window_minutes]
                     sec_reset_values = [e.reset_at for e in filtered_secondary.values() if e.reset_at is not None]
 
-                    if sec_window_values or sec_reset_values:
-                        sec_window_minutes = max(sec_window_values) if sec_window_values else 10080
+                    if sec_window_values and sec_reset_values:
+                        sec_window_minutes = max(sec_window_values)
                         sec_limit_window_seconds = int(sec_window_minutes * 60)
-                        sec_reset_at = int(min(sec_reset_values)) if sec_reset_values else 0
+                        sec_reset_at = int(min(sec_reset_values))
                         sec_reset_after_seconds = max(0, sec_reset_at - now_epoch)
                         secondary_window_snapshot = RateLimitWindowSnapshotData(
                             used_percent=int(max(0.0, min(100.0, sec_avg))),
@@ -861,11 +856,6 @@ class ProxyService:
                             reset_after_seconds=sec_reset_after_seconds,
                             reset_at=sec_reset_at,
                         )
-                    else:
-                        # Secondary-only limit without reset metadata: leave
-                        # snapshot as None rather than fabricating reset_at=0
-                        # which clients render as "resets now".
-                        pass
 
             rate_limit_details = None
             if avg_used_percent is not None or secondary_window_snapshot is not None:

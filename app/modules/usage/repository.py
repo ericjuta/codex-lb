@@ -134,6 +134,30 @@ class UsageRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
+    async def bulk_history_since(
+        self,
+        account_ids: list[str],
+        window: str,
+        since: datetime,
+    ) -> dict[str, list[UsageHistory]]:
+        """Fetch usage history for multiple accounts in a single query."""
+        if not account_ids:
+            return {}
+        stmt = (
+            select(UsageHistory)
+            .where(
+                UsageHistory.account_id.in_(account_ids),
+                _window_clause(window),
+                UsageHistory.recorded_at >= since,
+            )
+            .order_by(UsageHistory.account_id, UsageHistory.recorded_at.asc())
+        )
+        result = await self._session.execute(stmt)
+        grouped: dict[str, list[UsageHistory]] = {}
+        for row in result.scalars().all():
+            grouped.setdefault(row.account_id, []).append(row)
+        return grouped
+
     async def trends_by_bucket(
         self,
         since: datetime,

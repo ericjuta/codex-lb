@@ -33,6 +33,14 @@ class DashboardRepository:
     ) -> list[UsageHistory]:
         return await self._usage_repo.history_since(account_id, window, since)
 
+    async def bulk_usage_history_since(
+        self,
+        account_ids: list[str],
+        window: str,
+        since: datetime,
+    ) -> dict[str, list[UsageHistory]]:
+        return await self._usage_repo.bulk_history_since(account_ids, window, since)
+
     async def latest_window_minutes(self, window: str) -> int | None:
         return await self._usage_repo.latest_window_minutes(window)
 
