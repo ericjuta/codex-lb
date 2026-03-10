@@ -104,7 +104,10 @@ class UsageUpdater:
             if latest and (now - latest.recorded_at).total_seconds() < interval:
                 continue
             # Additional-only accounts have no main usage entry; check DB.
-            if self._additional_usage_repo is not None:
+            # Only use this as a skip signal when the account truly has no
+            # main entry — otherwise a partial write (additional succeeded,
+            # main failed) would suppress the retry for the full interval.
+            if latest is None and self._additional_usage_repo is not None:
                 additional_fresh_at = await self._additional_usage_repo.latest_recorded_at_for_account(
                     account.id,
                 )

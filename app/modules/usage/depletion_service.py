@@ -71,15 +71,20 @@ def compute_depletion_for_account(
     if state is not None:
         cutoff = state.last_timestamp
         new_entries = [e for e in history if naive_utc_to_epoch(e.recorded_at) > cutoff]
-        if not new_entries and len(history) < 2:
-            # Previous samples aged out of the rolling window leaving only
-            # one point.  Clear stale EWMA rate so we don't report depletion
-            # from data that is no longer in-window.
-            entry = history[0]
-            _ewma_states[key] = ewma_update(
-                None, entry.used_percent, naive_utc_to_epoch(entry.recorded_at), reset_at=entry.reset_at
-            )
-            return None
+        if not new_entries:
+            if len(history) < 2:
+                # Previous samples aged out leaving only one point.  Clear
+                # stale EWMA so we don't report depletion from old data.
+                entry = history[0]
+                _ewma_states[key] = ewma_update(
+                    None, entry.used_percent, naive_utc_to_epoch(entry.recorded_at), reset_at=entry.reset_at
+                )
+                return None
+            # Older spike samples rolled out of the window but 2+ newer
+            # points remain.  Recompute EWMA from scratch over the
+            # surviving in-window history so the cached rate stays current.
+            state = None
+            new_entries = history
     else:
         new_entries = history
 
@@ -116,16 +121,13 @@ def compute_depletion_for_account(
 
     projected_exhaustion_at = None
     seconds_until_exhaustion = None
-    if state.rate > 0:
+    if state.rate > 0 and seconds_until_reset > 0:
         remaining = 100.0 - used_percent
         secs = remaining / state.rate
-        if seconds_until_reset > 0 and secs > seconds_until_reset:
-            # Exhaustion falls after the window resets — it won't happen in
-            # the current window, so leave the fields as None.
-            pass
-        else:
+        if secs <= seconds_until_reset:
             seconds_until_exhaustion = secs
             projected_exhaustion_at = now + timedelta(seconds=secs)
+        # else: exhaustion falls after the window resets — leave as None
 
     return DepletionMetrics(
         risk=risk,
