@@ -703,8 +703,14 @@ def test_sticky_key_for_responses_request_keeps_sticky_threads_durable():
 
 
 def test_sticky_key_for_compact_request_prefers_codex_session_affinity():
-    payload = ResponsesCompactRequest.model_validate({"model": "gpt-5.1", "instructions": "hi", "input": []})
-    payload.prompt_cache_key = "thread_123"
+    payload = ResponsesCompactRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "hi",
+            "input": [],
+            "prompt_cache_key": "thread_123",
+        }
+    )
 
     policy = proxy_service._sticky_key_for_compact_request(
         payload,

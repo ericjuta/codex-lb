@@ -483,11 +483,11 @@ async def test_select_account_does_not_hold_runtime_lock_during_input_loading(mo
     @asynccontextmanager
     async def repo_factory() -> AsyncIterator[ProxyRepositories]:
         yield ProxyRepositories(
-            accounts=accounts_repo,  # type: ignore[arg-type]
-            usage=usage_repo,  # type: ignore[arg-type]
+            accounts=accounts_repo,
+            usage=usage_repo,
             additional_usage=object(),  # type: ignore[arg-type]
             request_logs=object(),  # type: ignore[arg-type]
-            sticky_sessions=sticky_repo,  # type: ignore[arg-type]
+            sticky_sessions=sticky_repo,
             api_keys=object(),  # type: ignore[arg-type]
         )
 

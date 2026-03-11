@@ -5,8 +5,8 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import text
 
-from app.core.utils.time import utcnow
 from app.core.crypto import TokenEncryptor
+from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus, StickySessionKind
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
@@ -164,10 +164,7 @@ async def test_sticky_sessions_cleanup_scheduler_removes_only_stale_prompt_cache
 
     async with SessionLocal() as session:
         remaining = {
-            row[0]
-            for row in (
-                await session.execute(text("SELECT key FROM sticky_sessions ORDER BY key"))
-            ).fetchall()
+            row[0] for row in (await session.execute(text("SELECT key FROM sticky_sessions ORDER BY key"))).fetchall()
         }
 
     assert remaining == {"cleanup-durable"}

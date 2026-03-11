@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Route } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -24,10 +24,6 @@ export function RoutingSettings({ settings, busy, onSave }: RoutingSettingsProps
   const [cacheAffinityTtl, setCacheAffinityTtl] = useState(
     String(settings.openaiCacheAffinityMaxAgeSeconds),
   );
-
-  useEffect(() => {
-    setCacheAffinityTtl(String(settings.openaiCacheAffinityMaxAgeSeconds));
-  }, [settings.openaiCacheAffinityMaxAgeSeconds]);
 
   const save = (patch: Partial<SettingsUpdateRequest>) =>
     void onSave(buildSettingsUpdateRequest(settings, patch));

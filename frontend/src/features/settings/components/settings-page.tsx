@@ -51,6 +51,7 @@ export function SettingsPage() {
           <div className="space-y-4">
             <AppearanceSettings />
             <RoutingSettings
+              key={settings.openaiCacheAffinityMaxAgeSeconds}
               settings={settings}
               busy={busy}
               onSave={handleSave}
