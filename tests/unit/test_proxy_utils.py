@@ -1172,17 +1172,125 @@ async def test_stream_responses_uses_websocket_transport(monkeypatch):
     request_payload = websocket.sent_json[0]
     assert request_payload == {"type": "response.create", **payload.to_payload()}
     expected_created = (
-        'event: response.created\ndata: '
+        "event: response.created\ndata: "
         '{"type":"response.created","response":{"id":"resp_ws","service_tier":"auto"}}\n\n'
     )
     expected_completed = (
-        'event: response.completed\ndata: '
+        "event: response.completed\ndata: "
         '{"type":"response.completed","response":{"id":"resp_ws","service_tier":"default"}}\n\n'
     )
     assert events == [
         expected_created,
         expected_completed,
     ]
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_websocket_forces_response_create_event_type(monkeypatch):
+    class Settings:
+        upstream_base_url = "https://chatgpt.com/backend-api"
+        upstream_stream_transport = "websocket"
+        upstream_connect_timeout_seconds = 8.0
+        stream_idle_timeout_seconds = 45.0
+        max_sse_event_bytes = 1024
+        image_inline_fetch_enabled = False
+        log_upstream_request_payload = False
+        proxy_request_budget_seconds = 75.0
+        log_upstream_request_summary = False
+
+    monkeypatch.setattr(proxy_module, "get_settings", lambda: Settings())
+    monkeypatch.setattr(proxy_module, "_maybe_log_upstream_request_start", lambda **kwargs: None)
+    monkeypatch.setattr(proxy_module, "_maybe_log_upstream_request_complete", lambda **kwargs: None)
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "hi",
+            "input": [{"role": "user", "content": "hi"}],
+            "type": "response.cancel",
+            "custom_flag": "x",
+        }
+    )
+    websocket = _WsResponse(
+        [
+            _WsMessage(
+                proxy_module.aiohttp.WSMsgType.TEXT,
+                json.dumps({"type": "response.completed", "response": {"id": "resp_ws"}}),
+            )
+        ]
+    )
+    session = _WsSession(websocket)
+
+    _ = [
+        event
+        async for event in proxy_module.stream_responses(
+            payload,
+            headers={},
+            access_token="token",
+            account_id="acc_1",
+            session=cast(proxy_module.aiohttp.ClientSession, session),
+        )
+    ]
+
+    request_payload = websocket.sent_json[0]
+    assert payload.to_payload()["type"] == "response.cancel"
+    assert request_payload["type"] == "response.create"
+    assert request_payload["custom_flag"] == "x"
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_via_websocket_counts_connect_and_send_against_total_timeout(monkeypatch):
+    recorded: dict[str, float | None] = {}
+    websocket = _WsResponse([])
+    monotonic_values = iter([100.0, 100.0, 104.75, 104.75, 104.75, 104.75])
+
+    def fake_monotonic() -> float:
+        return next(monotonic_values, 104.75)
+
+    async def fake_open_upstream_websocket(
+        *,
+        session,
+        url: str,
+        headers,
+        connect_timeout_seconds: float,
+        max_msg_size: int,
+    ):
+        recorded["connect_timeout_seconds"] = connect_timeout_seconds
+        return websocket, websocket
+
+    async def fake_stream_websocket_events(
+        websocket_obj,
+        *,
+        idle_timeout_seconds: float,
+        total_timeout_seconds: float | None,
+        max_event_bytes: int,
+    ):
+        recorded["total_timeout_seconds"] = total_timeout_seconds
+        if False:
+            yield ""
+
+    monkeypatch.setattr(proxy_module, "_open_upstream_websocket", fake_open_upstream_websocket)
+    monkeypatch.setattr(proxy_module, "_stream_websocket_events", fake_stream_websocket_events)
+    monkeypatch.setattr(proxy_module.time, "monotonic", fake_monotonic)
+
+    events = [
+        event
+        async for event in proxy_module._stream_responses_via_websocket(
+            payload_dict={"model": "gpt-5.1", "type": "response.cancel"},
+            url="https://chatgpt.com/backend-api/codex/responses",
+            headers={"originator": "codex_cli_rs"},
+            client_session=cast(proxy_module.aiohttp.ClientSession, SimpleNamespace()),
+            effective_total_timeout=5.0,
+            effective_connect_timeout=8.0,
+            effective_idle_timeout=45.0,
+            max_event_bytes=1024,
+            raise_for_status=True,
+        )
+    ]
+
+    assert events == []
+    assert recorded["connect_timeout_seconds"] == pytest.approx(5.0)
+    assert recorded["total_timeout_seconds"] == pytest.approx(0.25)
 
 
 @pytest.mark.asyncio
@@ -1233,8 +1341,7 @@ async def test_stream_responses_auto_transport_uses_model_preference(monkeypatch
 
     assert session.ws_calls
     assert events == [
-        'event: response.completed\ndata: '
-        '{"type":"response.completed","response":{"id":"resp_auto"}}\n\n'
+        'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_auto"}}\n\n'
     ]
 
 
@@ -1292,11 +1399,11 @@ async def test_stream_responses_uses_websocket_upstream_when_forced(monkeypatch)
     assert session.ws_calls[0]["url"] == "wss://chatgpt.com/backend-api/codex/responses"
     assert response.sent_json == [{"type": "response.create", **payload.to_payload()}]
     expected_created = (
-        'event: response.created\ndata: '
+        "event: response.created\ndata: "
         '{"type":"response.created","response":{"id":"resp_ws","service_tier":"auto"}}\n\n'
     )
     expected_completed = (
-        'event: response.completed\ndata: '
+        "event: response.completed\ndata: "
         '{"type":"response.completed","response":{"id":"resp_ws","service_tier":"default"}}\n\n'
     )
     assert events == [

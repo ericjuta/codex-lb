@@ -1010,6 +1010,7 @@ class ProxyService:
                                 api_key=api_key,
                                 settlement=settlement,
                                 suppress_text_done_events=suppress_text_done_events,
+                                upstream_stream_transport=upstream_stream_transport,
                             ):
                                 yield line
                         finally:
@@ -1264,11 +1265,7 @@ class ProxyService:
             reasoning_tokens = (
                 usage.output_tokens_details.reasoning_tokens if usage and usage.output_tokens_details else None
             )
-            log_service_tier = (
-                requested_service_tier
-                if isinstance(requested_service_tier, str)
-                else service_tier
-            )
+            log_service_tier = requested_service_tier if isinstance(requested_service_tier, str) else service_tier
             settlement.status = status
             settlement.model = model
             settlement.service_tier = service_tier

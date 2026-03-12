@@ -767,15 +767,22 @@ async def _stream_responses_via_websocket(
     raise_for_status: bool,
 ) -> AsyncIterator[str]:
     websocket_url = _to_websocket_upstream_url(url)
-    request_payload: JsonObject = {"type": "response.create", **payload_dict}
+    request_started_at = time.monotonic()
+    request_payload: JsonObject = dict(payload_dict)
+    request_payload["type"] = "response.create"
     websocket_cm: AsyncContextManager[aiohttp.ClientWebSocketResponse] | None = None
     websocket: aiohttp.ClientWebSocketResponse | None = None
+    connect_timeout_seconds = min(
+        effective_connect_timeout,
+        _remaining_total_timeout(effective_total_timeout, request_started_at, time.monotonic())
+        or effective_connect_timeout,
+    )
     try:
         websocket_cm, websocket = await _open_upstream_websocket(
             session=client_session,
             url=websocket_url,
             headers=headers,
-            connect_timeout_seconds=effective_connect_timeout,
+            connect_timeout_seconds=connect_timeout_seconds,
             max_msg_size=max_event_bytes,
         )
     except aiohttp.WSServerHandshakeError as exc:
@@ -787,14 +794,30 @@ async def _stream_responses_via_websocket(
 
     try:
         send_json = getattr(websocket, "send_json", None)
+        remaining_total_timeout = _remaining_total_timeout(
+            effective_total_timeout,
+            request_started_at,
+            time.monotonic(),
+        )
         if callable(send_json):
-            await cast(Any, send_json)(request_payload)
+            await asyncio.wait_for(
+                cast(Any, send_json)(request_payload),
+                timeout=remaining_total_timeout,
+            )
         else:
-            await websocket.send_str(json.dumps(request_payload, ensure_ascii=True, separators=(",", ":")))
+            await asyncio.wait_for(
+                websocket.send_str(json.dumps(request_payload, ensure_ascii=True, separators=(",", ":"))),
+                timeout=remaining_total_timeout,
+            )
+        remaining_total_timeout = _remaining_total_timeout(
+            effective_total_timeout,
+            request_started_at,
+            time.monotonic(),
+        )
         async for event in _stream_websocket_events(
             websocket,
             idle_timeout_seconds=effective_idle_timeout,
-            total_timeout_seconds=effective_total_timeout,
+            total_timeout_seconds=remaining_total_timeout,
             max_event_bytes=max_event_bytes,
         ):
             yield event
@@ -1145,8 +1168,7 @@ async def stream_responses(
                 headers=upstream_headers,
                 client_session=client_session,
                 effective_total_timeout=(
-                    effective_total_timeout
-                    or getattr(settings, "proxy_request_budget_seconds", 75.0)
+                    effective_total_timeout or getattr(settings, "proxy_request_budget_seconds", 75.0)
                 ),
                 effective_connect_timeout=effective_connect_timeout,
                 effective_idle_timeout=effective_idle_timeout,

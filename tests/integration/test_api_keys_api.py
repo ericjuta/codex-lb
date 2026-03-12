@@ -654,9 +654,7 @@ async def test_stream_usage_logs_requested_service_tier(async_client, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_stream_usage_logs_requested_service_tier_when_response_created_echoes_default(
-    async_client, monkeypatch
-):
+async def test_stream_usage_logs_requested_service_tier_when_response_created_echoes_default(async_client, monkeypatch):
     enable = await async_client.put(
         "/api/settings",
         json={
