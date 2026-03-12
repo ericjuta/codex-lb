@@ -90,6 +90,24 @@ def test_build_upstream_headers_accept_override():
     assert headers["Accept"] == "application/json"
 
 
+def test_build_upstream_websocket_headers_strip_accept_and_content_type_case_insensitively():
+    headers = proxy_module._build_upstream_websocket_headers(
+        {
+            "accept": "text/event-stream",
+            "content-type": "application/json",
+            "User-Agent": "codex-test",
+        },
+        "token",
+        "acc_2",
+    )
+
+    assert all(key.lower() != "accept" for key in headers)
+    assert all(key.lower() != "content-type" for key in headers)
+    assert headers["Authorization"] == "Bearer token"
+    assert headers["chatgpt-account-id"] == "acc_2"
+    assert headers["User-Agent"] == "codex-test"
+
+
 def test_parse_sse_event_reads_json_payload():
     payload = {"type": "response.completed", "response": {"id": "resp_1"}}
     line = f"data: {json.dumps(payload)}\n"

@@ -204,7 +204,7 @@ def _build_upstream_websocket_headers(
     access_token: str,
     account_id: str | None,
 ) -> dict[str, str]:
-    headers = dict(inbound)
+    headers = {key: value for key, value in inbound.items() if key.lower() not in {"accept", "content-type"}}
     lower_keys = {key.lower() for key in headers}
     if "x-request-id" not in lower_keys and "request-id" not in lower_keys:
         request_id = get_request_id()
@@ -213,8 +213,6 @@ def _build_upstream_websocket_headers(
     headers["Authorization"] = f"Bearer {access_token}"
     if account_id:
         headers["chatgpt-account-id"] = account_id
-    headers.pop("Accept", None)
-    headers.pop("Content-Type", None)
     return headers
 
 
