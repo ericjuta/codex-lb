@@ -1424,7 +1424,8 @@ class ProxyService:
                             error.code if error else None,
                             error.type if error else None,
                         )
-                        error_message = error.message if error else "Upstream error"
+                        error_message = error.message if error and error.message else "Upstream error"
+                        error_type = error.type if error and error.type else "server_error"
                         await self._release_websocket_reservation(request_state.api_key_reservation)
                         await self._write_websocket_connect_failure(
                             account_id=account.id if account else None,
@@ -1439,7 +1440,7 @@ class ProxyService:
                             request_state=request_state,
                             error_code=error_code or "upstream_error",
                             error_message=error_message,
-                            error_type=error.type if error else "server_error",
+                            error_type=error_type,
                         )
                         _release_websocket_response_create_gate(request_state, response_create_gate)
                         continue

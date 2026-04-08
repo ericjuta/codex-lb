@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from datetime import datetime
 from hashlib import sha256
 from typing import Protocol, TypeAlias
@@ -62,7 +62,7 @@ class _RefreshSingleflight:
     async def run(
         self,
         key: _RefreshSingleflightKey,
-        factory: Callable[[], Awaitable[Account]],
+        factory: Callable[[], Coroutine[object, object, Account]],
     ) -> Account:
         account_id = key[0]
         async with self._lock:
@@ -103,9 +103,7 @@ class _RefreshSingleflight:
             self._recent_failures.pop(key, None)
 
     def _purge_stale_versions(self, account_id: str, *, keep_key: _RefreshSingleflightKey) -> None:
-        stale_failures = [
-            key for key in self._recent_failures if key[0] == account_id and key != keep_key
-        ]
+        stale_failures = [key for key in self._recent_failures if key[0] == account_id and key != keep_key]
         for key in stale_failures:
             self._recent_failures.pop(key, None)
         stale_inflight = [

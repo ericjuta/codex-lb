@@ -35,9 +35,7 @@ class BulkheadSemaphore:
         proxy_compact_limit: int | None = None,
     ) -> None:
         resolved_proxy_limit = 200 if proxy_limit is None else proxy_limit
-        resolved_proxy_http_limit = (
-            resolved_proxy_limit if proxy_http_limit is None else proxy_http_limit
-        )
+        resolved_proxy_http_limit = resolved_proxy_limit if proxy_http_limit is None else proxy_http_limit
         resolved_proxy_websocket_limit = (
             resolved_proxy_limit if proxy_websocket_limit is None else proxy_websocket_limit
         )
@@ -49,9 +47,7 @@ class BulkheadSemaphore:
         self._proxy_websocket = (
             Semaphore(resolved_proxy_websocket_limit) if resolved_proxy_websocket_limit > 0 else None
         )
-        self._proxy_compact = (
-            Semaphore(resolved_proxy_compact_limit) if resolved_proxy_compact_limit > 0 else None
-        )
+        self._proxy_compact = Semaphore(resolved_proxy_compact_limit) if resolved_proxy_compact_limit > 0 else None
         self._dashboard = Semaphore(dashboard_limit) if dashboard_limit > 0 else None
         self._background = Semaphore(background_limit) if background_limit > 0 else None
 
@@ -177,6 +173,7 @@ class BulkheadMiddleware:
 
 
 _bulkhead: BulkheadSemaphore | None = None
+
 
 def _is_compact_path(path: str) -> bool:
     return path.endswith("/responses/compact")

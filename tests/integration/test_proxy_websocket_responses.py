@@ -98,6 +98,10 @@ def _websocket_settings(**overrides):
         "stream_idle_timeout_seconds": 300.0,
         "log_proxy_request_shape": False,
         "log_proxy_request_shape_raw_cache_key": False,
+        "proxy_token_refresh_limit": 32,
+        "proxy_upstream_websocket_connect_limit": 64,
+        "proxy_response_create_limit": 64,
+        "proxy_compact_response_create_limit": 16,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
