@@ -2098,6 +2098,7 @@ async def test_v1_responses_http_bridge_reconnect_uses_last_upstream_turn_state(
         api_key_reservation=None,
         started_at=time.monotonic(),
         awaiting_response_created=True,
+        response_create_gate_acquired=True,
         request_text=json.dumps({"type": "response.create", "model": "gpt-5.4", "input": []}),
     )
     await service._reconnect_http_bridge_session(bridge_session, request_state=request_state)
@@ -2221,6 +2222,7 @@ async def test_v1_responses_http_bridge_session_id_reconnect_keeps_upstream_turn
         api_key_reservation=None,
         started_at=time.monotonic(),
         awaiting_response_created=True,
+        response_create_gate_acquired=True,
         request_text=json.dumps({"type": "response.create", "model": "gpt-5.4", "input": []}),
     )
     await service._reconnect_http_bridge_session(bridge_session, request_state=request_state)
@@ -2491,6 +2493,7 @@ async def test_v1_responses_http_bridge_reconnect_fails_when_reader_cancel_times
         api_key_reservation=None,
         started_at=time.monotonic(),
         awaiting_response_created=True,
+        response_create_gate_acquired=True,
         request_text=json.dumps({"type": "response.create", "model": "gpt-5.4", "input": []}),
     )
 
@@ -4679,6 +4682,7 @@ async def test_v1_responses_http_bridge_does_not_evict_active_session_when_pool_
                 api_key_reservation=None,
                 started_at=time.monotonic(),
                 awaiting_response_created=True,
+                response_create_gate_acquired=True,
                 event_queue=asyncio.Queue(),
                 transport="http",
             )
@@ -6332,6 +6336,7 @@ async def test_retry_http_bridge_precreated_request_releases_pending_lock_before
         api_key_reservation=None,
         started_at=time.monotonic(),
         awaiting_response_created=True,
+        response_create_gate_acquired=True,
         request_text=json.dumps({"type": "response.create", "model": "gpt-5.1", "input": []}),
     )
     session.pending_requests.append(request_state)

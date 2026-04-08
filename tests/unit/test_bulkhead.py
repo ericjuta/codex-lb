@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, cast
 
 import pytest
@@ -12,13 +13,19 @@ from app.core.resilience.bulkhead import BulkheadMiddleware, BulkheadSemaphore
 pytestmark = pytest.mark.unit
 
 
+def _bulkhead(**kwargs: int) -> BulkheadSemaphore:
+    return BulkheadSemaphore(
+        proxy_http_limit=kwargs.get("proxy_http_limit", 1),
+        proxy_websocket_limit=kwargs.get("proxy_websocket_limit", 1),
+        proxy_compact_limit=kwargs.get("proxy_compact_limit", 1),
+        dashboard_limit=kwargs.get("dashboard_limit", 1),
+    )
+
+
 @pytest.mark.asyncio
 async def test_bulkhead_allows_requests_under_limit():
     app = FastAPI()
-    app.add_middleware(
-        cast(Any, BulkheadMiddleware),
-        bulkhead=BulkheadSemaphore(proxy_limit=2, dashboard_limit=2),
-    )
+    app.add_middleware(cast(Any, BulkheadMiddleware), bulkhead=_bulkhead(proxy_http_limit=2, dashboard_limit=2))
 
     @app.get("/v1/work")
     async def work():
@@ -33,12 +40,9 @@ async def test_bulkhead_allows_requests_under_limit():
 
 
 @pytest.mark.asyncio
-async def test_bulkhead_returns_503_when_proxy_bucket_full():
+async def test_bulkhead_returns_429_when_proxy_http_lane_full():
     app = FastAPI()
-    app.add_middleware(
-        cast(Any, BulkheadMiddleware),
-        bulkhead=BulkheadSemaphore(proxy_limit=1, dashboard_limit=1),
-    )
+    app.add_middleware(cast(Any, BulkheadMiddleware), bulkhead=_bulkhead())
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -57,19 +61,46 @@ async def test_bulkhead_returns_503_when_proxy_bucket_full():
         release.set()
         first_response = await first_request
 
-    assert overloaded.status_code == 503
-    assert overloaded.json() == {"detail": "Service temporarily unavailable (bulkhead full)"}
+    assert overloaded.status_code == 429
+    assert overloaded.json()["error"]["code"] == "proxy_overloaded"
     assert overloaded.headers["retry-after"] == "5"
     assert first_response.status_code == 200
 
 
 @pytest.mark.asyncio
+async def test_bulkhead_compact_lane_isolated_from_general_proxy_http():
+    app = FastAPI()
+    app.add_middleware(cast(Any, BulkheadMiddleware), bulkhead=_bulkhead())
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    @app.get("/v1/work")
+    async def proxy_work():
+        entered.set()
+        await release.wait()
+        return {"ok": True}
+
+    @app.post("/v1/responses/compact")
+    async def compact_work():
+        return {"ok": "compact"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        first_request = asyncio.create_task(client.get("/v1/work"))
+        await entered.wait()
+
+        compact_response = await client.post("/v1/responses/compact")
+        release.set()
+        await first_request
+
+    assert compact_response.status_code == 200
+    assert compact_response.json() == {"ok": "compact"}
+
+
+@pytest.mark.asyncio
 async def test_bulkhead_isolates_dashboard_when_proxy_full():
     app = FastAPI()
-    app.add_middleware(
-        cast(Any, BulkheadMiddleware),
-        bulkhead=BulkheadSemaphore(proxy_limit=1, dashboard_limit=1),
-    )
+    app.add_middleware(cast(Any, BulkheadMiddleware), bulkhead=_bulkhead())
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -99,10 +130,7 @@ async def test_bulkhead_isolates_dashboard_when_proxy_full():
 @pytest.mark.asyncio
 async def test_bulkhead_health_probes_bypass_limits():
     app = FastAPI()
-    app.add_middleware(
-        cast(Any, BulkheadMiddleware),
-        bulkhead=BulkheadSemaphore(proxy_limit=1, dashboard_limit=1),
-    )
+    app.add_middleware(cast(Any, BulkheadMiddleware), bulkhead=_bulkhead())
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -130,9 +158,10 @@ async def test_bulkhead_health_probes_bypass_limits():
 
 
 @pytest.mark.asyncio
-async def test_bulkhead_websocket_rejects_with_close_when_proxy_bucket_full():
-    bulkhead = BulkheadSemaphore(proxy_limit=1, dashboard_limit=1)
-    sem = bulkhead.get_semaphore("/v1/responses")
+async def test_bulkhead_websocket_denies_with_http_response_when_lane_full():
+    bulkhead = _bulkhead()
+    lane_name, sem = bulkhead.get_semaphore("websocket", "/v1/responses")
+    assert lane_name == "proxy_websocket"
     assert sem is not None
     await sem.acquire()
 
@@ -167,10 +196,51 @@ async def test_bulkhead_websocket_rejects_with_close_when_proxy_bucket_full():
         sem.release()
 
     assert app_called is False
-    assert sent_events == [
-        {
-            "type": "websocket.close",
-            "code": 1013,
-            "reason": "Service temporarily unavailable (bulkhead full)",
-        }
-    ]
+    assert sent_events[0]["type"] == "websocket.http.response.start"
+    assert sent_events[0]["status"] == 429
+    assert sent_events[1]["type"] == "websocket.http.response.body"
+    payload = json.loads(cast(bytes, sent_events[1]["body"]).decode("utf-8"))
+    assert payload["error"]["code"] == "proxy_overloaded"
+
+
+@pytest.mark.asyncio
+async def test_bulkhead_dashboard_websocket_uses_detail_payload_when_lane_full():
+    bulkhead = _bulkhead(dashboard_limit=1)
+    lane_name, sem = bulkhead.get_semaphore("websocket", "/api/status/socket")
+    assert lane_name == "dashboard"
+    assert sem is not None
+    await sem.acquire()
+
+    app_called = False
+
+    async def inner_app(scope, receive, send):
+        nonlocal app_called
+        app_called = True
+        del scope, receive, send
+
+    middleware = BulkheadMiddleware(cast(Any, inner_app), bulkhead=bulkhead)
+    sent_events: list[dict[str, object]] = []
+    connect_delivered = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal connect_delivered
+        if not connect_delivered:
+            connect_delivered = True
+            return {"type": "websocket.connect"}
+        return {"type": "websocket.disconnect", "code": 1000}
+
+    async def send(message: dict[str, object]) -> None:
+        sent_events.append(message)
+
+    try:
+        await middleware(
+            {"type": "websocket", "path": "/api/status/socket"},
+            cast(Any, receive),
+            cast(Any, send),
+        )
+    finally:
+        sem.release()
+
+    assert app_called is False
+    payload = json.loads(cast(bytes, sent_events[1]["body"]).decode("utf-8"))
+    assert payload == {"detail": "codex-lb is temporarily overloaded in the dashboard lane"}

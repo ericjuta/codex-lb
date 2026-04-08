@@ -77,6 +77,7 @@ from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.models import CompactResponsePayload, OpenAIEvent, OpenAIResponsePayload
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
+from app.core.resilience.overload import is_local_overload_error_code
 from app.core.types import JsonValue
 from app.core.usage.types import UsageWindowRow
 from app.core.utils.json_guards import is_json_mapping
@@ -146,6 +147,7 @@ from app.modules.proxy.types import (
     RateLimitStatusPayloadData,
     RateLimitWindowSnapshotData,
 )
+from app.modules.proxy.work_admission import AdmissionLease, WorkAdmissionController
 from app.modules.usage.additional_quota_keys import get_additional_display_label_for_quota_key
 from app.modules.usage.updater import UsageUpdater
 
@@ -244,6 +246,18 @@ class ProxyService:
         self._http_bridge_turn_state_index: dict[tuple[str, str | None], _HTTPBridgeSessionKey] = {}
         self._http_bridge_previous_response_index: dict[tuple[str, str | None], _HTTPBridgeSessionKey] = {}
         self._http_bridge_lock = anyio.Lock()
+        self._work_admission: WorkAdmissionController | None = None
+
+    def _get_work_admission(self) -> WorkAdmissionController:
+        if self._work_admission is None:
+            settings = get_settings()
+            self._work_admission = WorkAdmissionController(
+                token_refresh_limit=settings.proxy_token_refresh_limit,
+                websocket_connect_limit=settings.proxy_upstream_websocket_connect_limit,
+                response_create_limit=settings.proxy_response_create_limit,
+                compact_response_create_limit=settings.proxy_compact_response_create_limit,
+            )
+        return self._work_admission
 
     def stream_responses(
         self,
@@ -851,9 +865,11 @@ class ProxyService:
                         connect_timeout_seconds=remaining_budget,
                         total_timeout_seconds=remaining_budget,
                     )
+                create_lease = await self._get_work_admission().acquire_response_create(compact=True)
                 try:
                     return await core_compact_responses(payload, filtered, access_token, account_id)
                 finally:
+                    create_lease.release()
                     pop_compact_timeout_overrides(timeout_tokens)
 
             last_exc: ProxyResponseError | None = None
@@ -1011,6 +1027,14 @@ class ProxyService:
                             error.code if error else None,
                             error.type if error else None,
                         )
+                        if _is_account_neutral_error_code(code):
+                            await self._settle_compact_api_key_usage(
+                                api_key=api_key,
+                                api_key_reservation=api_key_reservation,
+                                response=None,
+                                request_service_tier=request_service_tier,
+                            )
+                            raise
                         classified = await self._handle_stream_error(
                             account,
                             _upstream_error_from_openai(error),
@@ -1386,10 +1410,55 @@ class ProxyService:
                     account = None
 
                 if request_state is not None:
-                    await response_create_gate.acquire()
-                    async with pending_lock:
-                        pending_requests.append(request_state)
-                    request_state_registered = True
+                    try:
+                        await self._acquire_request_state_response_create_admission(
+                            request_state,
+                            response_create_gate=response_create_gate,
+                        )
+                        async with pending_lock:
+                            pending_requests.append(request_state)
+                        request_state_registered = True
+                    except ProxyResponseError as exc:
+                        error = _parse_openai_error(exc.payload)
+                        error_code = _normalize_error_code(
+                            error.code if error else None,
+                            error.type if error else None,
+                        )
+                        error_message = error.message if error else "Upstream error"
+                        await self._release_websocket_reservation(request_state.api_key_reservation)
+                        await self._write_websocket_connect_failure(
+                            account_id=account.id if account else None,
+                            api_key=api_key,
+                            request_state=request_state,
+                            error_code=error_code or "upstream_error",
+                            error_message=error_message,
+                        )
+                        await self._emit_websocket_terminal_error(
+                            websocket,
+                            client_send_lock=client_send_lock,
+                            request_state=request_state,
+                            error_code=error_code or "upstream_error",
+                            error_message=error_message,
+                            error_type=error.type if error else "server_error",
+                        )
+                        _release_websocket_response_create_gate(request_state, response_create_gate)
+                        continue
+                    except asyncio.CancelledError:
+                        await self._release_websocket_reservation(request_state.api_key_reservation)
+                        if request_state_registered:
+                            async with pending_lock:
+                                if request_state in pending_requests:
+                                    pending_requests.remove(request_state)
+                        _release_websocket_response_create_gate(request_state, response_create_gate)
+                        raise
+                    except Exception:
+                        await self._release_websocket_reservation(request_state.api_key_reservation)
+                        if request_state_registered:
+                            async with pending_lock:
+                                if request_state in pending_requests:
+                                    pending_requests.remove(request_state)
+                        _release_websocket_response_create_gate(request_state, response_create_gate)
+                        raise
 
                 if upstream is None:
                     if text_data is not None and payload is None:
@@ -1657,6 +1726,24 @@ class ProxyService:
         _enforce_response_create_size_limit(request_state)
         return request_state, text_data
 
+    async def _acquire_request_state_response_create_admission(
+        self,
+        request_state: _WebSocketRequestState,
+        *,
+        response_create_gate: asyncio.Semaphore,
+        compact: bool = False,
+    ) -> None:
+        await response_create_gate.acquire()
+        request_state.response_create_gate_acquired = True
+        request_state.awaiting_response_created = True
+        try:
+            request_state.response_create_admission = await self._get_work_admission().acquire_response_create(
+                compact=compact
+            )
+        except BaseException:
+            _release_websocket_response_create_gate(request_state, response_create_gate)
+            raise
+
     async def _connect_proxy_websocket(
         self,
         headers: dict[str, str],
@@ -1914,7 +2001,11 @@ class ProxyService:
     ) -> UpstreamResponsesWebSocket:
         access_token = self._encryptor.decrypt(account.access_token_encrypted)
         account_id = _header_account_id(account.chatgpt_account_id)
-        return await connect_responses_websocket(headers, access_token, account_id)
+        connect_lease = await self._get_work_admission().acquire_websocket_connect()
+        try:
+            return await connect_responses_websocket(headers, access_token, account_id)
+        finally:
+            connect_lease.release()
 
     async def _http_bridge_pending_count(self, session: "_HTTPBridgeSession") -> int:
         async with session.pending_lock:
@@ -3158,13 +3249,24 @@ class ProxyService:
                 )
             session.queued_request_count += 1
         try:
-            await session.response_create_gate.acquire()
+            await self._acquire_request_state_response_create_admission(
+                request_state,
+                response_create_gate=session.response_create_gate,
+            )
             gate_acquired = True
             async with session.pending_lock:
                 session.pending_requests.append(request_state)
             request_enqueued = True
             await session.upstream.send_text(text_data)
             session.last_used_at = time.monotonic()
+        except ProxyResponseError:
+            await self._cleanup_http_bridge_submit_interruption(
+                session,
+                request_state=request_state,
+                gate_acquired=gate_acquired,
+                request_enqueued=request_enqueued,
+            )
+            raise
         except asyncio.CancelledError:
             await self._cleanup_http_bridge_submit_interruption(
                 session,
@@ -3275,7 +3377,10 @@ class ProxyService:
             try:
                 event_queue = warmup_state.event_queue
                 assert event_queue is not None
-                await session.response_create_gate.acquire()
+                await self._acquire_request_state_response_create_admission(
+                    warmup_state,
+                    response_create_gate=session.response_create_gate,
+                )
                 gate_acquired = True
                 async with session.pending_lock:
                     session.pending_requests.append(warmup_state)
@@ -3297,6 +3402,20 @@ class ProxyService:
                             ),
                         )
                 session.last_used_at = time.monotonic()
+            except ProxyResponseError as exc:
+                error = _parse_openai_error(exc.payload)
+                code = _normalize_error_code(error.code if error else None, error.type if error else None)
+                await self._cleanup_http_bridge_submit_interruption(
+                    session,
+                    request_state=warmup_state,
+                    gate_acquired=gate_acquired,
+                    request_enqueued=request_enqueued,
+                )
+                if is_local_overload_error_code(code):
+                    session.prewarmed = False
+                    return
+                session.prewarmed = False
+                raise
             except Exception:
                 session.prewarmed = False
                 await self._cleanup_http_bridge_submit_interruption(
@@ -3747,6 +3866,8 @@ class ProxyService:
     async def _handle_websocket_connect_error(self, account: Account, exc: ProxyResponseError) -> None:
         error = _parse_openai_error(exc.payload)
         error_code = _normalize_error_code(error.code if error else None, error.type if error else None)
+        if _is_account_neutral_error_code(error_code):
+            return
         await self._handle_stream_error(
             account,
             _upstream_error_from_openai(error),
@@ -4734,6 +4855,8 @@ class ProxyService:
                                     error.code if error else None,
                                     error.type if error else None,
                                 )
+                                if _is_account_neutral_error_code(code):
+                                    raise
                                 classified = await self._handle_stream_error(
                                     account,
                                     _upstream_error_from_openai(error),
@@ -5064,8 +5187,10 @@ class ProxyService:
         usage = None
         saw_text_delta = False
         latency_first_token_ms: int | None = None
+        response_create_lease = AdmissionLease(None)
 
         try:
+            response_create_lease = await self._get_work_admission().acquire_response_create()
             if upstream_stream_transport is not None:
                 stream = core_stream_responses(
                     payload,
@@ -5087,7 +5212,9 @@ class ProxyService:
             try:
                 first = await iterator.__anext__()
             except StopAsyncIteration:
+                response_create_lease.release()
                 return
+            response_create_lease.release()
             first_payload = parse_sse_data_json(first)
             event = parse_sse_event(first)
             event_type = _event_type_from_payload(event, first_payload)
@@ -5188,6 +5315,7 @@ class ProxyService:
                     latency_first_token_ms = int((time.monotonic() - request_started_at) * 1000)
                 yield line
         except ProxyResponseError as exc:
+            response_create_lease.release()
             error = _parse_openai_error(exc.payload)
             status = "error"
             error_code = _normalize_error_code(
@@ -5199,6 +5327,7 @@ class ProxyService:
             settlement.account_health_error = _should_penalize_stream_error(error_code)
             raise
         finally:
+            response_create_lease.release()
             input_tokens = usage.input_tokens if usage else None
             output_tokens = usage.output_tokens if usage else None
             cached_input_tokens = (
@@ -5492,13 +5621,16 @@ class ProxyService:
         force: bool = False,
         timeout_seconds: float | None = None,
     ) -> Account:
-        async with self._repo_factory() as repos:
-            auth_manager = AuthManager(repos.accounts)
-            token = push_token_refresh_timeout_override(timeout_seconds)
-            try:
+        token = push_token_refresh_timeout_override(timeout_seconds)
+        try:
+            async with self._repo_factory() as repos:
+                auth_manager = AuthManager(
+                    repos.accounts,
+                    acquire_refresh_admission=self._get_work_admission().acquire_token_refresh,
+                )
                 return await auth_manager.ensure_fresh(account, force=force)
-            finally:
-                pop_token_refresh_timeout_override(token)
+        finally:
+            pop_token_refresh_timeout_override(token)
 
     async def _ensure_fresh_with_budget(
         self,
@@ -5602,6 +5734,8 @@ class ProxyService:
             error.code if error else None,
             error.type if error else None,
         )
+        if _is_account_neutral_error_code(code):
+            return
         await self._handle_stream_error(
             account,
             _upstream_error_from_openai(error),
@@ -5622,6 +5756,8 @@ class ProxyService:
             http_status=http_status,
             phase="first_event",
         )
+        if _is_account_neutral_error_code(code):
+            return classified
         if classified["failure_class"] == "rate_limit":
             await self._load_balancer.mark_rate_limit(account, error)
         elif classified["failure_class"] == "quota":
@@ -5696,6 +5832,10 @@ def _should_penalize_stream_error(code: str | None) -> bool:
     return code in _ACCOUNT_RECOVERY_RETRY_CODES
 
 
+def _is_account_neutral_error_code(code: str | None) -> bool:
+    return code in {"proxy_overloaded", "proxy_unavailable"}
+
+
 @dataclass
 class _WebSocketRequestState:
     request_id: str
@@ -5724,6 +5864,8 @@ class _WebSocketRequestState:
     error_type_override: str | None = None
     error_param_override: str | None = None
     error_http_status_override: int | None = None
+    response_create_gate_acquired: bool = False
+    response_create_admission: AdmissionLease | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -5973,9 +6115,13 @@ def _release_websocket_response_create_gate(
     request_state: _WebSocketRequestState,
     response_create_gate: asyncio.Semaphore,
 ) -> None:
-    if not request_state.awaiting_response_created:
-        return
+    if request_state.response_create_admission is not None:
+        request_state.response_create_admission.release()
+        request_state.response_create_admission = None
     request_state.awaiting_response_created = False
+    if not request_state.response_create_gate_acquired:
+        return
+    request_state.response_create_gate_acquired = False
     response_create_gate.release()
 
 

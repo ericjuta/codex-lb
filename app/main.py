@@ -329,7 +329,9 @@ def create_app() -> FastAPI:
     app.add_middleware(
         cast(Any, BulkheadMiddleware),
         bulkhead=get_bulkhead(
-            proxy_limit=settings.bulkhead_proxy_limit,
+            proxy_http_limit=settings.bulkhead_proxy_http_limit,
+            proxy_websocket_limit=settings.bulkhead_proxy_websocket_limit,
+            proxy_compact_limit=settings.bulkhead_proxy_compact_limit,
             dashboard_limit=settings.bulkhead_dashboard_limit,
         ),
     )

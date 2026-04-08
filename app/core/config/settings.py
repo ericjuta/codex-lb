@@ -190,9 +190,18 @@ class Settings(BaseSettings):
     # Backpressure
     backpressure_max_concurrent_requests: int = 0  # 0 = unlimited
 
-    bulkhead_proxy_limit: int = 200
-    bulkhead_dashboard_limit: int = 50
+    bulkhead_proxy_limit: int = Field(default=200, ge=0)
+    bulkhead_proxy_http_limit: int | None = Field(default=None, ge=0)
+    bulkhead_proxy_websocket_limit: int | None = Field(default=None, ge=0)
+    bulkhead_proxy_compact_limit: int | None = Field(default=None, ge=0)
+    bulkhead_dashboard_limit: int = Field(default=50, ge=0)
     dashboard_bootstrap_token: str | None = None
+    proxy_token_refresh_limit: int = Field(default=32, ge=0)
+    proxy_upstream_websocket_connect_limit: int = Field(default=64, ge=0)
+    proxy_response_create_limit: int = Field(default=64, ge=0)
+    proxy_compact_response_create_limit: int = Field(default=16, ge=0)
+    proxy_refresh_failure_cooldown_seconds: float = Field(default=5.0, ge=0.0)
+    usage_refresh_auth_failure_cooldown_seconds: float = Field(default=300.0, ge=0.0)
 
     memory_warning_threshold_mb: int = 0
     memory_reject_threshold_mb: int = 0
@@ -352,6 +361,17 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "http_responses_session_bridge_advertise_base_url must be replica-specific for bridge routing"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _normalize_bulkhead_proxy_lane_limits(self) -> "Settings":
+        if self.bulkhead_proxy_http_limit is None:
+            self.bulkhead_proxy_http_limit = self.bulkhead_proxy_limit
+        if self.bulkhead_proxy_websocket_limit is None:
+            self.bulkhead_proxy_websocket_limit = self.bulkhead_proxy_limit
+        if self.bulkhead_proxy_compact_limit is None:
+            http_limit = self.bulkhead_proxy_http_limit
+            self.bulkhead_proxy_compact_limit = 0 if http_limit <= 0 else min(http_limit, 16)
         return self
 
     @model_validator(mode="after")
