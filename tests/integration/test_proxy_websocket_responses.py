@@ -1761,7 +1761,7 @@ def test_backend_responses_websocket_does_not_expire_downstream_while_request_pe
                 ),
             ),
         ],
-        delays=[0.05, 0.0],
+        delays=[0.05, 0.05],
     )
     log_calls: list[dict[str, object]] = []
 
@@ -1770,7 +1770,7 @@ def test_backend_responses_websocket_does_not_expire_downstream_while_request_pe
             return _websocket_settings()
 
     runtime_settings = _websocket_settings(
-        proxy_downstream_websocket_idle_timeout_seconds=0.01,
+        proxy_downstream_websocket_idle_timeout_seconds=0.02,
         stream_idle_timeout_seconds=0.2,
     )
 
