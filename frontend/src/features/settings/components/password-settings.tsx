@@ -37,6 +37,7 @@ export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
   const bootstrapTokenConfigured = useAuthStore((s) => s.bootstrapTokenConfigured);
   const authMode = useAuthStore((s) => s.authMode);
   const passwordManagementEnabled = useAuthStore((s) => s.passwordManagementEnabled);
+  const passwordSessionActive = useAuthStore((s) => s.passwordSessionActive);
   const refreshSession = useAuthStore((s) => s.refreshSession);
 
   const [activeDialog, setActiveDialog] = useState<PasswordDialog>(null);
@@ -134,7 +135,7 @@ export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
         </div>
 
         <div className="flex items-center gap-2">
-          {!passwordManagementEnabled ? null : passwordRequired ? (
+          {!passwordManagementEnabled ? null : passwordRequired && passwordSessionActive ? (
             <>
               <Button
                 type="button"
@@ -157,7 +158,7 @@ export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
                 Remove
               </Button>
             </>
-          ) : (
+          ) : !passwordRequired ? (
             <Button
               type="button"
               size="sm"
@@ -167,7 +168,7 @@ export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
             >
               Set password
             </Button>
-          )}
+          ) : null}
         </div>
         </div>
       </div>
