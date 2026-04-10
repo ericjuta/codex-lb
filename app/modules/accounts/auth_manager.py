@@ -78,29 +78,36 @@ class _RefreshSingleflight:
             if task is None or task.done():
                 task = asyncio.create_task(factory())
                 self._inflight[key] = task
-                task.add_done_callback(lambda done, *, cache_key=key: self._complete(cache_key, done))
+                task.add_done_callback(lambda done, *, cache_key=key: self._schedule_complete(cache_key, done))
         return await asyncio.shield(task)
 
-    def _complete(self, key: _RefreshSingleflightKey, task: asyncio.Task[Account]) -> None:
-        current = self._inflight.get(key)
-        if current is task:
-            self._inflight.pop(key, None)
-        if task.cancelled():
-            self._recent_failures.pop(key, None)
-            return
+    def _schedule_complete(self, key: _RefreshSingleflightKey, task: asyncio.Task[Account]) -> None:
+        asyncio.create_task(self._complete(key, task))
+
+    async def _complete(self, key: _RefreshSingleflightKey, task: asyncio.Task[Account]) -> None:
         try:
-            task.result()
-        except RefreshError as exc:
-            ttl = max(0.0, float(get_settings().proxy_refresh_failure_cooldown_seconds))
-            if ttl > 0:
-                self._recent_failures[key] = (
-                    time.monotonic() + ttl,
-                    (exc.code, exc.message, exc.is_permanent),
-                )
+            async with self._lock:
+                current = self._inflight.get(key)
+                if current is task:
+                    self._inflight.pop(key, None)
+                if task.cancelled():
+                    self._recent_failures.pop(key, None)
+                    return
+                try:
+                    task.result()
+                except RefreshError as exc:
+                    ttl = max(0.0, float(get_settings().proxy_refresh_failure_cooldown_seconds))
+                    if ttl > 0:
+                        self._recent_failures[key] = (
+                            time.monotonic() + ttl,
+                            (exc.code, exc.message, exc.is_permanent),
+                        )
+                except BaseException:
+                    self._recent_failures.pop(key, None)
+                else:
+                    self._recent_failures.pop(key, None)
         except BaseException:
-            self._recent_failures.pop(key, None)
-        else:
-            self._recent_failures.pop(key, None)
+            logger.exception("Refresh singleflight completion cleanup failed key=%s", key)
 
     def _purge_stale_versions(self, account_id: str, *, keep_key: _RefreshSingleflightKey) -> None:
         stale_failures = [key for key in self._recent_failures if key[0] == account_id and key != keep_key]
@@ -146,7 +153,11 @@ class AuthManager:
         except RefreshError as exc:
             if exc.is_permanent:
                 latest = await self._repo.get_by_id(account.id)
-                if latest is not None and latest.refresh_token_encrypted != account.refresh_token_encrypted:
+                if latest is not None and _refresh_token_material_changed(
+                    self._encryptor,
+                    latest.refresh_token_encrypted,
+                    account.refresh_token_encrypted,
+                ):
                     raise RefreshError(exc.code, exc.message, False) from exc
                 reason = PERMANENT_FAILURE_CODES.get(exc.code, exc.message)
                 await self._repo.update_status(account.id, AccountStatus.DEACTIVATED, reason)
@@ -227,12 +238,29 @@ def _chatgpt_account_id_from_id_token(id_token: str) -> str | None:
 
 
 def _refresh_singleflight_key(encryptor: TokenEncryptor, account: Account) -> _RefreshSingleflightKey:
+    return (account.id, _refresh_token_material_fingerprint(encryptor, account.refresh_token_encrypted))
+
+
+def _refresh_token_material_changed(
+    encryptor: TokenEncryptor,
+    latest_refresh_token_encrypted: bytes,
+    current_refresh_token_encrypted: bytes,
+) -> bool:
+    return _refresh_token_material_fingerprint(
+        encryptor,
+        latest_refresh_token_encrypted,
+    ) != _refresh_token_material_fingerprint(
+        encryptor,
+        current_refresh_token_encrypted,
+    )
+
+
+def _refresh_token_material_fingerprint(encryptor: TokenEncryptor, refresh_token_encrypted: bytes) -> str:
     try:
-        refresh_token = encryptor.decrypt(account.refresh_token_encrypted)
-        material = refresh_token.encode("utf-8")
+        material = encryptor.decrypt(refresh_token_encrypted).encode("utf-8")
     except Exception:
-        material = account.refresh_token_encrypted
-    return (account.id, sha256(material).hexdigest())
+        material = refresh_token_encrypted
+    return sha256(material).hexdigest()
 
 
 def _clear_refresh_singleflight_state() -> None:

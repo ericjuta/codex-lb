@@ -58,7 +58,7 @@ class WorkAdmissionController:
         if gate is None:
             return AdmissionLease(None)
         async with gate.lock:
-            if gate.semaphore._value <= 0:
+            if gate.semaphore.locked():
                 message = f"codex-lb is temporarily overloaded during {stage}"
                 logger.warning(
                     "proxy_admission_rejected request_id=%s stage=%s status=429 available=%s message=%s",
@@ -68,7 +68,7 @@ class WorkAdmissionController:
                     message,
                 )
                 raise ProxyResponseError(429, local_overload_error(message))
-            gate.semaphore._value -= 1
+            await gate.semaphore.acquire()
         return AdmissionLease(gate.semaphore)
 
 

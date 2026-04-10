@@ -1654,7 +1654,7 @@ def test_backend_responses_websocket_reclaims_idle_downstream_session_and_upstre
         async def get(self):
             return _websocket_settings()
 
-    runtime_settings = _websocket_settings(proxy_downstream_websocket_idle_timeout_seconds=0.01)
+    runtime_settings = _websocket_settings(proxy_downstream_websocket_idle_timeout_seconds=0.1)
 
     async def allow_firewall(_websocket):
         return None

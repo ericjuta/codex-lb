@@ -336,3 +336,39 @@ async def test_refresh_account_does_not_deactivate_when_repo_has_newer_refresh_t
     assert exc_info.value.is_permanent is False
     assert repo.status_payload is None
     assert stale_account.status == AccountStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_refresh_account_deactivates_when_repo_only_reencrypted_same_refresh_token(monkeypatch):
+    async def _fake_refresh(_: str) -> TokenRefreshResult:
+        raise RefreshError("invalid_grant", "refresh failed", True)
+
+    monkeypatch.setattr(auth_manager_module, "refresh_access_token", _fake_refresh)
+
+    encryptor = TokenEncryptor()
+    stale_refresh = utcnow().replace(year=utcnow().year - 1)
+    stale_account = Account(
+        id="acc_same_token_reencrypted",
+        email="user@example.com",
+        plan_type="plus",
+        access_token_encrypted=encryptor.encrypt("access-old"),
+        refresh_token_encrypted=encryptor.encrypt("refresh-same"),
+        id_token_encrypted=encryptor.encrypt("id-old"),
+        last_refresh=stale_refresh,
+        status=AccountStatus.ACTIVE,
+        deactivation_reason=None,
+    )
+    repo = _DummyRepo()
+    latest_account = Account(
+        **{column.name: getattr(stale_account, column.name) for column in Account.__table__.columns}
+    )
+    latest_account.refresh_token_encrypted = encryptor.encrypt("refresh-same")
+    repo.accounts_by_id[stale_account.id] = latest_account
+    manager = AuthManager(cast(AccountsRepositoryPort, repo))
+
+    with pytest.raises(RefreshError) as exc_info:
+        await manager.refresh_account(stale_account)
+
+    assert exc_info.value.is_permanent is True
+    assert repo.status_payload is not None
+    assert repo.status_payload["status"] == AccountStatus.DEACTIVATED
