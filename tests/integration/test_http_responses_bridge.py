@@ -116,6 +116,22 @@ async def _wait_for_event(event: asyncio.Event, *, timeout: float = _TEST_SYNC_T
     await asyncio.wait_for(event.wait(), timeout=timeout)
 
 
+async def _replace_http_bridge_upstream_reader(
+    service: proxy_module.ProxyService,
+    session: proxy_module._HTTPBridgeSession,
+    upstream: proxy_module.UpstreamResponsesWebSocket,
+) -> None:
+    reader = session.upstream_reader
+    if reader is not None:
+        reader.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await reader
+    session.upstream = upstream
+    session.closed = False
+    session.upstream_control = proxy_module._WebSocketUpstreamControl()
+    session.upstream_reader = asyncio.create_task(service._relay_http_bridge_upstream_messages(session))
+
+
 class _SettingsCache:
     def __init__(self, settings: DashboardSettings) -> None:
         self._settings = settings
@@ -6629,7 +6645,11 @@ async def test_v1_responses_http_bridge_precreated_disconnect_returns_previous_r
     service = get_proxy_service_for_app(app_instance)
     async with service._http_bridge_lock:
         session = next(iter(service._http_bridge_sessions.values()))
-        session.upstream = cast(proxy_module.UpstreamResponsesWebSocket, precreated_close_upstream)
+        await _replace_http_bridge_upstream_reader(
+            service,
+            session,
+            cast(proxy_module.UpstreamResponsesWebSocket, precreated_close_upstream),
+        )
 
     second = await async_client.post(
         "/v1/responses",
