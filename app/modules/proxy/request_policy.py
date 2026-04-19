@@ -33,6 +33,7 @@ _ALLOW_NATIVE_TOOL_TYPES_CONTEXT = {ALLOW_NATIVE_TOOL_TYPES_CONTEXT_KEY: True}
 # accept it as of 2026-04. See https://github.com/Soju06/codex-lb/issues/493
 _UNSUPPORTED_UPSTREAM_REASONING_EFFORTS: frozenset[str] = frozenset({"minimal"})
 _DEFAULT_REASONING_EFFORT_FALLBACK = "low"
+_ALLOW_NATIVE_TOOL_TYPES_CONTEXT = {ALLOW_NATIVE_TOOL_TYPES_CONTEXT_KEY: True}
 
 
 def validate_model_access(api_key: ApiKeyData | None, model: str | None) -> None:
