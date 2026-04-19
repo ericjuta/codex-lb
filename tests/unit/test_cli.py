@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 from typing import Any
@@ -33,6 +34,52 @@ def test_main_passes_timestamped_log_config(monkeypatch):
     assert formatters["access"]["fmt"].startswith("%(asctime)s ")
 
 
+def test_main_passes_worker_and_parser_overrides(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setenv("CODEX_LB_UVICORN_WORKERS", "4")
+    monkeypatch.setenv("CODEX_LB_UVICORN_LOOP", "uvloop")
+    monkeypatch.setenv("CODEX_LB_UVICORN_HTTP", "httptools")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["codex-lb", "--workers", "2", "--loop", "asyncio", "--http", "h11"],
+    )
+    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
+
+    cli.main()
+
+    kwargs = captured["kwargs"]
+    assert kwargs["workers"] == 2
+    assert kwargs["loop"] == "asyncio"
+    assert kwargs["http"] == "h11"
+
+
+def test_main_reads_worker_env_defaults(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setenv("CODEX_LB_UVICORN_WORKERS", "4")
+    monkeypatch.setenv("CODEX_LB_UVICORN_LOOP", "uvloop")
+    monkeypatch.setenv("CODEX_LB_UVICORN_HTTP", "httptools")
+    monkeypatch.setattr(sys, "argv", ["codex-lb"])
+    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
+
+    cli.main()
+
+    kwargs = captured["kwargs"]
+    assert kwargs["workers"] == 4
+    assert kwargs["loop"] == "uvloop"
+    assert kwargs["http"] == "httptools"
+
+
 def test_utc_default_formatter_formats_without_converter_binding_error():
     formatter = UtcDefaultFormatter(
         fmt="%(asctime)s %(message)s",
@@ -51,3 +98,8 @@ def test_utc_default_formatter_formats_without_converter_binding_error():
     record.created = 0.0
 
     assert formatter.format(record) == "1970-01-01T00:00:00Z hello"
+
+
+def test_positive_int_rejects_non_positive():
+    with pytest.raises(argparse.ArgumentTypeError):
+        cli._positive_int("0")
