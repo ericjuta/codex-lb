@@ -2641,7 +2641,8 @@ async def test_stream_responses_auto_transport_prefers_http_for_image_generation
             "instructions": "draw",
             "input": [{"role": "user", "content": "draw"}],
             "tools": [{"type": "image_generation"}],
-        }
+        },
+        context={"allow_native_tool_types": True},
     )
 
     events = [
@@ -4732,6 +4733,7 @@ async def test_prepare_websocket_response_create_request_normalizes_payload_and_
         headers={"session_id": "sid-ignored"},
         codex_session_affinity=False,
         openai_cache_affinity=True,
+        allow_native_tool_types=False,
         sticky_threads_enabled=False,
         openai_cache_affinity_max_age_seconds=300,
         api_key=stale_api_key,
@@ -4757,6 +4759,53 @@ async def test_prepare_websocket_response_create_request_normalizes_payload_and_
     assert normalized_payload["model"] == "gpt-5.2"
     assert normalized_payload["reasoning"] == {"effort": "high"}
     assert normalized_payload["service_tier"] == "priority"
+
+
+@pytest.mark.asyncio
+async def test_prepare_websocket_response_create_request_allows_native_tool_surface(monkeypatch):
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    monkeypatch.setattr(service, "_reserve_websocket_api_key_usage", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_refresh_websocket_api_key_policy", AsyncMock(return_value=None))
+
+    prepared = await service._prepare_websocket_response_create_request(
+        {
+            "type": "response.create",
+            "model": "gpt-5.4",
+            "input": "hello",
+            "tools": [
+                {
+                    "type": "custom",
+                    "name": "exec",
+                    "description": "Run JS",
+                    "format": {"type": "grammar", "syntax": "lark", "definition": "start: /x/"},
+                },
+                {"type": "image_generation"},
+                {"type": "web_search_preview"},
+            ],
+            "tool_choice": "auto",
+        },
+        headers={"session_id": "sid-native"},
+        codex_session_affinity=True,
+        openai_cache_affinity=True,
+        allow_native_tool_types=True,
+        sticky_threads_enabled=False,
+        openai_cache_affinity_max_age_seconds=300,
+        api_key=None,
+    )
+
+    normalized_payload = json.loads(prepared.text_data)
+    assert normalized_payload["tools"] == [
+        {"type": "image_generation"},
+        {"type": "web_search"},
+        {
+            "type": "custom",
+            "name": "exec",
+            "description": "Run JS",
+            "format": {"type": "grammar", "syntax": "lark", "definition": "start: /x/"},
+        },
+    ]
+    assert normalized_payload["tool_choice"] == "auto"
 
 
 @pytest.mark.asyncio
@@ -4801,6 +4850,7 @@ async def test_prepare_websocket_response_create_request_logs_affinity_metadata(
             headers={"session_id": "ws-session-1"},
             codex_session_affinity=True,
             openai_cache_affinity=True,
+            allow_native_tool_types=True,
             sticky_threads_enabled=False,
             openai_cache_affinity_max_age_seconds=300,
             api_key=api_key,
@@ -4861,6 +4911,7 @@ async def test_prepare_websocket_response_create_request_releases_reservation_on
             headers={},
             codex_session_affinity=False,
             openai_cache_affinity=True,
+            allow_native_tool_types=False,
             sticky_threads_enabled=False,
             openai_cache_affinity_max_age_seconds=300,
             api_key=api_key,

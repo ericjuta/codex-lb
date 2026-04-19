@@ -6,13 +6,20 @@ from pydantic import ValidationError
 
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.exceptions import ProxyModelNotAllowed
-from app.core.openai.requests import ResponsesCompactRequest, ResponsesReasoning, ResponsesRequest
+from app.core.openai.requests import (
+    ALLOW_NATIVE_TOOL_TYPES_CONTEXT_KEY,
+    ResponsesCompactRequest,
+    ResponsesReasoning,
+    ResponsesRequest,
+)
 from app.core.openai.v1_requests import V1ResponsesRequest
 from app.core.types import JsonValue
 from app.core.utils.request_id import get_request_id
 from app.modules.api_keys.service import ApiKeyData
 
 logger = logging.getLogger(__name__)
+
+_ALLOW_NATIVE_TOOL_TYPES_CONTEXT = {ALLOW_NATIVE_TOOL_TYPES_CONTEXT_KEY: True}
 
 
 def validate_model_access(api_key: ApiKeyData | None, model: str | None) -> None:
@@ -95,7 +102,11 @@ def normalize_responses_request_payload(
     payload: dict[str, JsonValue],
     *,
     openai_compat: bool,
+    allow_native_tool_types: bool = False,
 ) -> ResponsesRequest:
+    context = _ALLOW_NATIVE_TOOL_TYPES_CONTEXT if allow_native_tool_types else None
     if openai_compat:
-        return V1ResponsesRequest.model_validate(payload).to_responses_request()
-    return ResponsesRequest.model_validate(payload)
+        return V1ResponsesRequest.model_validate(payload, context=context).to_responses_request(
+            allow_native_tool_types=allow_native_tool_types
+        )
+    return ResponsesRequest.model_validate(payload, context=context)

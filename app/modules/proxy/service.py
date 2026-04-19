@@ -161,6 +161,14 @@ from app.modules.usage.updater import UsageUpdater
 
 logger = logging.getLogger(__name__)
 
+
+def normalize_backend_responses_payload(payload: dict[str, JsonValue]) -> ResponsesRequest:
+    return normalize_responses_request_payload(
+        payload,
+        openai_compat=False,
+        allow_native_tool_types=True,
+    )
+
 # Stay below the common 16 MiB websocket message ceiling so we can slim or fail
 # early before upstream closes the session with 1009.
 _UPSTREAM_RESPONSE_CREATE_WARN_BYTES = 12 * 1024 * 1024
@@ -1871,6 +1879,7 @@ class ProxyService:
         *,
         codex_session_affinity: bool,
         openai_cache_affinity: bool,
+        allow_native_tool_types: bool,
         api_key: ApiKeyData | None,
     ) -> None:
         filtered_headers = filter_inbound_websocket_headers(dict(headers))
@@ -2006,6 +2015,7 @@ class ProxyService:
                                     headers=headers,
                                     codex_session_affinity=codex_session_affinity,
                                     openai_cache_affinity=openai_cache_affinity,
+                                    allow_native_tool_types=allow_native_tool_types,
                                     sticky_threads_enabled=sticky_threads_enabled,
                                     openai_cache_affinity_max_age_seconds=openai_cache_affinity_max_age_seconds,
                                     api_key=api_key,
@@ -2324,13 +2334,18 @@ class ProxyService:
         headers: Mapping[str, str],
         codex_session_affinity: bool,
         openai_cache_affinity: bool,
+        allow_native_tool_types: bool,
         sticky_threads_enabled: bool,
         openai_cache_affinity_max_age_seconds: int,
         api_key: ApiKeyData | None,
     ) -> _PreparedWebSocketRequest:
         refreshed_api_key = await self._refresh_websocket_api_key_policy(api_key)
         client_metadata = _response_create_client_metadata(payload, headers=headers)
-        responses_payload = normalize_responses_request_payload(payload, openai_compat=openai_cache_affinity)
+        responses_payload = normalize_responses_request_payload(
+            payload,
+            openai_compat=openai_cache_affinity,
+            allow_native_tool_types=allow_native_tool_types,
+        )
         apply_api_key_enforcement(responses_payload, refreshed_api_key)
         validate_model_access(refreshed_api_key, responses_payload.model)
         reservation = await self._reserve_websocket_api_key_usage(
