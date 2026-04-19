@@ -8,6 +8,11 @@ import uvicorn
 from app.core.runtime_logging import build_log_config
 
 
+def _default_worker_count() -> int:
+    detected = os.cpu_count() or 2
+    return max(2, min(4, detected))
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
@@ -35,7 +40,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workers",
         type=_positive_int,
-        default=_positive_int(_env_str("CODEX_LB_UVICORN_WORKERS", "UVICORN_WORKERS", default="1")),
+        default=_positive_int(
+            _env_str(
+                "CODEX_LB_UVICORN_WORKERS",
+                "UVICORN_WORKERS",
+                default=str(_default_worker_count()),
+            )
+        ),
     )
     parser.add_argument(
         "--loop",

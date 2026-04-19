@@ -132,6 +132,7 @@ class Settings(BaseSettings):
     upstream_compact_timeout_seconds: float | None = None
     upstream_websocket_trust_env: bool = False
     proxy_request_budget_seconds: float = Field(default=600.0, gt=0)
+    http_responses_session_bridge_codex_request_budget_seconds: float = Field(default=180.0, gt=0)
     compact_request_budget_seconds: float = Field(default=75.0, gt=0)
     stream_idle_timeout_seconds: float = 300.0
     proxy_downstream_websocket_idle_timeout_seconds: float = Field(default=120.0, gt=0)
@@ -160,7 +161,7 @@ class Settings(BaseSettings):
     http_responses_session_bridge_enabled: bool = True
     http_responses_session_bridge_idle_ttl_seconds: float = Field(default=120.0, gt=0)
     http_responses_session_bridge_codex_idle_ttl_seconds: float = Field(default=900.0, gt=0)
-    http_responses_session_bridge_codex_prewarm_enabled: bool = False
+    http_responses_session_bridge_codex_prewarm_enabled: bool = True
     http_responses_session_bridge_max_sessions: int = Field(default=256, gt=0)
     http_responses_session_bridge_queue_limit: int = Field(default=8, gt=0)
     http_responses_session_bridge_gateway_safe_mode: bool = False
@@ -247,8 +248,8 @@ class Settings(BaseSettings):
     shutdown_drain_timeout_seconds: int = 30
 
     # HTTP connector limits
-    http_connector_limit: int = 100
-    http_connector_limit_per_host: int = 50
+    http_connector_limit: int = 200
+    http_connector_limit_per_host: int = 100
 
     @field_validator("database_url")
     @classmethod

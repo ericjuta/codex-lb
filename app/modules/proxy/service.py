@@ -628,6 +628,11 @@ class ProxyService:
                     headers=headers,
                     api_key_reservation=api_key_reservation,
                     codex_session_affinity=codex_session_affinity,
+                    proxy_request_budget_seconds=_responses_request_budget_seconds(
+                        get_settings(),
+                        codex_session_affinity=codex_session_affinity,
+                        request_transport=_REQUEST_TRANSPORT_HTTP,
+                    ),
                     downstream_turn_state=downstream_turn_state,
                     request_started_at=request_state.started_at,
                     proxy_api_authorization=proxy_api_authorization,
@@ -1256,6 +1261,7 @@ class ProxyService:
         headers: Mapping[str, str],
         api_key_reservation: ApiKeyUsageReservationData | None,
         codex_session_affinity: bool,
+        proxy_request_budget_seconds: float,
         downstream_turn_state: str | None,
         request_started_at: float,
         proxy_api_authorization: str | None,
@@ -1295,6 +1301,7 @@ class ProxyService:
                 headers=forward_headers,
                 context=forward_context,
                 request_started_at=request_started_at,
+                proxy_request_budget_seconds=proxy_request_budget_seconds,
             ):
                 forwarded_any = True
                 yield event_block
@@ -4682,12 +4689,16 @@ class ProxyService:
         session: "_HTTPBridgeSession",
     ) -> None:
         runtime_settings = get_settings()
+        request_budget_seconds = _http_bridge_session_request_budget_seconds(
+            runtime_settings,
+            session=session,
+        )
         try:
             while True:
                 receive_timeout = await self._next_websocket_receive_timeout(
                     session.pending_requests,
                     pending_lock=session.pending_lock,
-                    proxy_request_budget_seconds=runtime_settings.proxy_request_budget_seconds,
+                    proxy_request_budget_seconds=request_budget_seconds,
                     stream_idle_timeout_seconds=runtime_settings.stream_idle_timeout_seconds,
                 )
                 try:
@@ -6368,7 +6379,12 @@ class ProxyService:
         start = time.monotonic()
         base_settings = get_settings()
         settings = await get_settings_cache().get()
-        deadline = start + base_settings.proxy_request_budget_seconds
+        request_budget_seconds = _responses_request_budget_seconds(
+            base_settings,
+            codex_session_affinity=codex_session_affinity,
+            request_transport=request_transport,
+        )
+        deadline = start + request_budget_seconds
         prefer_earlier_reset = settings.prefer_earlier_reset_accounts
         upstream_stream_transport = _resolve_upstream_stream_transport(settings.upstream_stream_transport)
         had_prompt_cache_key = _prompt_cache_key_from_request_model(payload) is not None
@@ -9134,6 +9150,29 @@ def _serialize_websocket_error_event(payload: dict[str, JsonValue]) -> str:
 
 def _remaining_budget_seconds(deadline: float) -> float:
     return max(0.0, deadline - time.monotonic())
+
+
+def _responses_request_budget_seconds(
+    settings: object,
+    *,
+    codex_session_affinity: bool,
+    request_transport: str,
+) -> float:
+    default_budget = float(getattr(settings, "proxy_request_budget_seconds"))
+    if request_transport != _REQUEST_TRANSPORT_HTTP or not codex_session_affinity:
+        return default_budget
+    codex_budget = getattr(settings, "http_responses_session_bridge_codex_request_budget_seconds", None)
+    if codex_budget is None:
+        return default_budget
+    return min(default_budget, float(codex_budget))
+
+
+def _http_bridge_session_request_budget_seconds(settings: object, *, session: "_HTTPBridgeSession") -> float:
+    return _responses_request_budget_seconds(
+        settings,
+        codex_session_affinity=session.codex_session,
+        request_transport=_REQUEST_TRANSPORT_HTTP,
+    )
 
 
 def _websocket_connect_deadline(request_state: _WebSocketRequestState, budget_seconds: float) -> float:

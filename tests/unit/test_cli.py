@@ -80,6 +80,24 @@ def test_main_reads_worker_env_defaults(monkeypatch):
     assert kwargs["http"] == "httptools"
 
 
+def test_main_uses_dynamic_worker_default(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    monkeypatch.delenv("CODEX_LB_UVICORN_WORKERS", raising=False)
+    monkeypatch.delenv("UVICORN_WORKERS", raising=False)
+    monkeypatch.setattr(cli.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(sys, "argv", ["codex-lb"])
+    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
+
+    cli.main()
+
+    assert captured["kwargs"]["workers"] == 4
+
+
 def test_utc_default_formatter_formats_without_converter_binding_error():
     formatter = UtcDefaultFormatter(
         fmt="%(asctime)s %(message)s",
@@ -103,3 +121,10 @@ def test_utc_default_formatter_formats_without_converter_binding_error():
 def test_positive_int_rejects_non_positive():
     with pytest.raises(argparse.ArgumentTypeError):
         cli._positive_int("0")
+
+
+def test_default_worker_count_clamps_low_and_high(monkeypatch):
+    monkeypatch.setattr(cli.os, "cpu_count", lambda: 1)
+    assert cli._default_worker_count() == 2
+    monkeypatch.setattr(cli.os, "cpu_count", lambda: 64)
+    assert cli._default_worker_count() == 4
