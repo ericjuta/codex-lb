@@ -33,7 +33,7 @@ from app.core.auth.refresh import (
 )
 from app.core.balancer import PERMANENT_FAILURE_CODES, RoutingStrategy, failover_decision
 from app.core.balancer.rendezvous_hash import select_node
-from app.core.balancer.types import ClassifiedFailure, UpstreamError
+from app.core.balancer.types import ClassifiedFailure, FailurePhase, UpstreamError
 from app.core.clients.proxy import (
     ProxyResponseError,
     filter_inbound_headers,
@@ -80,6 +80,8 @@ from app.core.metrics.prometheus import (
     bridge_soft_local_rebind_total,
     continuity_fail_closed_total,
     continuity_owner_resolution_total,
+    client_exposed_errors_total,
+    failover_total,
 )
 from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.models import CompactResponsePayload, OpenAIEvent, OpenAIResponsePayload
@@ -1632,6 +1634,7 @@ class ProxyService:
                             _upstream_error_from_openai(error),
                             code,
                             http_status=exc.status_code,
+                            phase="connect",
                         )
                         if getattr(base_settings, "deterministic_failover_enabled", True):
                             action = failover_decision(
@@ -1650,11 +1653,20 @@ class ProxyService:
                             classified["failure_class"],
                             action,
                         )
+                        _record_failover_metric(
+                            transport="compact",
+                            failure_class=classified["failure_class"],
+                            action=action,
+                        )
                         if action == "failover_next":
                             last_exc = exc
                             excluded_account_ids.add(account.id)
                             transient_exhausted = True
                             break
+                        _record_client_exposed_precommit_error_metric(
+                            transport="compact",
+                            error_code=code,
+                        )
                         await self._settle_compact_api_key_usage(
                             api_key=api_key,
                             api_key_reservation=api_key_reservation,
@@ -1672,6 +1684,11 @@ class ProxyService:
                 request_service_tier=request_service_tier,
             )
             if last_exc is not None:
+                error = _parse_openai_error(last_exc.payload)
+                _record_client_exposed_precommit_error_metric(
+                    transport="compact",
+                    error_code=_normalize_error_code(error.code if error else None, error.type if error else None),
+                )
                 raise last_exc
             raise ProxyResponseError(
                 502,
@@ -2600,6 +2617,10 @@ class ProxyService:
                 error = _parse_openai_error(exc.payload)
                 error_code = _normalize_error_code(error.code if error else None, error.type if error else None)
                 error_message = error.message if error else None
+                _record_client_exposed_precommit_error_metric(
+                    transport="websocket",
+                    error_code=error_code or "upstream_error",
+                )
                 await self._emit_websocket_connect_failure(
                     websocket,
                     client_send_lock=client_send_lock,
@@ -2621,6 +2642,10 @@ class ProxyService:
             error = _parse_openai_error(last_failover_exc.payload)
             error_code = _normalize_error_code(error.code if error else None, error.type if error else None)
             error_message = error.message if error else None
+            _record_client_exposed_precommit_error_metric(
+                transport="websocket",
+                error_code=error_code or "upstream_error",
+            )
             await self._emit_websocket_connect_failure(
                 websocket,
                 client_send_lock=client_send_lock,
@@ -2976,6 +3001,11 @@ class ProxyService:
             attempt,
             failure_class,
             action,
+        )
+        _record_failover_metric(
+            transport="websocket",
+            failure_class=failure_class,
+            action=action,
         )
         return action
 
@@ -5373,6 +5403,7 @@ class ProxyService:
             _upstream_error_from_openai(error),
             error_code,
             http_status=exc.status_code,
+            phase="connect",
         )
 
     async def _relay_upstream_websocket_messages(
@@ -6709,6 +6740,7 @@ class ProxyService:
                                     _upstream_error_from_openai(error),
                                     code,
                                     http_status=tex.status_code,
+                                    phase="connect",
                                 )
                                 if getattr(base_settings, "deterministic_failover_enabled", True):
                                     action = failover_decision(
@@ -6727,10 +6759,19 @@ class ProxyService:
                                     classified["failure_class"],
                                     action,
                                 )
+                                _record_failover_metric(
+                                    transport="stream",
+                                    failure_class=classified["failure_class"],
+                                    action=action,
+                                )
                                 if action == "failover_next":
                                     last_transient_exc = tex
                                     excluded_account_ids.add(account.id)
                                     break
+                                _record_client_exposed_precommit_error_metric(
+                                    transport="stream",
+                                    error_code=code,
+                                )
                                 raise
                             transient_retries += 1
                             error_code = tex.code if isinstance(tex, _TransientStreamError) else "server_error"
@@ -7702,12 +7743,13 @@ class ProxyService:
         error: UpstreamError,
         code: str,
         http_status: int | None = None,
+        phase: FailurePhase = "first_event",
     ) -> ClassifiedFailure:
         classified = classify_upstream_failure(
             error_code=code,
             error=error,
             http_status=http_status,
-            phase="first_event",
+            phase=phase,
         )
         if _is_account_neutral_error_code(code):
             return classified
@@ -7717,6 +7759,21 @@ class ProxyService:
             await self._load_balancer.mark_quota_exceeded(account, error)
         elif code in PERMANENT_FAILURE_CODES:
             await self._load_balancer.mark_permanent_failure(account, code)
+        elif phase == "connect" and http_status == 403:
+            cooldown_seconds = max(0.0, float(get_settings().proxy_connect_forbidden_cooldown_seconds))
+            await self._load_balancer.mark_temporary_cooldown(
+                account,
+                cooldown_seconds,
+            )
+            logger.info(
+                "Applied connect-phase forbidden cooldown account_id=%s request_id=%s code=%s "
+                "status=%s cooldown_seconds=%.1f",
+                account.id,
+                get_request_id(),
+                code,
+                http_status,
+                cooldown_seconds,
+            )
         else:
             await self._load_balancer.record_error(account)
             logger.info(
@@ -9984,6 +10041,23 @@ def _http_bridge_request_stage(
     ):
         return "follow_up"
     return "first_turn"
+
+
+def _record_failover_metric(*, transport: str, failure_class: str, action: str) -> None:
+    if PROMETHEUS_AVAILABLE and failover_total is not None:
+        failover_total.labels(
+            transport=transport,
+            failure_class=failure_class,
+            action=action,
+        ).inc()
+
+
+def _record_client_exposed_precommit_error_metric(*, transport: str, error_code: str) -> None:
+    if PROMETHEUS_AVAILABLE and client_exposed_errors_total is not None:
+        client_exposed_errors_total.labels(
+            transport=transport,
+            error_code=error_code,
+        ).inc()
 
 
 def _record_same_account_takeover(*, preferred_account_id: str | None, selected_account_id: str | None) -> None:

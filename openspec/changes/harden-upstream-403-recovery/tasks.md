@@ -7,13 +7,13 @@
 
 ## 2. Runtime
 
-- [ ] 2.1 Classify ambiguous connect-phase upstream `403` failures as retryable account-scoped failures without allowing silent HTTP downgrade.
-- [ ] 2.2 Add a short runtime cooldown path for connect-phase ambiguous `403` failures and apply it to pre-commit Responses failover paths.
-- [ ] 2.3 Add model-registry refresh cooldown, success clearing, and structured failure attribution for ambiguous `401`/`403` responses.
-- [ ] 2.4 Add Prometheus counters for failover decisions, drain transitions, and client-exposed pre-commit errors when metrics are enabled.
+- [x] 2.1 Classify ambiguous connect-phase upstream `403` failures as retryable account-scoped failures without allowing silent HTTP downgrade.
+- [x] 2.2 Add a short runtime cooldown path for connect-phase ambiguous `403` failures and apply it to pre-commit Responses failover paths.
+- [x] 2.3 Add model-registry refresh cooldown, success clearing, and structured failure attribution for ambiguous `401`/`403` responses.
+- [x] 2.4 Add Prometheus counters for failover decisions, drain transitions, and client-exposed pre-commit errors when metrics are enabled.
 
 ## 3. Validation
 
-- [ ] 3.1 Add or update unit/integration tests for connect-phase `403` failover, cooldown behavior, model-refresh cooldown, and metrics wiring.
-- [ ] 3.2 Run targeted validation for the affected test suites.
+- [x] 3.1 Add or update unit/integration tests for connect-phase `403` failover, cooldown behavior, model-refresh cooldown, and metrics wiring.
+- [x] 3.2 Run targeted validation for the affected test suites.
 - [ ] 3.3 Rebuild the local Docker image/container and verify the updated runtime starts cleanly.

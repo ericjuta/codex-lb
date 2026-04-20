@@ -702,6 +702,7 @@ def _make_proxy_settings(*, log_proxy_service_tier_trace: bool) -> SimpleNamespa
         proxy_response_create_limit=64,
         proxy_compact_response_create_limit=16,
         proxy_admission_wait_timeout_seconds=10.0,
+        proxy_connect_forbidden_cooldown_seconds=30.0,
     )
 
 
@@ -4064,6 +4065,8 @@ async def test_connect_proxy_websocket_maps_budget_exhaustion_to_timeout_error(m
 
 @pytest.mark.asyncio
 async def test_connect_proxy_websocket_surfaces_retry_handshake_error(monkeypatch):
+    settings = _make_proxy_settings(log_proxy_service_tier_trace=False)
+    settings.deterministic_failover_enabled = False
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     account = _make_account("acc_ws_retry_error")
@@ -4071,6 +4074,8 @@ async def test_connect_proxy_websocket_surfaces_retry_handshake_error(monkeypatc
     second_exc = proxy_module.ProxyResponseError(403, openai_error("forbidden", "denied"))
     handle_connect_error = AsyncMock()
 
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
     monkeypatch.setattr(
         service._load_balancer,
         "select_account",
@@ -4116,6 +4121,78 @@ async def test_connect_proxy_websocket_surfaces_retry_handshake_error(monkeypatc
     assert sent_payload["status"] == 403
     assert sent_payload["error"]["code"] == "forbidden"
     assert request_logs.calls[0]["error_code"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_connect_proxy_websocket_fails_over_on_handshake_forbidden_with_cooldown(monkeypatch):
+    settings = _make_proxy_settings(log_proxy_service_tier_trace=False)
+    settings.proxy_connect_forbidden_cooldown_seconds = 12.5
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    account_a = _make_account("acc_ws_failover_forbidden_a")
+    account_b = _make_account("acc_ws_failover_forbidden_b")
+    upstream = SimpleNamespace()
+
+    select_account = AsyncMock(
+        side_effect=[
+            AccountSelection(account=account_a, error_message=None),
+            AccountSelection(account=account_b, error_message=None),
+        ]
+    )
+    mark_temporary_cooldown = AsyncMock()
+    record_error = AsyncMock()
+    first_handshake_error = proxy_module.ProxyResponseError(
+        403,
+        openai_error("forbidden", "Forbidden"),
+    )
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(service._load_balancer, "select_account", select_account)
+    monkeypatch.setattr(service._load_balancer, "mark_temporary_cooldown", mark_temporary_cooldown)
+    monkeypatch.setattr(service._load_balancer, "record_error", record_error)
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=[account_a, account_b]))
+    monkeypatch.setattr(service, "_open_upstream_websocket", AsyncMock(side_effect=[first_handshake_error, upstream]))
+    monkeypatch.setattr(service, "_release_websocket_reservation", AsyncMock())
+
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="ws_req_failover_handshake_403",
+        model="gpt-5.4",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+    )
+
+    websocket_send = AsyncMock()
+    websocket = cast(WebSocket, SimpleNamespace(send_text=websocket_send))
+    selected_account, selected_upstream = await service._connect_proxy_websocket(
+        {},
+        sticky_key=None,
+        sticky_kind=None,
+        prefer_earlier_reset=False,
+        routing_strategy="usage_weighted",
+        model="gpt-5.4",
+        request_state=request_state,
+        api_key=None,
+        client_send_lock=anyio.Lock(),
+        websocket=websocket,
+    )
+
+    assert selected_account == account_b
+    assert selected_upstream is upstream
+    assert select_account.await_count == 2
+    first_call, second_call = select_account.await_args_list
+    assert first_call.kwargs["exclude_account_ids"] == set()
+    assert second_call.kwargs["exclude_account_ids"] == {account_a.id}
+    mark_temporary_cooldown.assert_awaited_once()
+    cooldown_call = mark_temporary_cooldown.await_args
+    assert cooldown_call is not None
+    assert cooldown_call.args[0] == account_a
+    assert cooldown_call.args[1] == 12.5
+    record_error.assert_not_awaited()
+    websocket_send.assert_not_awaited()
+    assert request_logs.calls == []
 
 
 @pytest.mark.asyncio

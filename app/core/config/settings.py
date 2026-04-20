@@ -235,7 +235,9 @@ class Settings(BaseSettings):
     proxy_compact_response_create_limit: int = Field(default=64, ge=0)
     proxy_admission_wait_timeout_seconds: float = Field(default=10.0, gt=0)
     proxy_refresh_failure_cooldown_seconds: float = Field(default=5.0, ge=0.0)
+    proxy_connect_forbidden_cooldown_seconds: float = Field(default=30.0, ge=0.0)
     usage_refresh_auth_failure_cooldown_seconds: float = Field(default=300.0, ge=0.0)
+    model_registry_refresh_auth_failure_cooldown_seconds: float = Field(default=300.0, ge=0.0)
 
     memory_warning_threshold_mb: int = 0
     memory_reject_threshold_mb: int = 0
