@@ -59,6 +59,23 @@ uvx codex-lb
 
 Open [localhost:2455](http://localhost:2455) → Add account → Done.
 
+### Run the Current Checkout in Docker
+
+If you want to run the checked-out repo instead of the published image, or need a direct-container fallback to `docker compose`, use the same `.env.local` config as the `server` service:
+
+```bash
+docker build -t codex-lb-server .
+docker volume create codex-lb-data
+docker run -d --name codex-lb-direct \
+  --restart unless-stopped \
+  --env-file .env.local \
+  -p 127.0.0.1:2455:2455 \
+  -p 127.0.0.1:1455:1455 \
+  -v codex-lb-data:/var/lib/codex-lb \
+  codex-lb-server \
+  fastapi run app/main.py --host 0.0.0.0 --port 2455 --reload
+```
+
 ## Remote Setup
 
 When accessing the dashboard remotely for the first time, a bootstrap token is required to set the initial password.
