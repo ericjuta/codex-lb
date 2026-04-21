@@ -76,6 +76,27 @@ docker run -d --name codex-lb-direct \
   fastapi run app/main.py --host 0.0.0.0 --port 2455 --reload
 ```
 
+### Expose It on Tailnet HTTPS with Tailscale
+
+Once the local service is up on `127.0.0.1:2455`, you can publish the same port over tailnet-only HTTPS:
+
+```bash
+tailscale serve --bg 2455
+tailscale serve status
+```
+
+That creates a tailnet HTTPS listener like:
+
+```text
+https://<your-node>.<your-tailnet>.ts.net:2455 -> http://127.0.0.1:2455
+```
+
+If you need to remove or replace that dedicated `:2455` mapping later:
+
+```bash
+tailscale serve clear 2455
+```
+
 ## Remote Setup
 
 When accessing the dashboard remotely for the first time, a bootstrap token is required to set the initial password.
