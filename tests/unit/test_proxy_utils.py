@@ -5040,6 +5040,7 @@ async def test_prepare_websocket_response_create_request_does_not_infer_previous
         headers={"session_id": "turn_ws_scope", "x-codex-turn-state": "turn_ws_scope"},
         codex_session_affinity=False,
         openai_cache_affinity=True,
+        allow_native_tool_types=False,
         sticky_threads_enabled=False,
         openai_cache_affinity_max_age_seconds=300,
         api_key=api_key,
@@ -6590,6 +6591,7 @@ async def test_proxy_responses_websocket_transparent_replay_preserves_sticky_thr
         {},
         codex_session_affinity=False,
         openai_cache_affinity=False,
+        allow_native_tool_types=False,
         api_key=None,
     )
 
@@ -6821,6 +6823,7 @@ async def test_proxy_responses_websocket_replays_precreated_request_after_upstre
         {"x-codex-turn-state": "turn_race_ws"},
         codex_session_affinity=True,
         openai_cache_affinity=True,
+        allow_native_tool_types=False,
         api_key=None,
     )
 
@@ -6985,6 +6988,7 @@ async def test_proxy_responses_websocket_prefers_previous_response_owner_from_re
         {"session_id": "sid_owner"},
         codex_session_affinity=False,
         openai_cache_affinity=False,
+        allow_native_tool_types=False,
         api_key=None,
     )
 
@@ -7134,6 +7138,7 @@ async def test_proxy_responses_websocket_uses_turn_state_as_owner_lookup_session
         {"x-codex-turn-state": "turn_scope_owner"},
         codex_session_affinity=False,
         openai_cache_affinity=False,
+        allow_native_tool_types=False,
         api_key=None,
     )
 
@@ -7283,6 +7288,7 @@ async def test_proxy_responses_websocket_prefers_turn_state_over_session_for_own
         {"session_id": "shared_session_owner", "x-codex-turn-state": "turn_scope_owner"},
         codex_session_affinity=False,
         openai_cache_affinity=False,
+        allow_native_tool_types=False,
         api_key=None,
     )
 
@@ -7357,6 +7363,7 @@ async def test_proxy_responses_websocket_previous_response_owner_lookup_failure_
         {"session_id": "sid_owner_lookup_failure"},
         codex_session_affinity=False,
         openai_cache_affinity=False,
+        allow_native_tool_types=False,
         api_key=None,
     )
 
