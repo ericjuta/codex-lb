@@ -58,19 +58,46 @@ def _proxy_error_message(exc: proxy_module.ProxyResponseError) -> str | None:
     return exc.payload["error"].get("message")
 
 
-def test_filter_inbound_headers_strips_auth_and_account():
+def test_filter_inbound_headers_strips_auth_account_and_framing_headers():
     headers = {
+        "Accept": "text/event-stream",
+        "Accept-Encoding": "gzip, br",
         "Authorization": "Bearer x",
         "chatgpt-account-id": "acc_1",
+        "Connection": "keep-alive, X-Remove-Me",
         "Content-Encoding": "gzip",
+        "Content-Length": "123",
         "Content-Type": "application/json",
+        "Cookie": "dashboard=secret",
+        "Host": "lb.example",
+        "Keep-Alive": "timeout=5",
+        "Proxy-Connection": "keep-alive",
+        "TE": "trailers",
+        "Trailer": "Expires",
+        "Transfer-Encoding": "chunked",
+        "Upgrade": "websocket",
+        "X-Remove-Me": "connection-token",
         "X-Request-Id": "req_1",
     }
     filtered = filter_inbound_headers(headers)
+    lowered = {key.lower() for key in filtered}
+    assert "accept" not in lowered
+    assert "accept-encoding" not in lowered
     assert "Authorization" not in filtered
     assert "chatgpt-account-id" not in filtered
-    assert filtered["Content-Encoding"] == "gzip"
-    assert filtered["Content-Type"] == "application/json"
+    assert "connection" not in lowered
+    assert "content-encoding" not in lowered
+    assert "content-length" not in lowered
+    assert "content-type" not in lowered
+    assert "cookie" not in lowered
+    assert "host" not in lowered
+    assert "keep-alive" not in lowered
+    assert "proxy-connection" not in lowered
+    assert "te" not in lowered
+    assert "trailer" not in lowered
+    assert "transfer-encoding" not in lowered
+    assert "upgrade" not in lowered
+    assert "x-remove-me" not in lowered
     assert filtered["X-Request-Id"] == "req_1"
 
 
@@ -80,6 +107,7 @@ def test_filter_inbound_headers_strips_proxy_identity_headers():
         "X-Forwarded-Proto": "https",
         "X-Real-IP": "1.2.3.4",
         "Forwarded": "for=1.2.3.4;proto=https",
+        "CDN-Loop": "cloudflare",
         "CF-Connecting-IP": "1.2.3.4",
         "CF-Ray": "ray123",
         "True-Client-IP": "1.2.3.4",
@@ -93,11 +121,34 @@ def test_filter_inbound_headers_strips_proxy_identity_headers():
     assert "X-Forwarded-Proto" not in filtered
     assert "X-Real-IP" not in filtered
     assert "Forwarded" not in filtered
+    assert "CDN-Loop" not in filtered
     assert "CF-Connecting-IP" not in filtered
     assert "CF-Ray" not in filtered
     assert "True-Client-IP" not in filtered
     assert filtered["User-Agent"] == "codex-test"
-    assert filtered["Accept"] == "text/event-stream"
+
+
+def test_build_upstream_headers_recomputes_dropped_content_headers():
+    filtered = filter_inbound_headers(
+        {
+            "accept": "text/event-stream",
+            "content-type": "text/plain",
+            "transfer-encoding": "chunked",
+            "user-agent": "codex-test",
+        }
+    )
+
+    upstream = _build_upstream_headers(filtered, "access-token", "acc_1", accept="application/json")
+    lowered = {key.lower() for key in upstream}
+
+    assert "transfer-encoding" not in lowered
+    assert "accept" in lowered
+    assert "content-type" in lowered
+    assert upstream["Accept"] == "application/json"
+    assert upstream["Content-Type"] == "application/json"
+    assert upstream["Authorization"] == "Bearer access-token"
+    assert upstream["chatgpt-account-id"] == "acc_1"
+    assert upstream["user-agent"] == "codex-test"
 
 
 def test_build_upstream_headers_overrides_auth():

@@ -62,11 +62,26 @@ from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import format_sse_event
 
 IGNORE_INBOUND_HEADERS = {
+    "accept",
+    "accept-encoding",
     "authorization",
     "chatgpt-account-id",
+    "connection",
+    "content-encoding",
     "content-length",
+    "content-type",
+    "cookie",
+    "cdn-loop",
     "host",
     "forwarded",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
     "x-real-ip",
     "true-client-ip",
 }
@@ -350,8 +365,22 @@ def _should_drop_inbound_header(name: str) -> bool:
     return False
 
 
+def _connection_header_tokens(headers: Mapping[str, str]) -> set[str]:
+    tokens: set[str] = set()
+    for key, value in headers.items():
+        if key.lower() != "connection":
+            continue
+        tokens.update(token.strip().lower() for token in value.split(",") if token.strip())
+    return tokens
+
+
 def filter_inbound_headers(headers: Mapping[str, str]) -> dict[str, str]:
-    return {key: value for key, value in headers.items() if not _should_drop_inbound_header(key)}
+    connection_tokens = _connection_header_tokens(headers)
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in connection_tokens and not _should_drop_inbound_header(key)
+    }
 
 
 def _build_upstream_headers(
