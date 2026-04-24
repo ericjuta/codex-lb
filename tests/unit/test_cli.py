@@ -21,6 +21,7 @@ def test_main_passes_timestamped_log_config(monkeypatch):
         captured["kwargs"] = kwargs
 
     monkeypatch.setattr(sys, "argv", ["codex-lb"])
+    monkeypatch.setattr(cli, "_http_responses_session_bridge_enabled", lambda: True)
     monkeypatch.setattr(cli.uvicorn, "run", fake_run)
 
     cli.main()
@@ -49,6 +50,7 @@ def test_main_passes_worker_and_parser_overrides(monkeypatch):
         "argv",
         ["codex-lb", "--workers", "2", "--loop", "asyncio", "--http", "h11"],
     )
+    monkeypatch.setattr(cli, "_http_responses_session_bridge_enabled", lambda: False)
     monkeypatch.setattr(cli.uvicorn, "run", fake_run)
 
     cli.main()
@@ -59,7 +61,7 @@ def test_main_passes_worker_and_parser_overrides(monkeypatch):
     assert kwargs["http"] == "h11"
 
 
-def test_main_reads_worker_env_defaults(monkeypatch):
+def test_main_reads_worker_env_defaults_when_bridge_disabled(monkeypatch):
     captured: dict[str, Any] = {}
 
     def fake_run(*args, **kwargs):
@@ -70,6 +72,7 @@ def test_main_reads_worker_env_defaults(monkeypatch):
     monkeypatch.setenv("CODEX_LB_UVICORN_LOOP", "uvloop")
     monkeypatch.setenv("CODEX_LB_UVICORN_HTTP", "httptools")
     monkeypatch.setattr(sys, "argv", ["codex-lb"])
+    monkeypatch.setattr(cli, "_http_responses_session_bridge_enabled", lambda: False)
     monkeypatch.setattr(cli.uvicorn, "run", fake_run)
 
     cli.main()
@@ -80,7 +83,7 @@ def test_main_reads_worker_env_defaults(monkeypatch):
     assert kwargs["http"] == "httptools"
 
 
-def test_main_uses_dynamic_worker_default(monkeypatch):
+def test_main_uses_bridge_safe_worker_default(monkeypatch):
     captured: dict[str, Any] = {}
 
     def fake_run(*args, **kwargs):
@@ -89,13 +92,25 @@ def test_main_uses_dynamic_worker_default(monkeypatch):
 
     monkeypatch.delenv("CODEX_LB_UVICORN_WORKERS", raising=False)
     monkeypatch.delenv("UVICORN_WORKERS", raising=False)
-    monkeypatch.setattr(cli.os, "cpu_count", lambda: 8)
     monkeypatch.setattr(sys, "argv", ["codex-lb"])
+    monkeypatch.setattr(cli, "_http_responses_session_bridge_enabled", lambda: True)
     monkeypatch.setattr(cli.uvicorn, "run", fake_run)
 
     cli.main()
 
-    assert captured["kwargs"]["workers"] == 4
+    assert captured["kwargs"]["workers"] == 1
+
+
+def test_main_rejects_multi_worker_when_bridge_enabled(monkeypatch):
+    monkeypatch.setenv("CODEX_LB_UVICORN_WORKERS", "2")
+    monkeypatch.setattr(sys, "argv", ["codex-lb"])
+    monkeypatch.setattr(cli, "_http_responses_session_bridge_enabled", lambda: True)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert "CODEX_LB_UVICORN_WORKERS > 1" in str(exc_info.value)
+    assert "HTTP responses session bridge" in str(exc_info.value)
 
 
 def test_utc_default_formatter_formats_without_converter_binding_error():
@@ -123,8 +138,5 @@ def test_positive_int_rejects_non_positive():
         cli._positive_int("0")
 
 
-def test_default_worker_count_clamps_low_and_high(monkeypatch):
-    monkeypatch.setattr(cli.os, "cpu_count", lambda: 1)
-    assert cli._default_worker_count() == 2
-    monkeypatch.setattr(cli.os, "cpu_count", lambda: 64)
-    assert cli._default_worker_count() == 4
+def test_default_worker_count_is_bridge_safe():
+    assert cli._default_worker_count() == 1

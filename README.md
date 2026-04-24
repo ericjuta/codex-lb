@@ -53,11 +53,11 @@ docker volume create codex-lb-data
 docker run -d --name codex-lb-direct \
   --restart unless-stopped \
   --env-file .env.local \
+  -e CODEX_LB_UVICORN_WORKERS=1 \
   -p 127.0.0.1:2455:2455 \
   -p 127.0.0.1:1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
-  codex-lb-server \
-  python -m app.cli --host 0.0.0.0 --port 2455
+  codex-lb-server
 ```
 
 ### Expose It on Tailnet HTTPS with Tailscale

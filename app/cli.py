@@ -9,8 +9,13 @@ from app.core.runtime_logging import build_log_config
 
 
 def _default_worker_count() -> int:
-    detected = os.cpu_count() or 2
-    return max(2, min(4, detected))
+    return 1
+
+
+def _http_responses_session_bridge_enabled() -> bool:
+    from app.core.config.settings import get_settings
+
+    return get_settings().http_responses_session_bridge_enabled
 
 
 def _positive_int(value: str) -> int:
@@ -69,6 +74,12 @@ def main() -> None:
         raise SystemExit("Both --ssl-certfile and --ssl-keyfile must be provided together.")
 
     os.environ["PORT"] = str(args.port)
+    if args.workers > 1 and _http_responses_session_bridge_enabled():
+        raise SystemExit(
+            "CODEX_LB_UVICORN_WORKERS > 1 is not supported while "
+            "CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_ENABLED=true. "
+            "Set CODEX_LB_UVICORN_WORKERS=1 or disable the HTTP responses session bridge."
+        )
 
     uvicorn.run(
         "app.main:app",
