@@ -1266,6 +1266,7 @@ def _allowed_models_for_api_key(api_key: ApiKeyData | None) -> set[str] | None:
 
 def _to_codex_model_entry(model: UpstreamModel) -> CodexModelEntry:
     raw = model.raw
+    effective_context_window = _effective_context_window(model)
 
     extra: dict[str, JsonValue] = {}
     skip_keys = {
@@ -1291,6 +1292,9 @@ def _to_codex_model_entry(model: UpstreamModel) -> CodexModelEntry:
     for key, value in raw.items():
         if key not in skip_keys and isinstance(value, (bool, int, float, str, type(None), list, Mapping)):
             extra[key] = value
+    if effective_context_window != model.context_window:
+        if isinstance(extra.get("max_context_window"), int):
+            extra["max_context_window"] = effective_context_window
 
     return CodexModelEntry(
         slug=model.slug,
@@ -1309,7 +1313,7 @@ def _to_codex_model_entry(model: UpstreamModel) -> CodexModelEntry:
         support_verbosity=model.support_verbosity,
         default_verbosity=model.default_verbosity,
         supports_parallel_tool_calls=model.supports_parallel_tool_calls,
-        context_window=_effective_context_window(model),
+        context_window=effective_context_window,
         input_modalities=list(model.input_modalities),
         available_in_plans=sorted(model.available_in_plans),
         prefer_websockets=model.prefer_websockets,
