@@ -1,3 +1,5 @@
+## ADDED Requirements
+
 ### Requirement: Direct Docker respects addressable worker-pool startup
 
 The direct Docker helper MUST rebuild the current checkout and recreate the local container without forcing the runtime worker count to one. If the env file configures multiple workers while the HTTP responses session bridge is enabled, the image startup path MUST use the addressable bridge worker pool rather than a plain multi-worker Uvicorn process.

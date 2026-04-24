@@ -1,3 +1,5 @@
+## ADDED Requirements
+
 ### Requirement: Bridge-enabled worker pools use addressable bridge owners
 
 When the HTTP responses session bridge is enabled and the configured runtime worker count is greater than one, the service MUST NOT start a plain Uvicorn multi-worker process group with a shared bridge instance id. It MUST instead start a front listener plus single-worker backend processes where each backend has a unique bridge instance id and an advertised endpoint that can route owner handoff to that worker-local bridge session map.
