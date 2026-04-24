@@ -57,7 +57,7 @@ docker run -d --name codex-lb-direct \
   -p 127.0.0.1:1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
   codex-lb-server \
-  fastapi run app/main.py --host 0.0.0.0 --port 2455 --reload
+  python -m app.cli --host 0.0.0.0 --port 2455
 ```
 
 ### Expose It on Tailnet HTTPS with Tailscale
