@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from dataclasses import dataclass
 
 import uvicorn
 
@@ -16,6 +17,17 @@ def _http_responses_session_bridge_enabled() -> bool:
     from app.core.config.settings import get_settings
 
     return get_settings().http_responses_session_bridge_enabled
+
+
+@dataclass(frozen=True)
+class RuntimeOptions:
+    host: str
+    port: int
+    workers: int
+    loop: str
+    http: str
+    ssl_certfile: str | None
+    ssl_keyfile: str | None
 
 
 def _positive_int(value: str) -> int:
@@ -75,11 +87,21 @@ def main() -> None:
 
     os.environ["PORT"] = str(args.port)
     if args.workers > 1 and _http_responses_session_bridge_enabled():
-        raise SystemExit(
-            "CODEX_LB_UVICORN_WORKERS > 1 is not supported while "
-            "CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_ENABLED=true. "
-            "Set CODEX_LB_UVICORN_WORKERS=1 or disable the HTTP responses session bridge."
+        from app.core.runtime.bridge_worker_pool import run_bridge_worker_pool
+
+        run_bridge_worker_pool(
+            RuntimeOptions(
+                host=args.host,
+                port=args.port,
+                workers=args.workers,
+                loop=args.loop,
+                http=args.http,
+                ssl_certfile=args.ssl_certfile,
+                ssl_keyfile=args.ssl_keyfile,
+            ),
+            log_config=build_log_config(),
         )
+        return
 
     uvicorn.run(
         "app.main:app",

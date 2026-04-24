@@ -51,14 +51,16 @@ If you want to run the checked-out repo instead of the published image, or need 
 docker build -t codex-lb-server .
 docker volume create codex-lb-data
 docker run -d --name codex-lb-direct \
+  --hostname codex-lb-direct \
   --restart unless-stopped \
   --env-file .env.local \
-  -e CODEX_LB_UVICORN_WORKERS=1 \
   -p 127.0.0.1:2455:2455 \
   -p 127.0.0.1:1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
   codex-lb-server
 ```
+
+If `CODEX_LB_UVICORN_WORKERS` is greater than one while the HTTP responses session bridge is enabled, startup uses an addressable bridge worker pool: one front listener on `:2455` and one single-worker backend process per bridge owner. Keep the direct container hostname stable so bridge owner ids stay stable across rebuilds.
 
 ### Expose It on Tailnet HTTPS with Tailscale
 

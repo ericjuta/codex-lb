@@ -101,16 +101,30 @@ def test_main_uses_bridge_safe_worker_default(monkeypatch):
     assert captured["kwargs"]["workers"] == 1
 
 
-def test_main_rejects_multi_worker_when_bridge_enabled(monkeypatch):
+def test_main_uses_addressable_worker_pool_when_bridge_enabled(monkeypatch):
+    from app.core.runtime import bridge_worker_pool
+
+    captured: dict[str, Any] = {}
+
+    def fake_worker_pool(options, *, log_config):
+        captured["options"] = options
+        captured["log_config"] = log_config
+
     monkeypatch.setenv("CODEX_LB_UVICORN_WORKERS", "2")
+    monkeypatch.setenv("CODEX_LB_UVICORN_LOOP", "uvloop")
+    monkeypatch.setenv("CODEX_LB_UVICORN_HTTP", "httptools")
     monkeypatch.setattr(sys, "argv", ["codex-lb"])
     monkeypatch.setattr(cli, "_http_responses_session_bridge_enabled", lambda: True)
+    monkeypatch.setattr(bridge_worker_pool, "run_bridge_worker_pool", fake_worker_pool)
+    monkeypatch.setattr(cli.uvicorn, "run", lambda *_, **__: pytest.fail("uvicorn.run should not be called"))
 
-    with pytest.raises(SystemExit) as exc_info:
-        cli.main()
+    cli.main()
 
-    assert "CODEX_LB_UVICORN_WORKERS > 1" in str(exc_info.value)
-    assert "HTTP responses session bridge" in str(exc_info.value)
+    options = captured["options"]
+    assert options.workers == 2
+    assert options.loop == "uvloop"
+    assert options.http == "httptools"
+    assert isinstance(captured["log_config"], dict)
 
 
 def test_utc_default_formatter_formats_without_converter_binding_error():
