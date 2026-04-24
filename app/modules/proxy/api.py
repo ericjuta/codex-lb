@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -1212,15 +1214,17 @@ async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
 
     if not models:
         await _release_reservation(reservation)
-        return JSONResponse(content=CodexModelsResponse(models=[]).model_dump(mode="json"))
+        payload = CodexModelsResponse(models=[]).model_dump(mode="json")
+        return JSONResponse(content=payload, headers={"ETag": _response_etag(payload)})
 
     entries: list[CodexModelEntry] = []
     for slug, model in models.items():
         if not is_public_model(model, allowed_models):
             continue
         entries.append(_to_codex_model_entry(model))
+    payload = CodexModelsResponse(models=entries).model_dump(mode="json")
     await _release_reservation(reservation)
-    return JSONResponse(content=CodexModelsResponse(models=entries).model_dump(mode="json"))
+    return JSONResponse(content=payload, headers={"ETag": _response_etag(payload)})
 
 
 async def _build_models_response(api_key: ApiKeyData | None) -> Response:
@@ -1238,7 +1242,8 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
 
     if not models:
         await _release_reservation(reservation)
-        return JSONResponse(content=ModelListResponse(data=[]).model_dump(mode="json"))
+        payload = ModelListResponse(data=[]).model_dump(mode="json")
+        return JSONResponse(content=payload, headers={"ETag": _response_etag(payload)})
 
     items: list[ModelListItem] = []
     for slug, model in models.items():
@@ -1252,8 +1257,15 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
                 metadata=_to_model_metadata(model),
             )
         )
+    payload = ModelListResponse(data=items).model_dump(mode="json")
     await _release_reservation(reservation)
-    return JSONResponse(content=ModelListResponse(data=items).model_dump(mode="json"))
+    return JSONResponse(content=payload, headers={"ETag": _response_etag(payload)})
+
+
+def _response_etag(payload: JsonValue) -> str:
+    serialized = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+    return f'W/"{digest}"'
 
 
 def _allowed_models_for_api_key(api_key: ApiKeyData | None) -> set[str] | None:

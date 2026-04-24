@@ -323,3 +323,44 @@ async def test_model_context_window_no_override(async_client, monkeypatch):
     assert resp.status_code == 200
     entry = next(m for m in resp.json()["models"] if m["slug"] == "gpt-5.4")
     assert entry["context_window"] == 272000
+
+
+@pytest.mark.asyncio
+async def test_model_list_etag_tracks_payload(async_client, monkeypatch):
+    registry = get_model_registry()
+    models = [
+        _make_upstream_model(
+            "gpt-5.4",
+            raw={
+                "shell_type": "shell_command",
+                "visibility": "list",
+                "max_context_window": 272000,
+                "effective_context_window_percent": 95,
+            },
+        )
+    ]
+    await registry.update({"pro": models})
+
+    from app.core.config.settings import get_settings
+    from app.modules.proxy import api as proxy_api_module
+
+    original_settings = get_settings()
+
+    without_override = original_settings.model_copy(update={"model_context_window_overrides": {}})
+    monkeypatch.setattr(proxy_api_module, "get_settings", lambda: without_override)
+    baseline = await async_client.get("/backend-api/codex/models")
+    assert baseline.status_code == 200
+    baseline_etag = baseline.headers.get("etag")
+    assert baseline_etag
+
+    repeated = await async_client.get("/backend-api/codex/models")
+    assert repeated.status_code == 200
+    assert repeated.headers.get("etag") == baseline_etag
+
+    with_override = original_settings.model_copy(update={"model_context_window_overrides": {"gpt-5.4": 515000}})
+    monkeypatch.setattr(proxy_api_module, "get_settings", lambda: with_override)
+    overridden = await async_client.get("/backend-api/codex/models")
+    assert overridden.status_code == 200
+    overridden_etag = overridden.headers.get("etag")
+    assert overridden_etag
+    assert overridden_etag != baseline_etag
