@@ -468,3 +468,4 @@ docker compose watch
 uv sync && cd frontend && bun install && cd ..
 uv run fastapi run app/main.py --reload        # backend :2455
 cd frontend && bun run dev                     # frontend :5173
+```
