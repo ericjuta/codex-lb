@@ -204,7 +204,8 @@ def images_generation_to_responses_request(
             "tool_choice": {"type": "image_generation"},
             "stream": True,
             "store": False,
-        }
+        },
+        context={"allow_native_tool_types": True},
     )
 
 
@@ -274,7 +275,8 @@ def images_edit_to_responses_request(
             # always True regardless of what the public client requested.
             "stream": True,
             "store": False,
-        }
+        },
+        context={"allow_native_tool_types": True},
     )
 
 
