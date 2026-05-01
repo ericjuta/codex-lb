@@ -2327,7 +2327,7 @@ class ProxyService:
         *,
         codex_session_affinity: bool,
         openai_cache_affinity: bool,
-        allow_native_tool_types: bool,
+        allow_native_tool_types: bool = True,
         api_key: ApiKeyData | None,
     ) -> None:
         filtered_headers = filter_inbound_websocket_headers(dict(headers))
@@ -2782,7 +2782,7 @@ class ProxyService:
         headers: Mapping[str, str],
         codex_session_affinity: bool,
         openai_cache_affinity: bool,
-        allow_native_tool_types: bool,
+        allow_native_tool_types: bool = True,
         sticky_threads_enabled: bool,
         openai_cache_affinity_max_age_seconds: int,
         api_key: ApiKeyData | None,
