@@ -8,7 +8,12 @@ from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.exceptions import ProxyModelNotAllowed
 from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.model_registry import ModelRegistry, get_model_registry
-from app.core.openai.requests import ResponsesCompactRequest, ResponsesReasoning, ResponsesRequest
+from app.core.openai.requests import (
+    ALLOW_NATIVE_TOOL_TYPES_CONTEXT_KEY,
+    ResponsesCompactRequest,
+    ResponsesReasoning,
+    ResponsesRequest,
+)
 from app.core.openai.strict_schema import (
     validate_strict_function_tool_schema,
     validate_strict_json_schema,
@@ -20,6 +25,8 @@ from app.core.utils.request_id import get_request_id
 from app.modules.api_keys.service import ApiKeyData
 
 logger = logging.getLogger(__name__)
+
+_ALLOW_NATIVE_TOOL_TYPES_CONTEXT = {ALLOW_NATIVE_TOOL_TYPES_CONTEXT_KEY: True}
 
 # Reasoning efforts that the upstream ChatGPT/Codex backend silently drops
 # (the WebSocket never produces ``response.completed``). When a client sends
@@ -214,12 +221,16 @@ def normalize_responses_request_payload(
     *,
     openai_compat: bool,
     codex_tool_compat: bool = False,
+    allow_native_tool_types: bool = False,
 ) -> ResponsesRequest:
     effective_payload = _sanitize_backend_codex_tool_advertisements(payload) if codex_tool_compat else payload
+    context = _ALLOW_NATIVE_TOOL_TYPES_CONTEXT if allow_native_tool_types else None
     if openai_compat:
-        responses = V1ResponsesRequest.model_validate(effective_payload).to_responses_request()
+        responses = V1ResponsesRequest.model_validate(effective_payload, context=context).to_responses_request(
+            allow_native_tool_types=allow_native_tool_types
+        )
     else:
-        responses = ResponsesRequest.model_validate(effective_payload)
+        responses = ResponsesRequest.model_validate(effective_payload, context=context)
     enforce_strict_text_format(responses)
     enforce_strict_function_tools_format(responses.tools)
     return responses
@@ -235,7 +246,7 @@ def _sanitize_backend_codex_tool_advertisements(payload: dict[str, JsonValue]) -
     sanitized_tools: list[JsonValue] = []
     removed_any = False
     for tool in tools_value:
-        if is_json_mapping(tool) and tool.get("type") == "image_generation":
+        if is_json_mapping(tool) and tool.get("type") == "image_generation" and "output_format" in tool:
             removed_any = True
             continue
         sanitized_tools.append(tool)

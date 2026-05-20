@@ -23,6 +23,7 @@ from app.db.models import (
     RequestLog,
 )
 from app.db.session import sqlite_writer_section
+from app.db.sqlite_retry import session_uses_sqlite
 from app.modules.api_keys.limit_windows import advance_limit_reset
 
 
@@ -132,6 +133,9 @@ class ApiKeysRepository:
 
         account_costs.sort(key=lambda item: item.cost_usd, reverse=True)
         return account_costs
+
+    def uses_sqlite(self) -> bool:
+        return session_uses_sqlite(self._session)
 
     def _select_api_key(self):
         return (
