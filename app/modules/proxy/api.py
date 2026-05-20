@@ -116,6 +116,17 @@ from app.modules.usage.repository import UsageRepository
 
 logger = logging.getLogger(__name__)
 
+
+def _validate_backend_responses_payload(
+    request: Request,
+    payload: dict[str, JsonValue],
+) -> ResponsesRequest | JSONResponse:
+    try:
+        return proxy_service_module.normalize_backend_responses_payload(payload)
+    except ValidationError as exc:
+        return _logged_error_json_response(request, 400, openai_validation_error(exc))
+
+
 _PUBLIC_RESPONSE_OUTPUT_ITEM_TYPES = frozenset(
     {
         "message",
@@ -393,13 +404,16 @@ async def wham_agent_identities_jwks(
 )
 async def responses(
     request: Request,
-    payload: ResponsesRequest = Body(...),
+    payload: dict[str, JsonValue] = Body(...),
     context: ProxyContext = Depends(get_proxy_context),
     api_key: ApiKeyData | None = Security(validate_proxy_api_key),
 ) -> Response:
+    responses_payload = _validate_backend_responses_payload(request, payload)
+    if isinstance(responses_payload, JSONResponse):
+        return responses_payload
     return await _stream_responses(
         request,
-        payload,
+        responses_payload,
         context,
         api_key,
         codex_session_affinity=True,
@@ -431,6 +445,7 @@ async def responses_websocket(
         forwarded_headers,
         codex_session_affinity=True,
         openai_cache_affinity=True,
+        allow_native_tool_types=True,
         api_key=api_key,
     )
 
@@ -500,12 +515,15 @@ async def v1_responses(
 )
 async def internal_bridge_responses(
     request: Request,
-    payload: ResponsesRequest = Body(...),
+    payload: dict[str, JsonValue] = Body(...),
     context: ProxyContext = Depends(get_proxy_context),
 ) -> Response:
+    responses_payload = _validate_backend_responses_payload(request, payload)
+    if isinstance(responses_payload, JSONResponse):
+        return responses_payload
     forwarded_request_context, internal_error = parse_forwarded_request(
         request.headers,
-        payload=payload,
+        payload=responses_payload,
         current_instance=get_settings().http_responses_session_bridge_instance_id,
     )
     if internal_error is not None or forwarded_request_context is None:
@@ -518,7 +536,7 @@ async def internal_bridge_responses(
     forwarded_headers = _strip_internal_bridge_headers(request.headers)
     return await _stream_responses(
         request,
-        payload,
+        responses_payload,
         context,
         api_key,
         codex_session_affinity=forwarded_request_context.context.codex_session_affinity,
@@ -564,6 +582,7 @@ async def v1_responses_websocket(
         forwarded_headers,
         codex_session_affinity=False,
         openai_cache_affinity=True,
+        allow_native_tool_types=True,
         api_key=api_key,
     )
 
@@ -1580,6 +1599,7 @@ def _codex_model_visibility_allowed_models(api_key: ApiKeyData | None) -> set[st
 
 def _to_codex_model_entry(model: UpstreamModel, *, visibility: str | None = None) -> CodexModelEntry:
     raw = model.raw
+    effective_context_window = _effective_context_window(model)
 
     extra: dict[str, JsonValue] = {}
     skip_keys = {
@@ -1606,10 +1626,7 @@ def _to_codex_model_entry(model: UpstreamModel, *, visibility: str | None = None
         if key not in skip_keys and isinstance(value, (bool, int, float, str, type(None), list, Mapping)):
             extra[key] = value
 
-    # If context_window is overridden, also override max_context_window to match
-    effective_cw = _effective_context_window(model)
-    if effective_cw != model.context_window and "max_context_window" in extra:
-        extra["max_context_window"] = effective_cw
+    _align_codex_context_window_extra(model, extra, effective_context_window)
 
     return CodexModelEntry(
         slug=model.slug,
@@ -1628,7 +1645,7 @@ def _to_codex_model_entry(model: UpstreamModel, *, visibility: str | None = None
         support_verbosity=model.support_verbosity,
         default_verbosity=model.default_verbosity,
         supports_parallel_tool_calls=model.supports_parallel_tool_calls,
-        context_window=_effective_context_window(model),
+        context_window=effective_context_window,
         input_modalities=list(model.input_modalities),
         available_in_plans=sorted(model.available_in_plans),
         prefer_websockets=model.prefer_websockets,
@@ -1640,6 +1657,18 @@ def _to_codex_model_entry(model: UpstreamModel, *, visibility: str | None = None
 def _effective_context_window(model: UpstreamModel) -> int:
     overrides = get_settings().model_context_window_overrides
     return overrides.get(model.slug, model.context_window)
+
+
+def _align_codex_context_window_extra(
+    model: UpstreamModel,
+    extra: dict[str, JsonValue],
+    effective_context_window: int,
+) -> None:
+    if model.slug not in get_settings().model_context_window_overrides:
+        return
+    extra["max_context_window"] = effective_context_window
+    if isinstance(model.raw.get("auto_compact_token_limit"), int):
+        extra["auto_compact_token_limit"] = (effective_context_window * 9) // 10
 
 
 def _v1_full_context_window(model: UpstreamModel) -> int:
@@ -1882,14 +1911,17 @@ async def _stream_responses(
             request,
             startup_error,
             headers=rate_limit_headers,
+            previous_response_id=payload.previous_response_id,
         )
     stream = _normalize_public_responses_stream(
-        _stream_response_error_events(
+        _stream_proxy_errors_as_response_failed(
             stream,
             owns_reservation=owns_reservation,
             reservation=reservation,
+            previous_response_id=payload.previous_response_id,
         ),
         enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+        previous_response_id=payload.previous_response_id,
     )
     return StreamingResponse(
         inject_sse_keepalives(
@@ -1960,21 +1992,25 @@ async def _collect_responses(
             suppress_text_done_events=suppress_text_done_events,
         )
     try:
-        response_payload = await _collect_responses_payload(stream)
+        response_payload = await _collect_responses_payload(stream, previous_response_id=payload.previous_response_id)
     except ProxyResponseError as exc:
         await _release_reservation(reservation)
         error = _parse_error_envelope(exc.payload)
-        status_code, error = _mask_previous_response_not_found_error(error, default_status=exc.status_code)
+        error, masked = _mask_previous_response_not_found_error_envelope(error, payload.previous_response_id)
         return _logged_error_json_response(
             request,
-            status_code,
+            _status_for_error(error.error) if masked else exc.status_code,
             error.model_dump(mode="json", exclude_none=True),
             headers=rate_limit_headers,
         )
     if isinstance(response_payload, OpenAIResponsePayload):
         if response_payload.status == "failed":
             error_payload = _error_envelope_from_response(response_payload.error)
-            status_code, error_payload = _mask_previous_response_not_found_error(error_payload)
+            error_payload, _ = _mask_previous_response_not_found_error_envelope(
+                error_payload,
+                payload.previous_response_id,
+            )
+            status_code = _status_for_error(error_payload.error)
             return _logged_error_json_response(
                 request,
                 status_code,
@@ -1985,7 +2021,11 @@ async def _collect_responses(
             content=response_payload.model_dump(mode="json", exclude_none=True),
             headers={**turn_state_headers, **rate_limit_headers},
         )
-    status_code, response_payload = _mask_previous_response_not_found_error(response_payload)
+    response_payload, _ = _mask_previous_response_not_found_error_envelope(
+        response_payload,
+        payload.previous_response_id,
+    )
+    status_code = _status_for_error(response_payload.error)
     return _logged_error_json_response(
         request,
         status_code,
@@ -2074,10 +2114,9 @@ async def _compact_responses(
         )
     except ProxyResponseError as exc:
         error = _parse_error_envelope(exc.payload)
-        status_code, error = _mask_previous_response_not_found_error(error, default_status=exc.status_code)
         return _logged_error_json_response(
             request,
-            status_code,
+            exc.status_code,
             error.model_dump(mode="json", exclude_none=True),
             headers=rate_limit_headers,
         )
@@ -2189,16 +2228,12 @@ async def _prepend_first_task(first_task: asyncio.Task[str], stream: AsyncIterat
         yield line
 
 
-async def _stream_proxy_errors_as_response_failed(stream: AsyncIterator[str]) -> AsyncIterator[str]:
-    async for line in _stream_response_error_events(stream, owns_reservation=False, reservation=None):
-        yield line
-
-
-async def _stream_response_error_events(
+async def _stream_proxy_errors_as_response_failed(
     stream: AsyncIterator[str],
     *,
-    owns_reservation: bool,
-    reservation: ApiKeyUsageReservationData | None,
+    owns_reservation: bool = False,
+    reservation: ApiKeyUsageReservationData | None = None,
+    previous_response_id: str | None = None,
 ) -> AsyncIterator[str]:
     try:
         async for line in stream:
@@ -2210,7 +2245,7 @@ async def _stream_response_error_events(
             except Exception:
                 logger.warning("Failed to release stream reservation after upstream proxy error", exc_info=True)
         envelope = _parse_error_envelope(exc.payload)
-        _, envelope = _mask_previous_response_not_found_error(envelope, default_status=exc.status_code)
+        envelope, _ = _mask_previous_response_not_found_error_envelope(envelope, previous_response_id)
         error = envelope.error
         yield format_sse_event(
             response_failed_event(
@@ -2227,20 +2262,21 @@ def _stream_startup_error_response(
     error: ProxyResponseError | OpenAIErrorEnvelopeModel,
     *,
     headers: Mapping[str, str],
+    previous_response_id: str | None = None,
 ) -> JSONResponse:
     if isinstance(error, ProxyResponseError):
         envelope = _parse_error_envelope(error.payload)
-        status_code, envelope = _mask_previous_response_not_found_error(envelope, default_status=error.status_code)
+        envelope, masked = _mask_previous_response_not_found_error_envelope(envelope, previous_response_id)
         return _logged_error_json_response(
             request,
-            status_code,
+            _status_for_error(envelope.error) if masked else error.status_code,
             envelope.model_dump(mode="json", exclude_none=True),
             headers=headers,
         )
-    status_code, envelope = _mask_previous_response_not_found_error(error)
+    envelope, _ = _mask_previous_response_not_found_error_envelope(error, previous_response_id)
     return _logged_error_json_response(
         request,
-        status_code,
+        _status_for_error(envelope.error),
         envelope.model_dump(mode="json", exclude_none=True),
         headers=headers,
     )
@@ -2474,7 +2510,11 @@ def _compact_request_service_tier(payload: ResponsesCompactRequest) -> str | Non
     return stripped or None
 
 
-async def _collect_responses_payload(stream: AsyncIterator[str]) -> OpenAIResponseResult:
+async def _collect_responses_payload(
+    stream: AsyncIterator[str],
+    *,
+    previous_response_id: str | None = None,
+) -> OpenAIResponseResult:
     output_items: dict[int, dict[str, JsonValue]] = {}
     terminal_result: OpenAIResponseResult | None = None
     contract_violation_kind: str | None = None
@@ -2489,7 +2529,10 @@ async def _collect_responses_payload(stream: AsyncIterator[str]) -> OpenAIRespon
         if terminal_result is not None:
             continue
         if event_type == "error":
-            terminal_result = _parse_event_error_envelope(payload)
+            terminal_result, _ = _mask_previous_response_not_found_error_envelope(
+                _parse_event_error_envelope(payload),
+                previous_response_id,
+            )
             continue
         if event_type == "response.failed":
             response = payload.get("response")
@@ -2497,7 +2540,10 @@ async def _collect_responses_payload(stream: AsyncIterator[str]) -> OpenAIRespon
                 error_value = response.get("error")
                 if isinstance(error_value, dict):
                     try:
-                        terminal_result = OpenAIErrorEnvelopeModel.model_validate({"error": error_value})
+                        terminal_result, _ = _mask_previous_response_not_found_error_envelope(
+                            OpenAIErrorEnvelopeModel.model_validate({"error": error_value}),
+                            previous_response_id,
+                        )
                         continue
                     except ValidationError:
                         terminal_result = _default_error_envelope()
@@ -2505,6 +2551,10 @@ async def _collect_responses_payload(stream: AsyncIterator[str]) -> OpenAIRespon
                 parsed = parse_response_payload(response)
                 if parsed is not None and parsed.error is not None:
                     terminal_result = _error_envelope_from_response(parsed.error)
+                    terminal_result, _ = _mask_previous_response_not_found_error_envelope(
+                        terminal_result,
+                        previous_response_id,
+                    )
                     continue
             terminal_result = _default_error_envelope()
             continue
@@ -2519,6 +2569,13 @@ async def _collect_responses_payload(stream: AsyncIterator[str]) -> OpenAIRespon
                 else:
                     parsed = None
                 if parsed is not None:
+                    masked_error, masked = _mask_previous_response_not_found_response_payload(
+                        parsed,
+                        previous_response_id,
+                    )
+                    if masked:
+                        terminal_result = masked_error
+                        continue
                     terminal_result = parsed
                     continue
             error_kind = contract_violation_kind or "invalid_json"
@@ -2570,6 +2627,7 @@ async def _normalize_public_responses_stream(
     stream: AsyncIterator[str],
     *,
     enforce_openai_sdk_contract: bool = True,
+    previous_response_id: str | None = None,
 ) -> AsyncIterator[str]:
     """Normalize the upstream SSE event stream for the public /v1 surface.
 
@@ -2584,6 +2642,9 @@ async def _normalize_public_responses_stream(
             which feeds the Codex CLI), all events including codex.* are
             forwarded verbatim and no synthesis happens — the Codex CLI
             relies on the upstream's native event shape.
+        previous_response_id: when present, mask upstream
+            previous_response_not_found errors into a stream_incomplete
+            terminal event for response-continuity consumers.
     """
     terminal_seen = False
     done_seen = False
@@ -2672,6 +2733,7 @@ async def _normalize_public_responses_stream(
         normalized_payload, violation_kind = _normalize_public_stream_payload(
             payload,
             enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+            previous_response_id=previous_response_id,
         )
         if violation_kind is not None:
             contract_violation_kind = contract_violation_kind or violation_kind
@@ -2966,6 +3028,7 @@ def _normalize_public_stream_payload(
     payload: dict[str, JsonValue],
     *,
     enforce_openai_sdk_contract: bool = True,
+    previous_response_id: str | None = None,
 ) -> tuple[dict[str, JsonValue] | None, str | None]:
     event_type = payload.get("type")
     # Drop Codex-internal vendor events on the public /v1 surface only. The
@@ -2979,20 +3042,13 @@ def _normalize_public_stream_payload(
     # they continue to forward unchanged.
     if enforce_openai_sdk_contract and isinstance(event_type, str) and event_type.startswith("codex."):
         return None, None
-    if event_type == "error":
-        parsed_error = _parse_event_error_envelope(payload)
-        if _is_previous_response_not_found_public_error(parsed_error.error):
-            return (
-                cast(
-                    dict[str, JsonValue],
-                    response_failed_event(
-                        "stream_incomplete",
-                        "Upstream websocket closed before response.completed",
-                    ),
-                ),
-                None,
-            )
-        return payload, None
+    if event_type in {"error", "response.failed"}:
+        rewritten_payload = _rewrite_previous_response_not_found_stream_payload(
+            payload,
+            previous_response_id=previous_response_id,
+        )
+        if rewritten_payload is not None:
+            return rewritten_payload, None
     if event_type in ("response.completed", "response.incomplete"):
         response = payload.get("response")
         if not is_json_mapping(response):
@@ -3334,43 +3390,95 @@ def _error_envelope_from_response(error_value: OpenAIError | None) -> OpenAIErro
     return OpenAIErrorEnvelopeModel(error=error_value)
 
 
-def _is_previous_response_not_found_public_error(error_value: OpenAIError | None) -> bool:
-    if error_value is None:
-        return False
-    if error_value.code == "previous_response_not_found":
-        return True
-    message = error_value.message or ""
-    normalized_message = " ".join(message.lower().split())
-    return (
-        error_value.code == "invalid_request_error"
-        and error_value.param == "previous_response_id"
-        and "previous response" in normalized_message
-        and "not found" in normalized_message
+_PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE: Final = "Upstream websocket closed before response.completed"
+
+
+def _mask_previous_response_not_found_error_envelope(
+    envelope: OpenAIErrorEnvelopeModel,
+    previous_response_id: str | None,
+) -> tuple[OpenAIErrorEnvelopeModel, bool]:
+    if not _should_mask_previous_response_not_found_error(envelope.error, previous_response_id):
+        return envelope, False
+    return _previous_response_stream_incomplete_error_envelope(), True
+
+
+def _mask_previous_response_not_found_response_payload(
+    response: OpenAIResponsePayload,
+    previous_response_id: str | None,
+) -> tuple[OpenAIErrorEnvelopeModel | None, bool]:
+    if response.status != "failed":
+        return None, False
+    if not _should_mask_previous_response_not_found_error(response.error, previous_response_id):
+        return None, False
+    return _previous_response_stream_incomplete_error_envelope(), True
+
+
+def _rewrite_previous_response_not_found_stream_payload(
+    payload: dict[str, JsonValue],
+    *,
+    previous_response_id: str | None,
+) -> dict[str, JsonValue] | None:
+    event_type = payload.get("type")
+    if event_type == "response.failed":
+        response = payload.get("response")
+        if not isinstance(response, dict):
+            return None
+        error_value = response.get("error")
+        if not isinstance(error_value, dict):
+            return None
+        try:
+            envelope = OpenAIErrorEnvelopeModel.model_validate({"error": error_value})
+        except ValidationError:
+            return None
+    else:
+        envelope = _parse_event_error_envelope(payload)
+    if not _should_mask_previous_response_not_found_error(envelope.error, previous_response_id):
+        return None
+
+    response_id = None
+    response = payload.get("response")
+    if isinstance(response, dict):
+        raw_response_id = response.get("id")
+        if isinstance(raw_response_id, str) and raw_response_id:
+            response_id = raw_response_id
+
+    return cast(
+        dict[str, JsonValue],
+        response_failed_event(
+            "stream_incomplete",
+            _PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
+            error_type="server_error",
+            response_id=response_id,
+        ),
     )
 
 
-def _mask_previous_response_not_found_error(
-    envelope: OpenAIErrorEnvelopeModel,
-    *,
-    default_status: int | None = None,
-) -> tuple[int, OpenAIErrorEnvelopeModel]:
-    if not _is_previous_response_not_found_public_error(envelope.error):
-        return default_status if default_status is not None else _status_for_error(envelope.error), envelope
-    return (
-        502,
-        OpenAIErrorEnvelopeModel(
-            error=OpenAIError(
-                message="Upstream websocket closed before response.completed",
-                type="server_error",
-                code="stream_incomplete",
-            )
-        ),
+def _previous_response_stream_incomplete_error_envelope() -> OpenAIErrorEnvelopeModel:
+    return OpenAIErrorEnvelopeModel(
+        error=OpenAIError(
+            message=_PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
+            type="server_error",
+            code="stream_incomplete",
+        )
+    )
+
+
+def _should_mask_previous_response_not_found_error(
+    error_value: OpenAIError | None,
+    previous_response_id: str | None,
+) -> bool:
+    if previous_response_id is None or error_value is None:
+        return False
+    return proxy_service_module._is_previous_response_not_found_error(
+        code=error_value.code,
+        param=error_value.param,
+        message=error_value.message,
     )
 
 
 def _status_for_error(error_value: OpenAIError | None) -> int:
     if error_value and error_value.code == "previous_response_not_found":
-        return 502
+        return 400
     if error_value and error_value.code in _UNAVAILABLE_SELECTION_ERROR_CODES:
         return 503
     if error_value and error_value.code in {"rate_limit_exceeded", "usage_limit_reached", "insufficient_quota"}:

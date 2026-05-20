@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import json
+import logging
 import secrets
 import uuid
 from dataclasses import dataclass, field
@@ -9,8 +9,6 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from math import ceil
 from typing import Protocol
-
-from sqlalchemy.exc import OperationalError
 
 from app.core.auth.api_key_cache import get_api_key_cache
 from app.core.cache.invalidation import NAMESPACE_API_KEY, get_cache_invalidation_poller
@@ -21,7 +19,7 @@ from app.core.usage.pricing import (
 )
 from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import Account, ApiKey, ApiKeyLimit, LimitType, LimitWindow
-from app.db.session import sqlite_writer_section
+from app.db.sqlite_retry import retry_sqlite_lock
 from app.modules.api_keys.limit_windows import advance_limit_reset, next_limit_reset
 from app.modules.api_keys.repository import (
     _UNSET,
@@ -34,8 +32,6 @@ from app.modules.api_keys.repository import (
     _Unset,
 )
 
-_SQLITE_BUSY_RETRY_ATTEMPTS = 4
-_SQLITE_BUSY_RETRY_BASE_SECONDS = 0.1
 _SPARKLINE_DAYS = 7
 _DETAIL_BUCKET_SECONDS = 3600
 API_KEY_USAGE_RESERVATION_MAX_TOKEN_BUDGET = 8_192
@@ -43,6 +39,7 @@ API_KEY_USAGE_RESERVATION_DEFAULT_INPUT_TOKENS = API_KEY_USAGE_RESERVATION_MAX_T
 API_KEY_USAGE_RESERVATION_DEFAULT_OUTPUT_TOKENS = 2_048
 _API_KEY_USAGE_RESERVATION_UNKNOWN_MODEL_MICRODOLLARS = 2_000_000
 _API_KEY_USAGE_RESERVATION_UNKNOWN_MODEL_BASE_TOKENS = API_KEY_USAGE_RESERVATION_MAX_TOKEN_BUDGET * 2
+logger = logging.getLogger(__name__)
 
 
 class ApiKeysRepositoryProtocol(Protocol):
@@ -187,16 +184,7 @@ class ApiKeyInvalidError(ValueError):
 
 
 class ApiKeyValidationError(ValueError):
-    """Raised when api_keys service input fails domain validation.
-
-    Subclasses ValueError so existing transitive callers that catch
-    ``ValueError`` continue to work, but lets API routes catch the
-    typed exception explicitly so unrelated programming errors that
-    happen to surface as ``ValueError`` are no longer silently
-    converted into 4xx client responses (#619).
-    """
-
-    pass
+    """Raised when api_keys service input fails domain validation."""
 
 
 class ApiKeyRateLimitExceededError(ValueError):
@@ -574,32 +562,8 @@ class ApiKeysService:
         request_service_tier: str | None = None,
         request_usage_budget: ApiKeyRequestUsageBudget | None = None,
     ) -> ApiKeyUsageReservationData:
-        for attempt in range(_SQLITE_BUSY_RETRY_ATTEMPTS):
-            try:
-                return await self._enforce_limits_for_request_once(
-                    key_id,
-                    request_model=request_model,
-                    request_service_tier=request_service_tier,
-                    request_usage_budget=request_usage_budget,
-                )
-            except OperationalError as exc:
-                await self._repository.rollback()
-                if not _is_sqlite_database_locked(exc) or attempt == _SQLITE_BUSY_RETRY_ATTEMPTS - 1:
-                    raise
-                await asyncio.sleep(_SQLITE_BUSY_RETRY_BASE_SECONDS * (2**attempt))
-
-        raise RuntimeError("unreachable")
-
-    async def _enforce_limits_for_request_once(
-        self,
-        key_id: str,
-        *,
-        request_model: str | None,
-        request_service_tier: str | None,
-        request_usage_budget: ApiKeyRequestUsageBudget | None,
-    ) -> ApiKeyUsageReservationData:
-        now = utcnow()
-        async with sqlite_writer_section():
+        async def _enforce_once() -> ApiKeyUsageReservationData:
+            now = utcnow()
             row = _ensure_valid_api_key_row(await self._repository.get_by_id(key_id))
             if row.expires_at is not None and row.expires_at < now:
                 raise ApiKeyInvalidError("API key has expired")
@@ -651,10 +615,18 @@ class ApiKeysService:
                 await self._repository.rollback()
                 raise
 
-        return ApiKeyUsageReservationData(
-            reservation_id=reservation_id,
-            key_id=key_id,
-            model=request_model or "",
+            return ApiKeyUsageReservationData(
+                reservation_id=reservation_id,
+                key_id=key_id,
+                model=request_model or "",
+            )
+
+        return await retry_sqlite_lock(
+            _enforce_once,
+            operation_name="api_key_usage_reservation",
+            on_retry=self._repository.rollback,
+            logger=logger,
+            serialize_writes=_repository_uses_sqlite(self._repository),
         )
 
     async def finalize_usage_reservation(
@@ -667,25 +639,15 @@ class ApiKeysService:
         cached_input_tokens: int = 0,
         service_tier: str | None = None,
     ) -> None:
-        for attempt in range(_SQLITE_BUSY_RETRY_ATTEMPTS):
-            try:
-                await self._settle_usage_reservation(
-                    reservation_id,
-                    model=model,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cached_input_tokens=cached_input_tokens,
-                    service_tier=service_tier,
-                    status="finalized",
-                )
-                return
-            except OperationalError as exc:
-                await self._repository.rollback()
-                if not _is_sqlite_database_locked(exc) or attempt == _SQLITE_BUSY_RETRY_ATTEMPTS - 1:
-                    raise
-                await asyncio.sleep(_SQLITE_BUSY_RETRY_BASE_SECONDS * (2**attempt))
-
-        raise RuntimeError("unreachable")
+        await self._settle_usage_reservation(
+            reservation_id,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_input_tokens=cached_input_tokens,
+            service_tier=service_tier,
+            status="finalized",
+        )
 
     async def fail_usage_reservation(
         self,
@@ -697,25 +659,15 @@ class ApiKeysService:
         cached_input_tokens: int | None = None,
         service_tier: str | None = None,
     ) -> None:
-        for attempt in range(_SQLITE_BUSY_RETRY_ATTEMPTS):
-            try:
-                await self._settle_usage_reservation(
-                    reservation_id,
-                    model=model,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cached_input_tokens=cached_input_tokens,
-                    service_tier=service_tier,
-                    status="failed",
-                )
-                return
-            except OperationalError as exc:
-                await self._repository.rollback()
-                if not _is_sqlite_database_locked(exc) or attempt == _SQLITE_BUSY_RETRY_ATTEMPTS - 1:
-                    raise
-                await asyncio.sleep(_SQLITE_BUSY_RETRY_BASE_SECONDS * (2**attempt))
-
-        raise RuntimeError("unreachable")
+        await self._settle_usage_reservation(
+            reservation_id,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_input_tokens=cached_input_tokens,
+            service_tier=service_tier,
+            status="failed",
+        )
 
     async def _settle_usage_reservation(
         self,
@@ -728,32 +680,32 @@ class ApiKeysService:
         service_tier: str | None,
         status: str,
     ) -> None:
-        async with sqlite_writer_section():
+        async def _settle_once() -> str | None:
             reservation = await self._repository.get_usage_reservation(reservation_id)
             if reservation is None or reservation.status != "reserved":
-                return
-
-            claimed = await self._repository.transition_usage_reservation_status(
-                reservation_id,
-                expected_status="reserved",
-                new_status="settling",
-            )
-            if not claimed:
-                await self._repository.rollback()
-                return
-
-            effective_input_tokens = input_tokens or 0
-            effective_output_tokens = output_tokens or 0
-            effective_cached_input_tokens = cached_input_tokens or 0
-            cost_microdollars = _calculate_cost_microdollars(
-                model,
-                effective_input_tokens,
-                effective_output_tokens,
-                effective_cached_input_tokens,
-                service_tier,
-            )
+                return None
 
             try:
+                claimed = await self._repository.transition_usage_reservation_status(
+                    reservation_id,
+                    expected_status="reserved",
+                    new_status="settling",
+                )
+                if not claimed:
+                    await self._repository.rollback()
+                    return None
+
+                effective_input_tokens = input_tokens or 0
+                effective_output_tokens = output_tokens or 0
+                effective_cached_input_tokens = cached_input_tokens or 0
+                cost_microdollars = _calculate_cost_microdollars(
+                    model,
+                    effective_input_tokens,
+                    effective_output_tokens,
+                    effective_cached_input_tokens,
+                    service_tier,
+                )
+
                 for item in reservation.items:
                     actual_delta = _compute_increment_for_limit_type(
                         item.limit_type,
@@ -788,50 +740,44 @@ class ApiKeysService:
                 await self._repository.rollback()
                 raise
 
-    async def touch_usage_reservation(self, reservation_id: str) -> bool:
-        for attempt in range(_SQLITE_BUSY_RETRY_ATTEMPTS):
-            try:
-                async with sqlite_writer_section():
-                    touched = await self._repository.touch_usage_reservation(reservation_id)
-                    await self._repository.commit()
-                    return touched
-            except OperationalError as exc:
-                await self._repository.rollback()
-                if not _is_sqlite_database_locked(exc) or attempt == _SQLITE_BUSY_RETRY_ATTEMPTS - 1:
-                    raise
-                await asyncio.sleep(_SQLITE_BUSY_RETRY_BASE_SECONDS * (2**attempt))
+        await retry_sqlite_lock(
+            _settle_once,
+            operation_name="api_key_usage_settlement",
+            on_retry=self._repository.rollback,
+            logger=logger,
+            serialize_writes=_repository_uses_sqlite(self._repository),
+        )
 
-        raise RuntimeError("unreachable")
+    async def touch_usage_reservation(self, reservation_id: str) -> bool:
+        async def _touch_once() -> bool:
+            touched = await self._repository.touch_usage_reservation(reservation_id)
+            await self._repository.commit()
+            return touched
+
+        return await retry_sqlite_lock(
+            _touch_once,
+            operation_name="api_key_usage_touch",
+            on_retry=self._repository.rollback,
+            logger=logger,
+            serialize_writes=_repository_uses_sqlite(self._repository),
+        )
 
     async def release_usage_reservation(self, reservation_id: str) -> None:
-        for attempt in range(_SQLITE_BUSY_RETRY_ATTEMPTS):
-            try:
-                await self._release_usage_reservation_once(reservation_id)
-                return
-            except OperationalError as exc:
-                await self._repository.rollback()
-                if not _is_sqlite_database_locked(exc) or attempt == _SQLITE_BUSY_RETRY_ATTEMPTS - 1:
-                    raise
-                await asyncio.sleep(_SQLITE_BUSY_RETRY_BASE_SECONDS * (2**attempt))
-
-        raise RuntimeError("unreachable")
-
-    async def _release_usage_reservation_once(self, reservation_id: str) -> None:
-        async with sqlite_writer_section():
+        async def _release_once() -> None:
             reservation = await self._repository.get_usage_reservation(reservation_id)
             if reservation is None or reservation.status != "reserved":
                 return
 
-            claimed = await self._repository.transition_usage_reservation_status(
-                reservation_id,
-                expected_status="reserved",
-                new_status="released",
-            )
-            if not claimed:
-                await self._repository.rollback()
-                return
-
             try:
+                claimed = await self._repository.transition_usage_reservation_status(
+                    reservation_id,
+                    expected_status="reserved",
+                    new_status="released",
+                )
+                if not claimed:
+                    await self._repository.rollback()
+                    return
+
                 for item in reservation.items:
                     await self._repository.adjust_reserved_usage(
                         item.limit_id,
@@ -855,6 +801,14 @@ class ApiKeysService:
             except Exception:
                 await self._repository.rollback()
                 raise
+
+        await retry_sqlite_lock(
+            _release_once,
+            operation_name="api_key_usage_release",
+            on_retry=self._repository.rollback,
+            logger=logger,
+            serialize_writes=_repository_uses_sqlite(self._repository),
+        )
 
     async def record_usage(
         self,
@@ -1050,7 +1004,7 @@ def _normalize_model_slug(value: str | None) -> str | None:
 
 
 _SUPPORTED_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
-_SUPPORTED_SERVICE_TIERS = frozenset({"auto", "default", "priority", "flex"})
+_SUPPORTED_SERVICE_TIERS = frozenset({"auto", "default", "priority", "flex", "ultrafast"})
 
 
 def _normalize_expires_at(value: datetime | None) -> datetime | None:
@@ -1440,6 +1394,13 @@ def _limit_identity_from_row(limit: ApiKeyLimit) -> tuple[str, str, str | None]:
     return (limit.limit_type.value, limit.limit_window.value, limit.model_filter)
 
 
+def _repository_uses_sqlite(repository: ApiKeysRepositoryProtocol) -> bool:
+    uses_sqlite = getattr(repository, "uses_sqlite", None)
+    if not callable(uses_sqlite):
+        return False
+    return bool(uses_sqlite())
+
+
 def _calculate_cost_microdollars(
     model: str,
     input_tokens: int,
@@ -1460,15 +1421,6 @@ def _calculate_cost_microdollars(
     if cost_usd is None:
         return 0
     return int(cost_usd * 1_000_000)
-
-
-def _is_sqlite_database_locked(exc: OperationalError) -> bool:
-    message = str(exc).lower()
-    return (
-        "database is locked" in message
-        or "database table is locked" in message
-        or "database schema is locked" in message
-    )
 
 
 def _build_api_key_trends(

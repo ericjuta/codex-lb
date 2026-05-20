@@ -12,7 +12,7 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 COPY frontend ./
 RUN bun run build
 
-FROM python:3.13-slim AS python-build
+FROM python:3.14-slim AS python-build
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -30,7 +30,7 @@ COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project --extra metrics --extra tracing
 
-FROM python:3.13-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -54,14 +54,16 @@ RUN adduser --disabled-password --gecos "" app \
     && chown -R app:app /var/lib/codex-lb
 
 COPY --from=python-build /opt/venv /opt/venv
-COPY app app
-COPY config config
-COPY scripts scripts
-COPY --from=frontend-build /app/app/static app/static
+COPY --chown=app:app app app
+COPY --chown=app:app config config
+COPY --chown=app:app scripts scripts
+COPY --from=frontend-build --chown=app:app /app/app/static app/static
 
 RUN chmod +x /app/scripts/docker-entrypoint.sh
 
 USER app
-EXPOSE 2455 1455
+EXPOSE 2455 1455 9090
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 CMD python -c "import os, urllib.request; port = os.getenv('PORT', '2455'); urllib.request.urlopen(f'http://127.0.0.1:{port}/health/ready', timeout=4).read()"
 
 CMD ["/app/scripts/docker-entrypoint.sh"]
