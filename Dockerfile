@@ -59,6 +59,7 @@ COPY --chown=app:app config config
 COPY --chown=app:app scripts scripts
 COPY --from=frontend-build --chown=app:app /app/app/static app/static
 
+RUN python -m app.db.migrate check-policy
 RUN chmod +x /app/scripts/docker-entrypoint.sh
 
 USER app
