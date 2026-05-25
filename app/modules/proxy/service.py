@@ -6448,6 +6448,14 @@ class ProxyService:
                 )
                 break
             except ProxyResponseError as exc:
+                if _is_retryable_websocket_open_timeout(exc) and _remaining_budget_seconds(deadline) > 0:
+                    await self._handle_websocket_connect_error(account, exc)
+                    if selected_is_preferred and retry_same_account_once:
+                        retry_same_account_once = False
+                        continue
+                    excluded_account_ids.add(account.id)
+                    preferred_candidate_id = None
+                    continue
                 if exc.status_code != 401 or _remaining_budget_seconds(deadline) <= 0:
                     raise
                 try:
@@ -6468,6 +6476,14 @@ class ProxyService:
                     )
                     break
                 except ProxyResponseError as retry_exc:
+                    if _is_retryable_websocket_open_timeout(retry_exc) and _remaining_budget_seconds(deadline) > 0:
+                        await self._handle_websocket_connect_error(account, retry_exc)
+                        if selected_is_preferred and retry_same_account_once:
+                            retry_same_account_once = False
+                            continue
+                        excluded_account_ids.add(account.id)
+                        preferred_candidate_id = None
+                        continue
                     if retry_exc.status_code != 401:
                         raise
                     await self._handle_proxy_error(account, retry_exc)
@@ -6506,15 +6522,7 @@ class ProxyService:
                 if request_stage == "first_turn":
                     _record_bridge_first_turn_timeout()
                 _raise_proxy_unavailable(exc.message or "Temporary upstream refresh failure")
-            except ProxyResponseError as exc:
-                if _is_retryable_websocket_open_timeout(exc) and _remaining_budget_seconds(deadline) > 0:
-                    await self._handle_websocket_connect_error(account, exc)
-                    if selected_is_preferred and retry_same_account_once:
-                        retry_same_account_once = False
-                        continue
-                    excluded_account_ids.add(account.id)
-                    preferred_candidate_id = None
-                    continue
+            except ProxyResponseError:
                 raise
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 if selected_is_preferred and _remaining_budget_seconds(deadline) > 0:
@@ -7258,6 +7266,14 @@ class ProxyService:
                 )
                 break
             except ProxyResponseError as exc:
+                if _is_retryable_websocket_open_timeout(exc) and _remaining_budget_seconds(deadline) > 0:
+                    await self._handle_websocket_connect_error(account, exc)
+                    if selected_is_preferred and retry_same_account_once:
+                        retry_same_account_once = False
+                        continue
+                    excluded_account_ids.add(account.id)
+                    preferred_candidate_id = None
+                    continue
                 if exc.status_code != 401 or _remaining_budget_seconds(deadline) <= 0:
                     raise
                 try:
@@ -7281,6 +7297,14 @@ class ProxyService:
                     )
                     break
                 except ProxyResponseError as retry_exc:
+                    if _is_retryable_websocket_open_timeout(retry_exc) and _remaining_budget_seconds(deadline) > 0:
+                        await self._handle_websocket_connect_error(account, retry_exc)
+                        if selected_is_preferred and retry_same_account_once:
+                            retry_same_account_once = False
+                            continue
+                        excluded_account_ids.add(account.id)
+                        preferred_candidate_id = None
+                        continue
                     if retry_exc.status_code != 401:
                         raise
                     await self._handle_proxy_error(account, retry_exc)
@@ -7304,15 +7328,7 @@ class ProxyService:
                     preferred_candidate_id = None
                     continue
                 raise
-            except ProxyResponseError as exc:
-                if _is_retryable_websocket_open_timeout(exc) and _remaining_budget_seconds(deadline) > 0:
-                    await self._handle_websocket_connect_error(account, exc)
-                    if selected_is_preferred and retry_same_account_once:
-                        retry_same_account_once = False
-                        continue
-                    excluded_account_ids.add(account.id)
-                    preferred_candidate_id = None
-                    continue
+            except ProxyResponseError:
                 raise
             except (aiohttp.ClientError, asyncio.TimeoutError):
                 if selected_is_preferred and _remaining_budget_seconds(deadline) > 0:
