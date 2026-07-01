@@ -3,10 +3,13 @@
 ### Requirement: WebSocket Responses Stream Continuation Folding
 codex-lb SHALL apply CodexCont continuation folding to continuation-eligible
 Responses streams served over the downstream WebSocket transport
-(`/backend-api/codex/responses`) when
-`CODEX_LB_CODEX_CONTINUATION_WEBSOCKET_ENABLED=true` and the continuation gates
-pass (continuation enabled, streaming, reasoning not explicitly disabled). When
-the flag is false, the WebSocket transport MUST relay upstream events unchanged.
+(`/backend-api/codex/responses`), governed by the same
+`CODEX_LB_CODEX_CONTINUATION_ENABLED` gate and eligibility rules as the HTTP path
+(continuation enabled, streaming, reasoning not explicitly disabled). When
+continuation is disabled or the request is ineligible, the WebSocket transport
+MUST relay upstream events unchanged. Folding MUST be applied in-place within the
+upstream relay so failover, auth retry, previous-response recovery, and
+tool-call de-duplication continue to apply to eligible turns.
 
 #### Scenario: Truncated WebSocket round continues
 - **WHEN** a downstream WebSocket Responses turn is continuation eligible and its
@@ -18,10 +21,11 @@ the flag is false, the WebSocket transport MUST relay upstream events unchanged.
 - **AND** codex-lb opens a continuation round that appends the prior encrypted
   reasoning plus the configured continuation marker to the next upstream request
 - **AND** the downstream client receives the folded rounds as one coherent
-  response stream
+  response stream with continuous output indexes and sequence numbers
 
 #### Scenario: WebSocket continuation disabled
-- **WHEN** `CODEX_LB_CODEX_CONTINUATION_WEBSOCKET_ENABLED=false`
+- **WHEN** `CODEX_LB_CODEX_CONTINUATION_ENABLED=false` or the request disables
+  reasoning
 - **THEN** the downstream WebSocket transport relays upstream events without
   opening hidden continuation rounds
 

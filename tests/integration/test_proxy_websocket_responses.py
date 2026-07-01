@@ -760,55 +760,88 @@ def test_backend_responses_websocket_proxies_upstream_and_persists_log(app_insta
     assert log["output_tokens"] == 5
 
 
-def test_backend_responses_websocket_settles_proxy_billed_usage_when_present(app_instance, monkeypatch):
-    # A folded continuation stream returns agent-facing response.usage plus the
-    # true aggregated usage under metadata.proxy_billed_usage. Settlement and the
-    # request log must bill the aggregated usage; the client still sees the
-    # agent-facing usage.
-    upstream_messages = [
-        _FakeUpstreamMessage(
-            "text",
-            text=json.dumps(
-                {
-                    "type": "response.created",
-                    "response": {"id": "resp_ws_billed", "object": "response", "status": "in_progress"},
-                },
-                separators=(",", ":"),
-            ),
-        ),
-        _FakeUpstreamMessage(
-            "text",
-            text=json.dumps(
-                {
-                    "type": "response.completed",
-                    "response": {
-                        "id": "resp_ws_billed",
-                        "object": "response",
-                        "status": "completed",
-                        "service_tier": "fast",
-                        "usage": {
-                            "input_tokens": 3,
-                            "output_tokens": 5,
-                            "total_tokens": 8,
-                            "input_tokens_details": {"cached_tokens": 0},
-                            "output_tokens_details": {"reasoning_tokens": 2},
-                        },
-                        "metadata": {
-                            "proxy_billed_usage": {
-                                "input_tokens": 11,
-                                "output_tokens": 42,
-                                "total_tokens": 53,
-                                "input_tokens_details": {"cached_tokens": 4},
-                                "output_tokens_details": {"reasoning_tokens": 30},
-                            }
-                        },
-                    },
-                },
-                separators=(",", ":"),
-            ),
-        ),
+def _ws_reasoning_events(*, output_index: int, item_id: str, encrypted_content: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "response.output_item.added",
+            "output_index": output_index,
+            "item": {"id": item_id, "type": "reasoning"},
+        },
+        {
+            "type": "response.output_item.done",
+            "output_index": output_index,
+            "item": {"id": item_id, "type": "reasoning", "encrypted_content": encrypted_content},
+        },
     ]
-    fake_upstream = _FakeUpstreamWebSocket(upstream_messages)
+
+
+def _ws_message_events(*, output_index: int, item_id: str, text: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "response.output_item.added",
+            "output_index": output_index,
+            "item": {"id": item_id, "type": "message", "role": "assistant", "content": []},
+        },
+        {
+            "type": "response.output_text.delta",
+            "output_index": output_index,
+            "item_id": item_id,
+            "content_index": 0,
+            "delta": text,
+        },
+        {
+            "type": "response.output_item.done",
+            "output_index": output_index,
+            "item": {
+                "id": item_id,
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text}],
+            },
+        },
+    ]
+
+
+def _ws_completed(response_id: str, *, input_tokens: int, output_tokens: int, reasoning_tokens: int) -> dict[str, Any]:
+    return {
+        "type": "response.completed",
+        "response": {
+            "id": response_id,
+            "status": "completed",
+            "output": [],
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens_details": {"reasoning_tokens": reasoning_tokens},
+            },
+        },
+    }
+
+
+def _ws_msg(event: dict[str, Any]) -> _FakeUpstreamMessage:
+    return _FakeUpstreamMessage("text", text=json.dumps(event, separators=(",", ":")))
+
+
+def test_backend_responses_websocket_folds_truncated_reasoning_continuation(app_instance, monkeypatch):
+    # A visible round that truncates on the 518*n-2 fingerprint is folded with a
+    # hidden continuation round over the same upstream/account: the truncated
+    # final output is suppressed, the final answer comes from the hidden round,
+    # and settlement bills the summed usage.
+    round_one = [
+        {"type": "response.created", "response": {"id": "resp_ws_v", "status": "in_progress", "output": []}},
+        *_ws_reasoning_events(output_index=0, item_id="rs_1", encrypted_content="enc1"),
+        *_ws_message_events(output_index=1, item_id="msg_partial", text="partial answer"),
+        _ws_completed("resp_ws_v", input_tokens=100, output_tokens=600, reasoning_tokens=516),
+    ]
+    round_two = [
+        {"type": "response.created", "response": {"id": "resp_ws_h", "status": "in_progress", "output": []}},
+        *_ws_reasoning_events(output_index=0, item_id="rs_2", encrypted_content="enc2"),
+        *_ws_message_events(output_index=1, item_id="msg_final", text="final answer"),
+        _ws_completed("resp_ws_h", input_tokens=120, output_tokens=20, reasoning_tokens=10),
+    ]
+    fake_upstream = _FakeUpstreamWebSocket([_ws_msg(e) for e in (*round_one, *round_two)])
     log_calls: list[dict[str, object]] = []
     settlements: list[Any] = []
 
@@ -839,7 +872,7 @@ def test_backend_responses_websocket_settles_proxy_billed_usage_when_present(app
         client_send_lock,
         websocket,
     ):
-        return SimpleNamespace(id="acct_ws_billed", codex_installation_id="account-installation"), fake_upstream
+        return SimpleNamespace(id="acct_ws_fold", codex_installation_id="account-installation"), fake_upstream
 
     async def fake_write_request_log(self, **kwargs):
         log_calls.append(kwargs)
@@ -856,47 +889,141 @@ def test_backend_responses_websocket_settles_proxy_billed_usage_when_present(app
 
     request_payload = {
         "type": "response.create",
-        "model": "gpt-5.4",
+        "model": "gpt-5.5",
         "instructions": "",
         "reasoning": {"effort": "high"},
         "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
         "stream": True,
     }
 
+    received: list[dict[str, Any]] = []
     with TestClient(app_instance) as client:
         with client.websocket_connect(
             "/backend-api/codex/responses",
             headers={
                 "Authorization": "Bearer external-token",
                 "chatgpt-account-id": "external-account",
-                "session_id": "thread-ws-billed",
+                "session_id": "thread-ws-fold",
                 "openai-beta": "responses_websockets=2026-02-06",
             },
         ) as websocket:
             websocket.send_text(json.dumps(request_payload))
-            first = json.loads(websocket.receive_text())
-            second = json.loads(websocket.receive_text())
+            while True:
+                event = json.loads(websocket.receive_text())
+                received.append(event)
+                if event.get("type") in {"response.completed", "response.failed", "response.incomplete", "error"}:
+                    break
 
-    assert first["type"] == "response.created"
-    assert second["type"] == "response.completed"
-    # Client still receives the agent-facing usage untouched.
-    assert second["response"]["usage"]["input_tokens"] == 3
-    assert second["response"]["usage"]["output_tokens"] == 5
+    types = [event["type"] for event in received]
+    assert types.count("response.created") == 1
+    assert types.count("response.completed") == 1
+    deltas = "".join(
+        str(event.get("delta", "")) for event in received if event.get("type") == "response.output_text.delta"
+    )
+    assert "final answer" in deltas
+    assert "partial answer" not in deltas
 
-    # Request log bills the aggregated proxy_billed_usage, not response.usage.
+    assert len(fake_upstream.sent_text) == 2
+    continuation = json.loads(fake_upstream.sent_text[1])
+    assert "previous_response_id" not in continuation
+    replay_input = continuation["input"]
+    assert {"id": "rs_1", "type": "reasoning", "encrypted_content": "enc1"} in replay_input
+    assert any(isinstance(item, dict) and item.get("phase") == "commentary" for item in replay_input)
+
     assert len(log_calls) == 1
-    log = log_calls[0]
-    assert log["input_tokens"] == 11
-    assert log["output_tokens"] == 42
-    assert log["cached_input_tokens"] == 4
-    assert log["reasoning_tokens"] == 30
-
-    # API-key settlement bills the aggregated usage too.
+    assert log_calls[0]["input_tokens"] == 220
+    assert log_calls[0]["output_tokens"] == 620
     assert len(settlements) == 1
-    settlement = settlements[0]
-    assert settlement.input_tokens == 11
-    assert settlement.output_tokens == 42
-    assert settlement.cached_input_tokens == 4
+    assert settlements[0].input_tokens == 220
+    assert settlements[0].output_tokens == 620
+
+
+def test_backend_responses_websocket_non_truncated_reasoning_passes_through(app_instance, monkeypatch):
+    # A continuation-eligible turn that does NOT truncate completes in one round
+    # with no hidden continuation and the final answer delivered.
+    round_one = [
+        {"type": "response.created", "response": {"id": "resp_ws_ok", "status": "in_progress", "output": []}},
+        *_ws_reasoning_events(output_index=0, item_id="rs_1", encrypted_content="enc1"),
+        *_ws_message_events(output_index=1, item_id="msg_ok", text="all done"),
+        _ws_completed("resp_ws_ok", input_tokens=100, output_tokens=200, reasoning_tokens=300),
+    ]
+    fake_upstream = _FakeUpstreamWebSocket([_ws_msg(e) for e in round_one])
+    log_calls: list[dict[str, object]] = []
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        return None
+
+    async def fake_connect_proxy_websocket(
+        self,
+        headers,
+        *,
+        sticky_key,
+        sticky_kind,
+        reallocate_sticky,
+        sticky_max_age_seconds,
+        prefer_earlier_reset,
+        prefer_earlier_reset_window,
+        routing_strategy,
+        model,
+        request_state,
+        api_key,
+        client_send_lock,
+        websocket,
+    ):
+        return SimpleNamespace(id="acct_ws_ok", codex_installation_id="account-installation"), fake_upstream
+
+    async def fake_write_request_log(self, **kwargs):
+        log_calls.append(kwargs)
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", fake_connect_proxy_websocket)
+    monkeypatch.setattr(proxy_module.ProxyService, "_write_request_log", fake_write_request_log)
+
+    request_payload = {
+        "type": "response.create",
+        "model": "gpt-5.5",
+        "instructions": "",
+        "reasoning": {"effort": "high"},
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "stream": True,
+    }
+
+    received: list[dict[str, Any]] = []
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={
+                "Authorization": "Bearer external-token",
+                "chatgpt-account-id": "external-account",
+                "session_id": "thread-ws-ok",
+                "openai-beta": "responses_websockets=2026-02-06",
+            },
+        ) as websocket:
+            websocket.send_text(json.dumps(request_payload))
+            while True:
+                event = json.loads(websocket.receive_text())
+                received.append(event)
+                if event.get("type") in {"response.completed", "response.failed", "response.incomplete", "error"}:
+                    break
+
+    types = [event["type"] for event in received]
+    assert types.count("response.completed") == 1
+    deltas = "".join(
+        str(event.get("delta", "")) for event in received if event.get("type") == "response.output_text.delta"
+    )
+    assert "all done" in deltas
+    assert len(fake_upstream.sent_text) == 1
+    assert len(log_calls) == 1
+    assert log_calls[0]["output_tokens"] == 200
 
 
 def test_backend_responses_websocket_keeps_same_response_distinct_tool_call_ids(
