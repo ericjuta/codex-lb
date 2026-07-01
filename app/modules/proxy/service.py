@@ -503,10 +503,10 @@ from app.modules.proxy._service.streaming.helpers import (
     _refresh_upstream_proxy_fail_closed_reason as _refresh_upstream_proxy_fail_closed_reason,
 )
 from app.modules.proxy._service.streaming.helpers import (
-    _responses_request_budget_seconds as _responses_request_budget_seconds,
+    _resolve_upstream_stream_transport as _resolve_upstream_stream_transport,
 )
 from app.modules.proxy._service.streaming.helpers import (
-    _resolve_upstream_stream_transport as _resolve_upstream_stream_transport,
+    _responses_request_budget_seconds as _responses_request_budget_seconds,
 )
 from app.modules.proxy._service.streaming.helpers import (
     _rewrite_previous_response_stream_error as _rewrite_previous_response_stream_error,
@@ -697,7 +697,9 @@ from app.modules.proxy.helpers import (
     _normalize_error_code,
     _parse_openai_error,
     _upstream_error_from_openai,
-    classify_upstream_failure,
+)
+from app.modules.proxy.helpers import (
+    classify_upstream_failure as classify_upstream_failure,
 )
 from app.modules.proxy.http_bridge_forwarding import (
     HTTPBridgeForwardContext as HTTPBridgeForwardContext,

@@ -8,8 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 from threading import RLock
-from typing import Any, cast
-from typing import TypeVar
+from typing import Any, TypeVar, cast
 
 from anyio import to_thread
 from sqlalchemy import Integer, and_, delete, func, literal_column, or_, select, true

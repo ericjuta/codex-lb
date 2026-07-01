@@ -12,8 +12,8 @@ from app.core.metrics.prometheus import (
     PROMETHEUS_AVAILABLE,
     continuity_fail_closed_total,
     continuity_owner_resolution_total,
-    upstream_transport_decisions_total,
     service_tier_mismatch_total,
+    upstream_transport_decisions_total,
 )
 from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
 from app.core.types import JsonValue
