@@ -6,9 +6,7 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
-from app.core.types import JsonObject, JsonValue
-from app.core.utils.sse import format_sse_event, parse_sse_data_json
-from middleware.codex import (
+from app.core.clients.codex_truncation import (
     DEFAULT_TRUNCATION_STEP,
     build_round_payload,
     commentary_message,
@@ -18,6 +16,8 @@ from middleware.codex import (
     should_continue,
     tier_n,
 )
+from app.core.types import JsonObject, JsonValue
+from app.core.utils.sse import format_sse_event, parse_sse_data_json
 
 logger = logging.getLogger(__name__)
 
