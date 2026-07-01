@@ -892,6 +892,8 @@ def test_backend_responses_websocket_folds_truncated_reasoning_continuation(app_
         "model": "gpt-5.5",
         "instructions": "",
         "reasoning": {"effort": "high"},
+        # Upstream-unsupported field: must be stripped from the hidden round too.
+        "max_output_tokens": 6000,
         "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
         "stream": True,
     }
@@ -926,6 +928,9 @@ def test_backend_responses_websocket_folds_truncated_reasoning_continuation(app_
     assert len(fake_upstream.sent_text) == 2
     continuation = json.loads(fake_upstream.sent_text[1])
     assert "previous_response_id" not in continuation
+    # Hidden round inherits the prepared/stripped request shape, not the raw
+    # client payload, so upstream-unsupported fields must not reappear.
+    assert "max_output_tokens" not in continuation
     replay_input = continuation["input"]
     assert {"id": "rs_1", "type": "reasoning", "encrypted_content": "enc1"} in replay_input
     assert any(isinstance(item, dict) and item.get("phase") == "commentary" for item in replay_input)
