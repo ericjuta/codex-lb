@@ -535,7 +535,7 @@ When multiple `file_id`s are referenced and several are pinned, the most-recentl
 - **THEN** the proxy MUST follow the prompt-cache affinity for routing and MUST NOT use the file_id pin
 
 ### Requirement: Codex backend session_id preserves account affinity
-When a backend Codex Responses or compact request includes a non-empty accepted session header, the service MUST use that value as the routing affinity key for upstream account selection. If the request lacks a client-supplied `prompt_cache_key`, the service MUST derive and attach a stable `prompt_cache_key` before upstream forwarding so account affinity and upstream prompt-cache routing can coexist. Accepted session headers are `session_id`, `session-id`, `x-codex-session-id`, `x-codex-conversation-id`, and `thread-id`, in that priority order.
+When a backend Codex Responses or compact request includes a non-empty accepted session header, the service MUST use that value as the routing affinity key for upstream account selection. If the request lacks a client-supplied `prompt_cache_key`, the service MUST derive and attach a stable `prompt_cache_key` before upstream forwarding so account affinity and upstream prompt-cache routing can coexist. Accepted session headers are `session_id`, `x-codex-session-id`, and `x-codex-conversation-id`, in that priority order.
 
 #### Scenario: Backend Codex request derives prompt_cache_key before codex-session routing
 - **WHEN** `/backend-api/codex/responses` is called with `session_id` and without `prompt_cache_key`
@@ -1206,3 +1206,30 @@ When an upstream websocket closes or rejects send while a pre-created Responses 
 - **AND** the request is eligible for transparent replay
 - **THEN** the service records a transient stream error for the account that dropped the socket
 - **AND** the replay reconnect does not exclude the previous-response owner account solely because it dropped the socket
+
+### Requirement: Upstream websocket handshakes exclude HTTP content-negotiation headers
+
+The service MUST exclude the HTTP content-negotiation headers `accept` and
+`content-type`, hop-by-hop headers, and websocket handshake control headers
+(`sec-websocket-*`, `accept-encoding`, `cookie`) whenever it builds upstream
+websocket handshake headers from inbound HTTP request headers, including HTTP
+responses bridge session creation and bridge session reconnection. Internal
+websocket protocol headers set by the service itself (such as the responses
+websocket beta header) are not affected.
+
+#### Scenario: bridge session creation filters content-negotiation headers
+
+- **WHEN** the HTTP responses bridge opens an upstream websocket session for a
+  downstream request carrying `accept: text/event-stream` and
+  `content-type: application/json`
+- **THEN** the upstream websocket handshake headers exclude `accept` and
+  `content-type`
+- **AND** non-excluded end-to-end headers are still forwarded
+
+#### Scenario: bridge session reconnection filters content-negotiation headers
+
+- **WHEN** the HTTP responses bridge reconnects an upstream websocket session
+  using stored inbound headers that include `accept` and `content-type`
+- **THEN** the rebuilt upstream websocket handshake headers exclude `accept`
+  and `content-type`
+
