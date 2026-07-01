@@ -374,6 +374,10 @@ class _WebSocketRequestState:
     account_capacity_wait_reason: str | None = None
     account_capacity_wait_started_at: float | None = None
     account_capacity_wait_retry_after_seconds: float | None = None
+    # Active Codex continuation fold for this websocket turn (or None when the
+    # request is not continuation-eligible). Typed Any to avoid an import cycle
+    # with the websocket continuation module.
+    continuation_fold: Any = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,6 +472,9 @@ class _WebSocketUpstreamControl:
     replay_request_state: _WebSocketRequestState | None = None
     downstream_texts: list[str] | None = None
     downstream_send_failure: _WebSocketDownstreamSendFailure | None = None
+    # A Codex continuation round body to resend upstream on the same socket
+    # after the current event is processed (set by the fold on truncation).
+    continuation_resend_body: dict[str, Any] | None = None
     seen_tool_call_keys: dict[tuple[str, str, str | None, str | None, str], None] = field(default_factory=dict)
 
 

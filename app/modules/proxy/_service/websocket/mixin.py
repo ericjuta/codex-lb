@@ -23,6 +23,10 @@ from app.core.balancer import (
     failover_decision,
 )
 from app.core.balancer.types import ClassifiedFailure, UpstreamError
+from app.core.clients.codex_continuation import (
+    codex_continuation_config_from_settings,
+    should_apply_codex_continuation,
+)
 from app.core.clients.files import create_file as core_create_file  # noqa: F401
 from app.core.clients.files import finalize_file as core_finalize_file  # noqa: F401
 from app.core.clients.http import lease_http_session as lease_http_session  # noqa: F401
@@ -358,6 +362,7 @@ from app.modules.proxy._service.warmup import (
 from app.modules.proxy._service.warmup import (
     _WarmupUsageSnapshot as _WarmupUsageSnapshot,
 )
+from app.modules.proxy._service.websocket.continuation import _WebSocketContinuationFold
 from app.modules.proxy._service.websocket.helpers import (
     _app_error_to_websocket_event,
     _assign_websocket_response_id,
@@ -711,6 +716,13 @@ class _WebSocketMixin:
                         )
                         await _release_websocket_response_create_gate(request_state, response_create_gate)
                         continue
+                    if request_state.continuation_fold is not None and _is_websocket_response_create(payload):
+                        # Failover/replay restarts the turn from the visible
+                        # round, so discard any partial continuation fold state.
+                        request_state.continuation_fold = _WebSocketContinuationFold(
+                            codex_continuation_config_from_settings(runtime_settings),
+                            {key: value for key, value in payload.items() if key != "type"},
+                        )
                     async with pending_lock:
                         pending_requests.append(request_state)
                     proxy._start_request_state_api_key_reservation_heartbeat(
@@ -1094,6 +1106,21 @@ class _WebSocketMixin:
                     account_lease = request_state.websocket_stream_lease
                     request_state.websocket_stream_lease = None
                     upstream_turn_state = _facade()._upstream_turn_state_from_socket(upstream) or upstream_turn_state
+                    if (
+                        request_state is not None
+                        and payload is not None
+                        and _is_websocket_response_create(payload)
+                        and should_apply_codex_continuation(
+                            cast(Any, {key: value for key, value in payload.items() if key != "type"}),
+                            codex_continuation_config_from_settings(runtime_settings),
+                        )
+                    ):
+                        request_state.continuation_fold = _WebSocketContinuationFold(
+                            codex_continuation_config_from_settings(runtime_settings),
+                            {key: value for key, value in payload.items() if key != "type"},
+                        )
+                    else:
+                        request_state.continuation_fold = None
                     upstream_control = _WebSocketUpstreamControl()
                     upstream_reader = asyncio.create_task(
                         proxy._relay_upstream_websocket_messages(
@@ -2680,6 +2707,45 @@ class _WebSocketMixin:
                                     exc_info=True,
                                 )
                             break
+                    if upstream_control.continuation_resend_body is not None:
+                        resend_body = upstream_control.continuation_resend_body
+                        upstream_control.continuation_resend_body = None
+                        async with pending_lock:
+                            resend_state = pending_requests[0] if pending_requests else None
+                        resend_text = json.dumps(
+                            {"type": "response.create", **resend_body},
+                            ensure_ascii=True,
+                            separators=(",", ":"),
+                        )
+                        resend_text = _websocket_text_with_account_installation_id(resend_text, account)
+                        resend_archive_id = resend_state.archive_request_id if resend_state is not None else None
+                        try:
+                            with _websocket_archive_request_context(resend_archive_id):
+                                await upstream.send_text(resend_text)
+                        except Exception:
+                            _facade().logger.warning("codex_continuation_websocket_resend_failed", exc_info=True)
+                            await proxy._fail_pending_websocket_requests(
+                                account=account,
+                                account_id_value=account_id_value,
+                                pending_requests=pending_requests,
+                                pending_lock=pending_lock,
+                                error_code="stream_incomplete",
+                                error_message="Upstream websocket closed before response.completed",
+                                api_key=api_key,
+                                websocket=websocket,
+                                client_send_lock=client_send_lock,
+                                response_create_gate=response_create_gate,
+                                downstream_activity=downstream_activity,
+                            )
+                            try:
+                                await upstream.close()
+                            except Exception:
+                                _facade().logger.debug(
+                                    "Failed to close upstream websocket after continuation resend failure",
+                                    exc_info=True,
+                                )
+                            break
+                        continue
                     if upstream_control.reconnect_requested:
                         should_reconnect = upstream_control.replay_request_state is not None
                         if not should_reconnect:
@@ -2848,6 +2914,9 @@ class _WebSocketMixin:
             event_block=format_sse_event(payload) if payload is not None else f"data: {text}\n\n",
         )
 
+        fold_outcome = None
+        fold_request_state: _WebSocketRequestState | None = None
+
         async with pending_lock:
             request_state = None
             created_request_state = None
@@ -2901,8 +2970,27 @@ class _WebSocketMixin:
                     payload = _rewrite_websocket_downstream_response_id(payload, request_state)
                     text = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
             if (
+                request_state is not None
+                and request_state.continuation_fold is not None
+                and event_type not in {"response.failed", "response.incomplete", "error"}
+                and not is_typeless_error_event
+                and not is_previous_response_not_found_event
+                and not is_missing_tool_output_event
+                and not request_state.suppressed_duplicate_tool_call
+                and not upstream_control.suppress_downstream_event
+                and isinstance(payload, dict)
+            ):
+                # Clean success events (reasoning/message/created/completed) fold
+                # here; error/dedup/continuity cases fall through to the normal
+                # failover/retry path below so those behaviors are preserved.
+                fold_request_state = request_state
+                fold_outcome = request_state.continuation_fold.process_event(dict(payload))
+                if fold_outcome.terminal_event is not None and request_state in pending_requests:
+                    pending_requests.remove(request_state)
+            if (
                 event_type in {"response.completed", "response.failed", "response.incomplete", "error"}
                 and pending_requests
+                and fold_outcome is None
             ):
                 request_state = _pop_terminal_websocket_request_state(
                     pending_requests,
@@ -2972,7 +3060,7 @@ class _WebSocketMixin:
                         original_text=text,
                     )
                 has_other_pending_requests = bool(pending_requests)
-            else:
+            elif fold_outcome is None:
                 request_state = None
 
         if event_type == "response.created" and release_create_gate and created_request_state is not None:
@@ -3057,6 +3145,47 @@ class _WebSocketMixin:
                 return downstream_text
             if is_missing_tool_output_event:
                 upstream_control.suppress_downstream_event = True
+            return text
+
+        if fold_outcome is not None and fold_request_state is not None:
+            if fold_outcome.continuation_request is not None:
+                # Truncated round: resend a hidden continuation round upstream on
+                # the same socket/account; nothing to emit downstream yet. Reset
+                # the response id so the hidden round's response.created rebinds
+                # to this pending request (and is then folded/suppressed).
+                fold_request_state.awaiting_response_created = True
+                fold_request_state.response_id = None
+                upstream_control.continuation_resend_body = fold_outcome.continuation_request
+                upstream_control.suppress_downstream_event = True
+                return text
+            if fold_outcome.downstream:
+                upstream_control.downstream_texts = [
+                    json.dumps(event, ensure_ascii=True, separators=(",", ":"))
+                    for event in fold_outcome.downstream
+                ]
+            else:
+                upstream_control.suppress_downstream_event = True
+            if fold_outcome.terminal_event is not None:
+                terminal_payload = fold_outcome.terminal_event
+                terminal_type = terminal_payload.get("type")
+                if terminal_type == "response.completed" and continuity_state is not None:
+                    _record_websocket_continuity_completion(
+                        continuity_state,
+                        request_state=fold_request_state,
+                        response_id=response_id,
+                    )
+                folded_terminal_event = parse_sse_event(format_sse_event(cast(dict[str, JsonValue], terminal_payload)))
+                await proxy._finalize_websocket_request_state(
+                    fold_request_state,
+                    account=account,
+                    account_id_value=account_id_value,
+                    event=folded_terminal_event,
+                    event_type=terminal_type if isinstance(terminal_type, str) else None,
+                    payload=terminal_payload,
+                    api_key=api_key,
+                    upstream_control=upstream_control,
+                    response_create_gate=response_create_gate,
+                )
             return text
 
         if event_type not in {"response.completed", "response.failed", "response.incomplete", "error"}:
