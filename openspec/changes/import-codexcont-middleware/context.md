@@ -5,9 +5,10 @@ continuation folding into codex-lb's normal Responses-compatible HTTP stream
 path. The integrated path is enabled by default and controlled with
 `CODEX_LB_CODEX_CONTINUATION_*` settings.
 
-The standalone Starlette middleware remains available for isolated operation:
+The Starlette middleware package remains available as an isolated harness:
 operators can run it directly with `uv run python run.py` after copying
-`config.example.toml` to `config.toml`.
+`config.example.toml` to `config.toml`, but codex-lb remains the repository
+identity and the primary runtime surface.
 
 The scope is the CodexCont runtime surface, configuration, documentation,
 fixtures, packaging metadata, codex-lb core stream integration, and HTTP bridge
@@ -15,8 +16,9 @@ bypass needed to keep continuation folding passive for HTTP Responses streams.
 
 ## Decisions
 
-- Keep `README.md` as the codex-lb landing page and add `CODEXCONT.md` for the
-  imported middleware rather than replacing the project identity.
+- Keep `README.md` as the codex-lb landing page and keep CodexCont-specific
+  docs under `CODEXCONT.md` / `CODEXCONT.zh-CN.md` rather than adding a second
+  root README or installation runbook.
 - Keep `config.toml`, `rt.json`, and `free_rt.json` ignored because they may
   contain local runtime secrets or account tokens.
 - Package `middleware` with the existing wheel target so local installs can import
@@ -46,7 +48,8 @@ bypass needed to keep continuation folding passive for HTTP Responses streams.
 - Requests that fail the continuation gates are proxied without continuation
   folding.
 - The passive integration covers codex-lb HTTP Responses-compatible streams. The
-  standalone middleware remains available as a separate Starlette runtime.
+  middleware package remains available as an isolated Starlette harness for
+  development and regression checks.
 - Header-selected upstream URLs must never receive configured proxy credentials.
   Callers using per-request upstream overrides need to provide their own
   authorization headers or use passthrough-safe auth modes.

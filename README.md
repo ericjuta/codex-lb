@@ -49,9 +49,7 @@ Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage 
 
 CodexCont continuation folding is passively enabled in codex-lb's normal
 Responses-compatible HTTP stream path. Detected reasoning-truncation rounds are
-continued upstream and folded into one downstream SSE response. The vendored
-standalone Starlette proxy remains available under [`middleware/`](middleware/)
-via [`run.py`](run.py) and [`config.example.toml`](config.example.toml).
+continued upstream and folded into one downstream SSE response.
 
 Use `CODEX_LB_CODEX_CONTINUATION_ENABLED=false` to disable the integrated path.
 See [`CODEXCONT.md`](CODEXCONT.md) for behavior, guards, settings, and tests.

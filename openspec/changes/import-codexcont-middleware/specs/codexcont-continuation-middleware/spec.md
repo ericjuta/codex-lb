@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
-### Requirement: Standalone Responses Middleware Runtime
-The repository SHALL provide a standalone Starlette middleware runtime for Responses-compatible POST requests. The runtime MUST load its local configuration from `config.toml`, MUST serve the configured listen paths, and MUST include an example configuration that listens on `127.0.0.1:8787` with `/v1/responses` enabled.
+### Requirement: Isolated Responses Middleware Harness
+The repository SHALL provide a Starlette middleware harness for isolated Responses-compatible POST regression checks. The runtime MUST load its local configuration from `config.toml`, MUST serve the configured listen paths, and MUST include an example configuration that listens on `127.0.0.1:8787` with `/v1/responses` enabled.
 
 #### Scenario: Run with example configuration
 - **WHEN** an operator copies `config.example.toml` to `config.toml`

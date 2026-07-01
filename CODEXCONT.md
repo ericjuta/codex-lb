@@ -1,18 +1,16 @@
 # CodexCont
 
-[English](CODEXCONT.md) . [Chinese](README_zh.md)
+[English](CODEXCONT.md) | [简体中文](CODEXCONT.zh-CN.md)
 
 Continue-thinking middleware for Codex / OpenAI Responses-compatible APIs.
 
 CodexCont detects the observed reasoning-truncation fingerprint `usage.output_tokens_details.reasoning_tokens == 518 * n - 2`, asks the model to continue thinking, and folds multiple upstream streaming responses into one downstream SSE response.
 
-In codex-lb, that folding is passively integrated into the normal Responses-compatible HTTP stream path and is enabled by default. The standalone Starlette proxy is still available for isolated use.
+In codex-lb, that folding is passively integrated into the normal Responses-compatible HTTP stream path and is enabled by default. A small Starlette harness remains available for isolated regression and debugging use.
 
 ```text
 Coding agent  ->  codex-lb Responses stream  ->  CodexCont fold  ->  Codex / Responses API
 ```
-
-> Installing via an AI agent? Hand it [`INSTALL-GUIDE-AGENT/AGENT.md`](INSTALL-GUIDE-AGENT/AGENT.md), a step-by-step runbook written for an AI agent to execute on your machine.
 
 ## Disclaimer
 
@@ -47,7 +45,7 @@ The codex-lb integration is controlled by `CODEX_LB_CODEX_CONTINUATION_*` settin
 
 Hidden continuation rounds reuse the selected upstream account/auth route inside the same service stream. They are not exposed as separate downstream responses.
 
-### Standalone proxy
+### Isolated harness
 
 ```bash
 uv sync
@@ -55,7 +53,10 @@ cp config.example.toml config.toml
 uv run python run.py
 ```
 
-`run.py` reads the local `config.toml`. The example configuration listens on `127.0.0.1:8787` and accepts POST requests at `/v1/responses`.
+`run.py` remains as a small isolated harness for testing the vendored
+middleware package outside the codex-lb service. It reads the local
+`config.toml`; the example configuration listens on `127.0.0.1:8787` and
+accepts POST requests at `/v1/responses`.
 
 ## Point A Client At The Proxy
 
@@ -96,7 +97,7 @@ The integrated path folds Responses-compatible HTTP streams when all of the foll
 - Streaming is enabled by the route.
 - Reasoning is not explicitly disabled.
 
-All other requests are proxied without continuation folding. The standalone proxy uses the matching `[continue]` and `[stream]` keys from `config.toml`.
+All other requests are proxied without continuation folding. The isolated harness uses the matching `[continue]` and `[stream]` keys from `config.toml`.
 
 ## Response Metadata
 

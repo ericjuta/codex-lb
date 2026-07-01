@@ -1,14 +1,14 @@
 # CodexCont
 
+[English](CODEXCONT.md) | **简体中文**
+
 用于 Codex / OpenAI Responses 兼容 API 的“继续思考”中间件。
 
-本项目是一个轻量 Starlette 代理，部署在编码代理和上游 Responses 接口之间。它会检测一种已知的推理截断指纹：`usage.output_tokens_details.reasoning_tokens == 518 * n - 2`。检测到后，中间件会在后台让模型继续思考，并把多轮上游流式响应折叠成一个连贯的下游 SSE 响应。
+在 codex-lb 中，CodexCont 被集成到普通 Responses 兼容 HTTP 流式路径中。它会检测一种已知的推理截断指纹：`usage.output_tokens_details.reasoning_tokens == 518 * n - 2`。检测到后，codex-lb 会在后台让模型继续思考，并把多轮上游流式响应折叠成一个连贯的下游 SSE 响应。
 
 ```text
-编码代理  ->  CodexCont  ->  Codex / Responses API
+编码代理  ->  codex-lb Responses stream  ->  CodexCont fold  ->  Codex / Responses API
 ```
-
-> **用 AI Agent 安装？** 把 [`INSTALL-GUIDE-AGENT/AGENT.md`](INSTALL-GUIDE-AGENT/AGENT.md) 交给你的 Agent —— 这是一份专为 AI Agent 在你机器上逐步执行而写的安装手册。
 
 ## 免责声明
 
@@ -26,7 +26,7 @@
 
 ## 环境要求
 
-- Python `>= 3.12`
+- CodexCont 自身需要 Python `>= 3.12`；当前 codex-lb 仓库目标是 Python `>= 3.13`。
 - 推荐使用 [`uv`](https://docs.astral.sh/uv/)
 
 运行依赖在 `pyproject.toml` 中声明：
@@ -37,24 +37,30 @@
 
 ## 快速开始
 
+### codex-lb 集成路径
+
+codex-lb 集成路径由 `CODEX_LB_CODEX_CONTINUATION_*` 设置控制：
+
+- `CODEX_LB_CODEX_CONTINUATION_ENABLED=true` 启用被动折叠。
+- `CODEX_LB_CODEX_CONTINUATION_MAX_CONTINUE=3` 限制第一轮之后的隐藏续写轮数。
+- `CODEX_LB_CODEX_CONTINUATION_BYPASS_HTTP_BRIDGE=true` 让续写候选 HTTP 流走标准流式路径，避免 HTTP session bridge 绕过折叠。
+- `CODEX_LB_CODEX_CONTINUATION_FORCE_INCLUDE_ENCRYPTED=true` 确保续写轮请求 encrypted reasoning content。
+
+隐藏续写轮会复用已选中的上游账号和鉴权路径，不会作为独立下游响应暴露。
+
+### 隔离测试 harness
+
 ```bash
 uv sync
 cp config.example.toml config.toml
 uv run python run.py
 ```
 
-`run.py` 会读取本地 `config.toml`；请先从 `config.example.toml` 复制一份，再按需调整。
+`run.py` 是用于在 codex-lb 服务外测试 vendored middleware package 的小型隔离 harness。它会读取本地 `config.toml`；请先从 `config.example.toml` 复制一份，再按需调整。
 
 示例默认服务监听 `127.0.0.1:8787`，接受以下路径的 POST 请求：
 
 - `/v1/responses`
-
-也可以直接使用当前虚拟环境运行：
-
-```bash
-# Windows / 本工作区 Git Bash
-.venv/Scripts/python.exe run.py
-```
 
 ## 将客户端指向代理
 
