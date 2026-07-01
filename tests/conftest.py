@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 from pathlib import Path
@@ -22,6 +23,10 @@ os.environ["CODEX_LB_MODEL_REGISTRY_ENABLED"] = "false"
 os.environ["CODEX_LB_STICKY_SESSION_CLEANUP_ENABLED"] = "false"
 os.environ["CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_ENABLED"] = "false"
 os.environ["CODEX_LB_QUOTA_PLANNER_SCHEDULER_ENABLED"] = "false"
+os.environ["CODEX_LB_DATABASE_POOL_SIZE"] = "15"
+os.environ["CODEX_LB_DATABASE_MAX_OVERFLOW"] = "10"
+os.environ["CODEX_LB_DATABASE_BACKGROUND_POOL_SIZE"] = "15"
+os.environ["CODEX_LB_DATABASE_BACKGROUND_MAX_OVERFLOW"] = "10"
 
 from app.db.models import Base  # noqa: E402
 from app.db.session import engine  # noqa: E402
@@ -165,6 +170,15 @@ def _reset_global_state() -> None:
         from app.core.shutdown import set_bridge_drain_active
 
         set_bridge_drain_active(False)
+    except Exception:
+        pass
+    try:
+        import app.db.sqlite_retry as sqlite_retry_module
+
+        # A test that abandons a serialized sqlite write (cancelled task or
+        # torn-down event loop) leaves this module-level Lock held and bound to
+        # a dead loop; every later serialized write then fails hard.
+        sqlite_retry_module._SQLITE_WRITE_LOCK = asyncio.Lock()
     except Exception:
         pass
 

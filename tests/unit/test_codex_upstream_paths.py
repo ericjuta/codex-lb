@@ -303,7 +303,7 @@ async def test_compact_responses_uses_upstream_chatgpt_account_id_header(route: 
         chatgpt_account_id="upstream_chatgpt_account_id",
     )
 
-    assert client.calls[0]["headers"]["ChatGPT-Account-Id"] == "upstream_chatgpt_account_id"
+    assert client.calls[0]["headers"]["chatgpt-account-id"] == "upstream_chatgpt_account_id"
 
 
 @pytest.mark.asyncio
@@ -324,7 +324,7 @@ async def test_compact_responses_preserves_legacy_account_id_header(
         chatgpt_account_id=None,
     )
 
-    assert client.calls[0]["headers"]["ChatGPT-Account-Id"] == "legacy_upstream_account_id"
+    assert client.calls[0]["headers"]["chatgpt-account-id"] == "legacy_upstream_account_id"
 
 
 @pytest.mark.asyncio
@@ -417,7 +417,11 @@ async def test_file_create_and_finalize_use_codex_client_when_route_is_resolved(
 
 
 @pytest.mark.asyncio
-async def test_stream_responses_uses_codex_client_when_route_is_resolved(route: ResolvedUpstreamRoute) -> None:
+async def test_stream_responses_uses_codex_client_when_route_is_resolved(
+    route: ResolvedUpstreamRoute,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(proxy_module, "should_apply_codex_continuation", lambda payload, config: False)
     client = _CodexClient(_StreamResponse())
     trace = UpstreamProxyRouteTrace()
     payload = ResponsesRequest(model="gpt-5.2", instructions="Reply.", input="hello", stream=True)
@@ -446,7 +450,9 @@ async def test_stream_responses_uses_codex_client_when_route_is_resolved(route: 
 @pytest.mark.asyncio
 async def test_stream_responses_websocket_transport_uses_codex_client_when_route_is_resolved(
     route: ResolvedUpstreamRoute,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(proxy_module, "should_apply_codex_continuation", lambda payload, config: False)
     client = _WsCodexClient()
     trace = UpstreamProxyRouteTrace()
     payload = ResponsesRequest(model="gpt-5.2", instructions="Reply.", input="hello", stream=True)
@@ -477,7 +483,9 @@ async def test_stream_responses_websocket_transport_uses_codex_client_when_route
 @pytest.mark.asyncio
 async def test_stream_responses_routed_websocket_closes_raw_result_without_context(
     route: ResolvedUpstreamRoute,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(proxy_module, "should_apply_codex_continuation", lambda payload, config: False)
     client = _RawWsCodexClient()
     trace = UpstreamProxyRouteTrace()
     payload = ResponsesRequest(model="gpt-5.2", instructions="Reply.", input="hello", stream=True)
@@ -512,6 +520,7 @@ async def test_stream_responses_routed_auto_websocket_426_falls_back_to_http(
     client = _AutoFallbackCodexClient()
     payload = ResponsesRequest(model="gpt-5.2", instructions="Reply.", input="hello", stream=True)
 
+    monkeypatch.setattr(proxy_module, "should_apply_codex_continuation", lambda payload, config: False)
     monkeypatch.setattr(
         proxy_module,
         "get_model_registry",

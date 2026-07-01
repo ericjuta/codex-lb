@@ -173,6 +173,7 @@ def _make_app_settings(
 ) -> Settings:
     return Settings(
         http_responses_session_bridge_enabled=enabled,
+        codex_continuation_bypass_http_bridge=False,
         http_responses_session_bridge_idle_ttl_seconds=120.0,
         http_responses_session_bridge_codex_idle_ttl_seconds=codex_idle_ttl_seconds,
         http_responses_session_bridge_codex_prewarm_enabled=codex_prewarm_enabled,
@@ -1278,6 +1279,7 @@ def _make_dummy_bridge_session(session_key: proxy_module._HTTPBridgeSessionKey) 
         key=session_key,
         headers={},
         closed=False,
+        upstream_close_attempted=False,
         account=SimpleNamespace(id=None, status=AccountStatus.ACTIVE),
         request_model="gpt-5.4",
         pending_lock=anyio.Lock(),

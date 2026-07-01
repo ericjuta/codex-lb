@@ -1037,7 +1037,7 @@ async def test_v1_chat_completions_rejects_audio_input(async_client):
 
 
 @pytest.mark.asyncio
-async def test_v1_chat_completions_drops_unsupported_builtin_tools(async_client, monkeypatch):
+async def test_v1_chat_completions_rejects_unsupported_builtin_tools(async_client, monkeypatch):
     await _import_account(async_client, "acc_chat_builtin_tools", "chat-builtin-tools@example.com")
     seen = {}
 
@@ -1053,8 +1053,10 @@ async def test_v1_chat_completions_drops_unsupported_builtin_tools(async_client,
         "tools": [{"type": "image_generation"}],
     }
     resp = await async_client.post("/v1/chat/completions", json=payload)
-    assert resp.status_code == 200
-    assert seen["payload"].tools == []
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["error"]["type"] == "invalid_request_error"
+    assert "payload" not in seen
 
 
 @pytest.mark.asyncio

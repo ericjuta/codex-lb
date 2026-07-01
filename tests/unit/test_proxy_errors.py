@@ -6,7 +6,7 @@ import pytest
 from starlette.requests import Request
 
 from app.core.clients.proxy import ProxyResponseError, _error_event_from_response, _error_payload_from_response
-from app.modules.proxy.api import _logged_error_json_response, _stream_response_error_events
+from app.modules.proxy.api import _logged_error_json_response, _stream_proxy_errors_as_response_failed
 
 pytestmark = pytest.mark.unit
 
@@ -35,7 +35,7 @@ async def test_stream_proxy_error_preserves_upstream_diagnostic_markers():
 
     events = [
         event
-        async for event in _stream_response_error_events(
+        async for event in _stream_proxy_errors_as_response_failed(
             stream(),
             owns_reservation=False,
             reservation=None,

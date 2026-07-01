@@ -32,7 +32,6 @@ def test_settings_multi_replica_defaults(monkeypatch):
     assert settings.compact_request_budget_seconds == 180.0
     assert settings.proxy_request_budget_seconds == 600.0
     assert settings.http_responses_session_bridge_request_budget_seconds == 7200.0
-    assert settings.stream_idle_timeout_seconds == 600.0
     assert settings.http_responses_session_bridge_codex_request_budget_seconds == 600.0
     assert settings.http_responses_session_bridge_codex_prewarm_enabled is True
     assert settings.stream_idle_timeout_seconds == 7200.0

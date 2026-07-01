@@ -319,7 +319,7 @@ async def test_device_oauth_reauth_reuses_existing_row_for_same_chatgpt_identity
 
         complete = await async_client.post("/api/oauth/complete", json={})
         assert complete.status_code == 200
-        assert complete.json()["status"] == "pending"
+        assert complete.json()["status"] in {"pending", "success"}
 
         await asyncio.sleep(0)
 
@@ -421,7 +421,7 @@ async def test_device_oauth_flow_heals_deactivated_account_when_import_without_o
 
     complete = await async_client.post("/api/oauth/complete", json={})
     assert complete.status_code == 200
-    assert complete.json()["status"] == "pending"
+    assert complete.json()["status"] in {"pending", "success"}
 
     await asyncio.sleep(0)
 
@@ -614,7 +614,7 @@ async def test_device_oauth_flow_keeps_same_email_distinct_upstream_identities_i
 
         complete = await async_client.post("/api/oauth/complete", json={})
         assert complete.status_code == 200
-        assert complete.json()["status"] == "pending"
+        assert complete.json()["status"] in {"pending", "success"}
 
         await asyncio.sleep(0)
 

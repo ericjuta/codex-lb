@@ -662,7 +662,12 @@ async def test_init_background_db_creates_separate_engine() -> None:
 
 
 @pytest.mark.asyncio
-async def test_init_background_db_uses_main_pool_size_for_postgres_by_default() -> None:
+async def test_init_background_db_uses_main_pool_size_for_postgres_by_default(monkeypatch) -> None:
+    monkeypatch.setattr(
+        session_module,
+        "_settings",
+        _FakeSettings(database_url="postgresql+asyncpg://user:pass@localhost/db"),
+    )
     session_module.init_background_db("postgresql+asyncpg://user:pass@localhost/db")
 
     assert session_module._background_engine is not None
