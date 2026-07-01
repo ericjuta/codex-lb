@@ -29,7 +29,7 @@ from app.core.clients.codex import (
 )
 from app.core.clients.proxy import (
     _CHATGPT_ACCOUNT_ID_HEADER,
-    _HOP_BY_HOP_HEADER_NAMES,
+    _WEBSOCKET_EXCLUDED_HEADER_NAMES,
     ProxyResponseError,
     _is_native_codex_request,
     _normalize_non_native_upstream_fingerprint,
@@ -44,7 +44,7 @@ from app.core.upstream_proxy import ResolvedUpstreamRoute
 from app.core.utils.proxy_env import resolve_websocket_proxy_from_env
 from app.core.utils.request_id import get_request_id
 
-_WEBSOCKET_HOP_BY_HOP_HEADERS = _HOP_BY_HOP_HEADER_NAMES | frozenset(
+_WEBSOCKET_HOP_BY_HOP_HEADERS = _WEBSOCKET_EXCLUDED_HEADER_NAMES | frozenset(
     {
         "accept-encoding",
         "cookie",
