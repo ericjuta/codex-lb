@@ -5,4 +5,5 @@
       `main` and on pull requests.
 - [x] Confirm `uv run ruff check .` passes repo-wide so the lint gate starts
       green (fix any auto-fixable violations first).
-- [ ] Push and confirm the first workflow run completes green on GitHub.
+- [x] Push and confirm the first workflow run completes green on GitHub
+      (run 28554622517 on 7fddc744: success).
