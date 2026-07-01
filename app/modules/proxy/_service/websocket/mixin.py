@@ -1138,14 +1138,27 @@ class _WebSocketMixin:
                             codex_continuation_config_from_settings(runtime_settings),
                         )
                     ):
-                        request_state.continuation_fold = _WebSocketContinuationFold(
-                            codex_continuation_config_from_settings(runtime_settings),
-                            {key: value for key, value in payload.items() if key != "type"},
-                        )
                         # Force encrypted reasoning on the visible round so a
                         # truncated round can be folded (matches the HTTP fold).
                         if text_data is not None:
                             text_data = _websocket_text_with_forced_encrypted_include(text_data)
+                        # Base the fold on the prepared/normalized upstream request
+                        # (text_data), NOT the raw client payload: the prepared
+                        # request has already had upstream-unsupported fields
+                        # stripped (e.g. max_output_tokens), so hidden continuation
+                        # rounds built from it stay accepted by the upstream.
+                        prepared_body = _parse_websocket_payload(text_data) if text_data is not None else None
+                        fold_base_body = {
+                            key: value
+                            for key, value in (
+                                prepared_body if isinstance(prepared_body, dict) else payload
+                            ).items()
+                            if key != "type"
+                        }
+                        request_state.continuation_fold = _WebSocketContinuationFold(
+                            codex_continuation_config_from_settings(runtime_settings),
+                            fold_base_body,
+                        )
                     else:
                         request_state.continuation_fold = None
                     upstream_control = _WebSocketUpstreamControl()
