@@ -293,6 +293,10 @@ from app.modules.proxy._service.observability import (
 from app.modules.proxy._service.observability import (
     _truncate_identifier as _truncate_identifier,
 )
+from app.modules.proxy._service.streaming.usage import (
+    _proxy_billed_usage_from_event_payload,
+    _stream_usage_accounting,
+)
 from app.modules.proxy._service.support import (
     _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
     _REQUEST_TRANSPORT_HTTP,
@@ -3481,6 +3485,13 @@ class _WebSocketMixin:
             if event and event.response and event.response.id:
                 response_id = event.response.id
 
+        # Prefer the proxy's aggregated billed usage (folded continuation rounds)
+        # over the agent-facing response.usage for settlement and request logs,
+        # mirroring the HTTP path's _stream_usage_accounting. No-op unless a
+        # folded terminal event carries metadata.proxy_billed_usage.
+        billed_usage_payload = _proxy_billed_usage_from_event_payload(payload)
+        usage_accounting = _stream_usage_accounting(usage, billed_usage_payload)
+
         actual_service_tier = _facade()._service_tier_from_event_payload(payload)
         if actual_service_tier is not None:
             request_state.actual_service_tier = actual_service_tier
@@ -3490,11 +3501,9 @@ class _WebSocketMixin:
             status=status,
             model=request_state.model or "",
             service_tier=response_service_tier,
-            input_tokens=usage.input_tokens if usage else None,
-            output_tokens=usage.output_tokens if usage else None,
-            cached_input_tokens=(
-                usage.input_tokens_details.cached_tokens if usage and usage.input_tokens_details else None
-            ),
+            input_tokens=usage_accounting.input_tokens,
+            output_tokens=usage_accounting.output_tokens,
+            cached_input_tokens=usage_accounting.cached_input_tokens,
             error_code=error_code,
             error_message=error_message,
             error=error_payload,
@@ -3550,10 +3559,8 @@ class _WebSocketMixin:
                 )
 
         latency_ms = int((time.monotonic() - request_state.started_at) * 1000)
-        cached_input_tokens = usage.input_tokens_details.cached_tokens if usage and usage.input_tokens_details else None
-        reasoning_tokens = (
-            usage.output_tokens_details.reasoning_tokens if usage and usage.output_tokens_details else None
-        )
+        cached_input_tokens = usage_accounting.cached_input_tokens
+        reasoning_tokens = usage_accounting.reasoning_tokens
         if not request_state.skip_request_log:
             request_log_response_id = (
                 _websocket_downstream_response_id(request_state) if settlement.record_success else response_id
@@ -3568,8 +3575,8 @@ class _WebSocketMixin:
                 status=status,
                 error_code=error_code,
                 error_message=error_message,
-                input_tokens=usage.input_tokens if usage else None,
-                output_tokens=usage.output_tokens if usage else None,
+                input_tokens=usage_accounting.input_tokens,
+                output_tokens=usage_accounting.output_tokens,
                 cached_input_tokens=cached_input_tokens,
                 reasoning_tokens=reasoning_tokens,
                 reasoning_effort=request_state.reasoning_effort,

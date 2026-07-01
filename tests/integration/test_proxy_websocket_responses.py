@@ -760,6 +760,145 @@ def test_backend_responses_websocket_proxies_upstream_and_persists_log(app_insta
     assert log["output_tokens"] == 5
 
 
+def test_backend_responses_websocket_settles_proxy_billed_usage_when_present(app_instance, monkeypatch):
+    # A folded continuation stream returns agent-facing response.usage plus the
+    # true aggregated usage under metadata.proxy_billed_usage. Settlement and the
+    # request log must bill the aggregated usage; the client still sees the
+    # agent-facing usage.
+    upstream_messages = [
+        _FakeUpstreamMessage(
+            "text",
+            text=json.dumps(
+                {
+                    "type": "response.created",
+                    "response": {"id": "resp_ws_billed", "object": "response", "status": "in_progress"},
+                },
+                separators=(",", ":"),
+            ),
+        ),
+        _FakeUpstreamMessage(
+            "text",
+            text=json.dumps(
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_ws_billed",
+                        "object": "response",
+                        "status": "completed",
+                        "service_tier": "fast",
+                        "usage": {
+                            "input_tokens": 3,
+                            "output_tokens": 5,
+                            "total_tokens": 8,
+                            "input_tokens_details": {"cached_tokens": 0},
+                            "output_tokens_details": {"reasoning_tokens": 2},
+                        },
+                        "metadata": {
+                            "proxy_billed_usage": {
+                                "input_tokens": 11,
+                                "output_tokens": 42,
+                                "total_tokens": 53,
+                                "input_tokens_details": {"cached_tokens": 4},
+                                "output_tokens_details": {"reasoning_tokens": 30},
+                            }
+                        },
+                    },
+                },
+                separators=(",", ":"),
+            ),
+        ),
+    ]
+    fake_upstream = _FakeUpstreamWebSocket(upstream_messages)
+    log_calls: list[dict[str, object]] = []
+    settlements: list[Any] = []
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        return None
+
+    async def fake_connect_proxy_websocket(
+        self,
+        headers,
+        *,
+        sticky_key,
+        sticky_kind,
+        reallocate_sticky,
+        sticky_max_age_seconds,
+        prefer_earlier_reset,
+        prefer_earlier_reset_window,
+        routing_strategy,
+        model,
+        request_state,
+        api_key,
+        client_send_lock,
+        websocket,
+    ):
+        return SimpleNamespace(id="acct_ws_billed", codex_installation_id="account-installation"), fake_upstream
+
+    async def fake_write_request_log(self, **kwargs):
+        log_calls.append(kwargs)
+
+    async def fake_settle(self, api_key, reservation, settlement, response_id):
+        settlements.append(settlement)
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", fake_connect_proxy_websocket)
+    monkeypatch.setattr(proxy_module.ProxyService, "_write_request_log", fake_write_request_log)
+    monkeypatch.setattr(proxy_module.ProxyService, "_settle_stream_api_key_usage", fake_settle)
+
+    request_payload = {
+        "type": "response.create",
+        "model": "gpt-5.4",
+        "instructions": "",
+        "reasoning": {"effort": "high"},
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "stream": True,
+    }
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={
+                "Authorization": "Bearer external-token",
+                "chatgpt-account-id": "external-account",
+                "session_id": "thread-ws-billed",
+                "openai-beta": "responses_websockets=2026-02-06",
+            },
+        ) as websocket:
+            websocket.send_text(json.dumps(request_payload))
+            first = json.loads(websocket.receive_text())
+            second = json.loads(websocket.receive_text())
+
+    assert first["type"] == "response.created"
+    assert second["type"] == "response.completed"
+    # Client still receives the agent-facing usage untouched.
+    assert second["response"]["usage"]["input_tokens"] == 3
+    assert second["response"]["usage"]["output_tokens"] == 5
+
+    # Request log bills the aggregated proxy_billed_usage, not response.usage.
+    assert len(log_calls) == 1
+    log = log_calls[0]
+    assert log["input_tokens"] == 11
+    assert log["output_tokens"] == 42
+    assert log["cached_input_tokens"] == 4
+    assert log["reasoning_tokens"] == 30
+
+    # API-key settlement bills the aggregated usage too.
+    assert len(settlements) == 1
+    settlement = settlements[0]
+    assert settlement.input_tokens == 11
+    assert settlement.output_tokens == 42
+    assert settlement.cached_input_tokens == 4
+
+
 def test_backend_responses_websocket_keeps_same_response_distinct_tool_call_ids(
     app_instance,
     monkeypatch,
