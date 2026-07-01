@@ -984,6 +984,7 @@ def test_normalize_responses_request_payload_preserves_backend_codex_image_gener
     request = proxy_request_policy.normalize_responses_request_payload(
         payload,
         openai_compat=True,
+        codex_tool_compat=True,
     )
 
     assert request.tools == [image_tool, function_tool]

@@ -363,47 +363,18 @@ def normalize_responses_request_payload(
     codex_tool_compat: bool = False,
     allow_native_tool_types: bool = False,
 ) -> ResponsesRequest:
-    effective_payload = _sanitize_backend_codex_tool_advertisements(payload) if codex_tool_compat else payload
+    if codex_tool_compat:
+        allow_native_tool_types = True
     context = _ALLOW_NATIVE_TOOL_TYPES_CONTEXT if allow_native_tool_types else None
     if openai_compat:
-        responses = V1ResponsesRequest.model_validate(effective_payload, context=context).to_responses_request(
+        responses = V1ResponsesRequest.model_validate(payload, context=context).to_responses_request(
             allow_native_tool_types=allow_native_tool_types
         )
     else:
-        responses = ResponsesRequest.model_validate(effective_payload, context=context)
+        responses = ResponsesRequest.model_validate(payload, context=context)
     enforce_strict_text_format(responses)
     enforce_strict_function_tools_format(responses.tools)
     return responses
-
-
-def _sanitize_backend_codex_tool_advertisements(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
-    tools_value = payload.get("tools")
-    if not is_json_list(tools_value):
-        return payload
-    if _explicitly_requests_image_generation(payload.get("tool_choice"), tools_value):
-        return payload
-
-    sanitized_tools: list[JsonValue] = []
-    removed_any = False
-    for tool in tools_value:
-        if is_json_mapping(tool) and tool.get("type") == "image_generation" and "output_format" in tool:
-            removed_any = True
-            continue
-        sanitized_tools.append(tool)
-
-    if not removed_any:
-        return payload
-
-    sanitized_payload = dict(payload)
-    sanitized_payload["tools"] = sanitized_tools
-    return sanitized_payload
-
-
-def _explicitly_requests_image_generation(tool_choice: JsonValue | None, tools: list[JsonValue]) -> bool:
-    if tool_choice == "required":
-        return all(is_json_mapping(tool) and tool.get("type") == "image_generation" for tool in tools)
-    return is_json_mapping(tool_choice) and tool_choice.get("type") == "image_generation"
-
 
 def strip_terminal_compaction_trigger_input(payload: ResponsesRequest) -> list[JsonValue] | None:
     input_value = payload.input

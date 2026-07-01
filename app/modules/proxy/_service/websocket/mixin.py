@@ -1130,6 +1130,28 @@ class _WebSocketMixin:
                     account_lease = request_state.websocket_stream_lease
                     request_state.websocket_stream_lease = None
                     upstream_turn_state = _facade()._upstream_turn_state_from_socket(upstream) or upstream_turn_state
+                    upstream_control = _WebSocketUpstreamControl()
+                    upstream_reader = asyncio.create_task(
+                        proxy._relay_upstream_websocket_messages(
+                            websocket,
+                            upstream,
+                            account=account,
+                            account_id_value=account.id,
+                            pending_requests=pending_requests,
+                            pending_lock=pending_lock,
+                            client_send_lock=client_send_lock,
+                            api_key=api_key,
+                            upstream_control=upstream_control,
+                            response_create_gate=response_create_gate,
+                            continuity_state=continuity_state,
+                            proxy_request_budget_seconds=runtime_settings.proxy_request_budget_seconds,
+                            stream_idle_timeout_seconds=runtime_settings.stream_idle_timeout_seconds,
+                            downstream_activity=downstream_activity,
+                            codex_session_affinity=codex_session_affinity,
+                        )
+                    )
+
+                try:
                     if (
                         request_state is not None
                         and payload is not None
@@ -1160,30 +1182,8 @@ class _WebSocketMixin:
                             codex_continuation_config_from_settings(runtime_settings),
                             fold_base_body,
                         )
-                    else:
+                    elif request_state is not None:
                         request_state.continuation_fold = None
-                    upstream_control = _WebSocketUpstreamControl()
-                    upstream_reader = asyncio.create_task(
-                        proxy._relay_upstream_websocket_messages(
-                            websocket,
-                            upstream,
-                            account=account,
-                            account_id_value=account.id,
-                            pending_requests=pending_requests,
-                            pending_lock=pending_lock,
-                            client_send_lock=client_send_lock,
-                            api_key=api_key,
-                            upstream_control=upstream_control,
-                            response_create_gate=response_create_gate,
-                            continuity_state=continuity_state,
-                            proxy_request_budget_seconds=runtime_settings.proxy_request_budget_seconds,
-                            stream_idle_timeout_seconds=runtime_settings.stream_idle_timeout_seconds,
-                            downstream_activity=downstream_activity,
-                            codex_session_affinity=codex_session_affinity,
-                        )
-                    )
-
-                try:
                     if (
                         text_data is not None
                         and request_state is not None
