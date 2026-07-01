@@ -14,6 +14,7 @@ is byte-compatible with the HTTP fold.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -41,6 +42,8 @@ from app.core.clients.codex_truncation import (
     should_continue,
     tier_n,
 )
+
+logger = logging.getLogger(__name__)
 
 _TERMINAL_EVENT_TYPES = frozenset({"response.completed", "response.failed", "response.incomplete"})
 
@@ -181,6 +184,19 @@ class _WebSocketContinuationFold:
             within_output_cap=within_output_cap,
             config=self._config,
         )
+
+        if truncation_tier is not None:
+            # Only log turns that hit the truncation fingerprint (the cases where
+            # continuation does or deliberately does not fire); non-truncated
+            # turns are the uninteresting common path.
+            logger.info(
+                "codex_continuation_ws round=%s reasoning_tokens=%s tier=%s has_encrypted=%s decision=%s",
+                self._round_number,
+                round_reasoning_tokens,
+                truncation_tier,
+                has_encrypted_content,
+                "continue" if should_continue_round else (stopped_reason or "stop"),
+            )
 
         if should_continue_round:
             marker = commentary_message(self._config.marker_text)
