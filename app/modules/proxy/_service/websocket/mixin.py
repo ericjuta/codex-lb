@@ -574,6 +574,29 @@ def _websocket_text_with_account_installation_id(text_data: str, account: Accoun
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
 
+def _websocket_text_with_forced_encrypted_include(text_data: str) -> str:
+    """Ensure the visible round requests encrypted reasoning content.
+
+    Codex continuation can only fold a truncated round if the upstream returns
+    ``reasoning.encrypted_content`` to replay. The HTTP fold forces this include
+    on every round; on the websocket path the visible round is the client's own
+    request, so force it here for continuation-eligible turns (a no-op if the
+    upstream does not return encrypted reasoning, which simply disables folding).
+    """
+    try:
+        payload = json.loads(text_data)
+    except (TypeError, ValueError):
+        return text_data
+    if not isinstance(payload, dict):
+        return text_data
+    include = payload.get("include")
+    items = [str(x) for x in include] if isinstance(include, list) else []
+    if "reasoning.encrypted_content" not in items:
+        items.append("reasoning.encrypted_content")
+    payload["include"] = items
+    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+
+
 def _websocket_enforce_response_create_text_size(
     request_state: _WebSocketRequestState,
     text_data: str,
@@ -1119,6 +1142,10 @@ class _WebSocketMixin:
                             codex_continuation_config_from_settings(runtime_settings),
                             {key: value for key, value in payload.items() if key != "type"},
                         )
+                        # Force encrypted reasoning on the visible round so a
+                        # truncated round can be folded (matches the HTTP fold).
+                        if text_data is not None:
+                            text_data = _websocket_text_with_forced_encrypted_include(text_data)
                     else:
                         request_state.continuation_fold = None
                     upstream_control = _WebSocketUpstreamControl()
