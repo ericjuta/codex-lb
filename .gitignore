@@ -62,3 +62,4 @@ legacy/
 PROMPT.md
 SUMMARY.md
 .superpowers/
+.agents/scheduled_tasks.lock
