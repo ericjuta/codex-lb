@@ -685,6 +685,9 @@ from app.modules.proxy.affinity import (
 from app.modules.proxy.affinity import (
     _sticky_key_for_responses_request as _sticky_key_for_responses_request,
 )
+from app.modules.proxy.continuity_repository import (
+    WebsocketContinuityStatesRepository as WebsocketContinuityStatesRepository,
+)
 from app.modules.proxy.durable_bridge_coordinator import (
     DurableBridgeLookup as DurableBridgeLookup,
 )
@@ -935,6 +938,7 @@ class ProxyService(
         self._http_bridge_lock = anyio.Lock()
         self._work_admission: WorkAdmissionController | None = None
         self._request_log_tasks: set[asyncio.Task[None]] = set()
+        self._websocket_continuity_persist_tasks: set[asyncio.Task[None]] = set()
 
     def _get_work_admission(self) -> WorkAdmissionController:
         if self._work_admission is None:

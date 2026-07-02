@@ -12,11 +12,14 @@ from app.core import startup as startup_module
 from app.core.config.settings import get_settings
 from app.core.utils.time import utcnow
 from app.db.session import get_background_session
+from app.modules.proxy.continuity_repository import WebsocketContinuityStatesRepository
 from app.modules.proxy.durable_bridge_repository import DurableBridgeRepository, missing_durable_bridge_tables
 from app.modules.proxy.sticky_repository import StickySessionsRepository
 from app.modules.settings.repository import SettingsRepository
 
 logger = logging.getLogger(__name__)
+
+_WEBSOCKET_CONTINUITY_STATE_MAX_AGE_HOURS = 48
 
 
 class _LeaderElectionLike(Protocol):
@@ -80,6 +83,22 @@ class StickySessionCleanupScheduler:
                         bridge_deleted_count = await bridge_repo.purge_closed_before(cutoff)
                         if bridge_deleted_count > 0:
                             logger.info("Purged closed HTTP bridge sessions deleted_count=%s", bridge_deleted_count)
+
+                    # Guarded independently: the table may not exist yet
+                    # mid-rollout, and its failure must not break the sticky
+                    # or bridge purges above.
+                    try:
+                        continuity_cutoff = utcnow() - timedelta(hours=_WEBSOCKET_CONTINUITY_STATE_MAX_AGE_HOURS)
+                        continuity_deleted_count = await WebsocketContinuityStatesRepository(session).purge_before(
+                            continuity_cutoff
+                        )
+                        if continuity_deleted_count > 0:
+                            logger.info(
+                                "Purged stale websocket continuity states deleted_count=%s",
+                                continuity_deleted_count,
+                            )
+                    except Exception:
+                        logger.warning("WebSocket continuity state purge failed", exc_info=True)
             except Exception:
                 logger.exception("Sticky session cleanup loop failed")
 

@@ -25,12 +25,14 @@ class _WebSocketServiceProtocol(Protocol):
     _handle_precreated_websocket_auth_failure: Any
     _handle_stream_error: Any
     _handle_websocket_connect_error: Any
+    _hydrate_websocket_continuity_state: Any
     _load_balancer: Any
     _maybe_touch_request_state_api_key_reservation: Any
     _next_websocket_receive_timeout: Any
     _open_upstream_websocket: Any
     _open_upstream_websocket_with_budget: Any
     _prepare_response_bridge_request_state: Any
+    _persist_websocket_continuity_state: Any
     _prepare_websocket_response_create_request: Any
     _process_upstream_websocket_text: Any
     _raise_for_unsupported_input_image_references: Any
@@ -46,6 +48,7 @@ class _WebSocketServiceProtocol(Protocol):
     _resolve_upstream_route_for_account: Any
     _resolve_websocket_previous_response_owner: Any
     _retry_websocket_connect_after_401: Any
+    _schedule_websocket_continuity_persist: Any
     _select_account_with_budget_compatible: Any
     _select_websocket_connect_account: Any
     _send_downstream_websocket_bytes: Any
@@ -54,6 +57,7 @@ class _WebSocketServiceProtocol(Protocol):
     _start_request_state_api_key_reservation_heartbeat: Any
     _try_open_websocket_connect_attempt: Any
     _websocket_continuity_index: Any
+    _websocket_continuity_persist_tasks: Any
     _websocket_continuity_state_for_request: Any
     _websocket_previous_response_account_index: Any
     _write_request_log: Any

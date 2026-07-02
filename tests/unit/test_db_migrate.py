@@ -418,6 +418,44 @@ def test_http_downstream_transport_policy_migration_round_trips_with_default_nul
         engine.dispose()
 
 
+def test_websocket_continuity_states_migration_round_trips_with_default_empty_api_key(tmp_path: Path) -> None:
+    db_path = tmp_path / "websocket-continuity-states.db"
+    url = _db_url(db_path)
+    parent_revision = "20260702_082359_merge_weekly_pace_and_rebased_warmup_heads"
+    revision = "20260702_090000_add_websocket_continuity_states"
+
+    run_upgrade(url, parent_revision, bootstrap_legacy=False)
+    engine = create_engine(to_sync_database_url(url))
+    try:
+        config = _build_alembic_config(url)
+        command.upgrade(config, revision)
+        with engine.begin() as connection:
+            connection.execute(
+                text("INSERT INTO websocket_continuity_states (session_key, state) VALUES (:session_key, :state)"),
+                {"session_key": "sess_continuity_migration", "state": "{}"},
+            )
+        with engine.connect() as connection:
+            inspector = inspect(connection)
+            assert "websocket_continuity_states" in inspector.get_table_names()
+            index_names = {index["name"] for index in inspector.get_indexes("websocket_continuity_states")}
+            assert "idx_websocket_continuity_states_updated_at" in index_names
+            api_key_id, updated_at = connection.execute(
+                text(
+                    "SELECT api_key_id, updated_at FROM websocket_continuity_states "
+                    "WHERE session_key = 'sess_continuity_migration'"
+                )
+            ).one()
+            assert api_key_id == ""
+            assert updated_at is not None
+
+        command.downgrade(config, parent_revision)
+        with engine.connect() as connection:
+            inspector = inspect(connection)
+            assert "websocket_continuity_states" not in inspector.get_table_names()
+    finally:
+        engine.dispose()
+
+
 def test_base_revision_does_not_depend_on_live_metadata(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "base.db"
     url = _db_url(db_path)

@@ -498,12 +498,70 @@ class _WebSocketContinuityState:
     # upstream with the final round's id (the visible round's stored context
     # lacks the hidden rounds' output items, e.g. tool calls).
     folded_response_id_aliases: dict[str, str] = field(default_factory=dict)
+    # Cross-worker persistence bookkeeping (never serialized). ``persist_key``
+    # is ``(session_key, api_key_id or "")``; unkeyed states keep ``None`` and
+    # are never read from or written to the shared store.
+    persist_key: tuple[str, str] | None = None
+    persist_inflight: bool = False
+    persist_pending_payload: dict[str, JsonValue] | None = None
 
     def record_folded_response_id_alias(self, visible_response_id: str, upstream_response_id: str) -> None:
         self.folded_response_id_aliases.pop(visible_response_id, None)
         self.folded_response_id_aliases[visible_response_id] = upstream_response_id
         while len(self.folded_response_id_aliases) > _WEBSOCKET_FOLDED_RESPONSE_ALIAS_LIMIT:
             self.folded_response_id_aliases.pop(next(iter(self.folded_response_id_aliases)))
+
+    def is_pristine(self) -> bool:
+        return (
+            self.last_completed_input_count == 0
+            and self.last_completed_response_id is None
+            and self.last_completed_input_prefix_fingerprint is None
+            and not self.last_pending_function_call_ids
+            and not self.folded_response_id_aliases
+        )
+
+    def to_persistable_dict(self) -> dict[str, JsonValue]:
+        return {
+            "last_completed_input_count": self.last_completed_input_count,
+            "last_completed_response_id": self.last_completed_response_id,
+            "last_completed_input_prefix_fingerprint": self.last_completed_input_prefix_fingerprint,
+            "last_pending_function_call_ids": list(self.last_pending_function_call_ids),
+            "folded_response_id_aliases": dict(self.folded_response_id_aliases),
+        }
+
+    def apply_persisted_dict(self, payload: Mapping[str, JsonValue]) -> bool:
+        """Hydrate from a persisted snapshot; reject non-conforming payloads.
+
+        Returns ``False`` (leaving the state untouched) when any field fails
+        validation so a corrupt row degrades to the empty in-memory state.
+        """
+        input_count = payload.get("last_completed_input_count")
+        response_id = payload.get("last_completed_response_id")
+        fingerprint = payload.get("last_completed_input_prefix_fingerprint")
+        pending_call_ids = payload.get("last_pending_function_call_ids")
+        aliases = payload.get("folded_response_id_aliases")
+        if not isinstance(input_count, int) or isinstance(input_count, bool) or input_count < 0:
+            return False
+        if response_id is not None and not isinstance(response_id, str):
+            return False
+        if fingerprint is not None and not isinstance(fingerprint, str):
+            return False
+        if not isinstance(pending_call_ids, list) or not all(
+            isinstance(call_id, str) for call_id in pending_call_ids
+        ):
+            return False
+        if not isinstance(aliases, dict) or not all(
+            isinstance(visible_id, str) and isinstance(upstream_id, str) for visible_id, upstream_id in aliases.items()
+        ):
+            return False
+        self.last_completed_input_count = input_count
+        self.last_completed_response_id = response_id
+        self.last_completed_input_prefix_fingerprint = fingerprint
+        self.last_pending_function_call_ids = list(pending_call_ids)
+        self.folded_response_id_aliases = {}
+        for visible_id, upstream_id in aliases.items():
+            self.record_folded_response_id_alias(visible_id, upstream_id)
+        return True
 
 
 @dataclass(frozen=True, slots=True)

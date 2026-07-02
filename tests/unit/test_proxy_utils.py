@@ -24,6 +24,7 @@ from starlette.responses import StreamingResponse
 from starlette.websockets import WebSocketDisconnect
 
 import app.core.clients.proxy as proxy_module
+from app.core.clients.codex_continuation import CodexContinuationConfig
 from app.core.clients.proxy import _build_upstream_compact_headers, _build_upstream_headers, filter_inbound_headers
 from app.core.config.settings import Settings
 from app.core.crypto import TokenEncryptor
@@ -58,6 +59,7 @@ from app.modules.proxy._service.support import (
 )
 from app.modules.proxy._service.websocket import mixin as websocket_mixin
 from app.modules.proxy._service.websocket import mixin as websocket_mixin_module
+from app.modules.proxy.continuity_repository import WebsocketContinuityStatesRepository
 from app.modules.proxy.load_balancer import (
     AccountLease,
     AccountSelection,
@@ -2655,8 +2657,33 @@ class _RequestLogsRecorder:
         return None
 
 
+class _WebsocketContinuityStoreRecorder:
+    def __init__(self) -> None:
+        self.rows: dict[tuple[str, str], dict[str, JsonValue]] = {}
+        self.get_calls: list[tuple[str, str]] = []
+        self.upsert_calls: list[tuple[str, str, dict[str, JsonValue]]] = []
+        self.get_error: Exception | None = None
+        self.upsert_error: Exception | None = None
+
+    async def get(self, session_key: str, api_key_id: str) -> dict[str, JsonValue] | None:
+        self.get_calls.append((session_key, api_key_id))
+        if self.get_error is not None:
+            raise self.get_error
+        return self.rows.get((session_key, api_key_id))
+
+    async def upsert(self, session_key: str, api_key_id: str, state: dict[str, JsonValue]) -> None:
+        self.upsert_calls.append((session_key, api_key_id, dict(state)))
+        if self.upsert_error is not None:
+            raise self.upsert_error
+        self.rows[(session_key, api_key_id)] = dict(state)
+
+
 class _RepoContext:
-    def __init__(self, request_logs: _RequestLogsRecorder) -> None:
+    def __init__(
+        self,
+        request_logs: _RequestLogsRecorder,
+        websocket_continuity: _WebsocketContinuityStoreRecorder | None = None,
+    ) -> None:
         self._repos = ProxyRepositories(
             accounts=cast(AccountsRepository, AsyncMock()),
             usage=cast(UsageRepository, AsyncMock()),
@@ -2664,6 +2691,7 @@ class _RepoContext:
             sticky_sessions=cast(StickySessionsRepository, AsyncMock()),
             api_keys=cast(ApiKeysRepository, AsyncMock()),
             additional_usage=cast(AdditionalUsageRepository, AsyncMock()),
+            websocket_continuity=cast("WebsocketContinuityStatesRepository | None", websocket_continuity),
         )
 
     async def __aenter__(self) -> ProxyRepositories:
@@ -2673,9 +2701,12 @@ class _RepoContext:
         return False
 
 
-def _repo_factory(request_logs: _RequestLogsRecorder) -> proxy_service.ProxyRepoFactory:
+def _repo_factory(
+    request_logs: _RequestLogsRecorder,
+    websocket_continuity: _WebsocketContinuityStoreRecorder | None = None,
+) -> proxy_service.ProxyRepoFactory:
     def factory() -> _RepoContext:
-        return _RepoContext(request_logs)
+        return _RepoContext(request_logs, websocket_continuity)
 
     return factory
 
@@ -13328,22 +13359,23 @@ async def test_prepare_websocket_full_replay_rejects_oversized_unslimmable_paylo
     assert exc_info.value.payload["error"]["code"] == "payload_too_large"
 
 
-def test_websocket_continuity_state_reuses_codex_session_scope():
+@pytest.mark.asyncio
+async def test_websocket_continuity_state_reuses_codex_session_scope():
     service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
 
-    first = service._websocket_continuity_state_for_request(
+    first = await service._websocket_continuity_state_for_request(
         {"session_id": "codex-session-shared"},
         api_key=None,
         codex_session_affinity=True,
     )
     first.last_completed_response_id = "resp_cached"
 
-    second = service._websocket_continuity_state_for_request(
+    second = await service._websocket_continuity_state_for_request(
         {"session_id": "codex-session-shared"},
         api_key=None,
         codex_session_affinity=True,
     )
-    unscoped = service._websocket_continuity_state_for_request(
+    unscoped = await service._websocket_continuity_state_for_request(
         {"session_id": "codex-session-shared"},
         api_key=None,
         codex_session_affinity=False,
@@ -13352,6 +13384,131 @@ def test_websocket_continuity_state_reuses_codex_session_scope():
     assert second is first
     assert second.last_completed_response_id == "resp_cached"
     assert unscoped is not first
+
+
+@pytest.mark.asyncio
+async def test_websocket_continuity_state_hydrates_from_shared_store_on_memory_miss():
+    store = _WebsocketContinuityStoreRecorder()
+    store.rows[("codex-session-hydrate", "")] = {
+        "last_completed_input_count": 4,
+        "last_completed_response_id": "resp_persisted",
+        "last_completed_input_prefix_fingerprint": "persisted-fingerprint",
+        "last_pending_function_call_ids": ["call_pending"],
+        "folded_response_id_aliases": {"resp_visible": "resp_hidden_final"},
+    }
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder(), store))
+
+    state = await service._websocket_continuity_state_for_request(
+        {"session_id": "codex-session-hydrate"},
+        api_key=None,
+        codex_session_affinity=True,
+    )
+
+    assert store.get_calls == [("codex-session-hydrate", "")]
+    assert state.persist_key == ("codex-session-hydrate", "")
+    assert state.last_completed_input_count == 4
+    assert state.last_completed_response_id == "resp_persisted"
+    assert state.last_completed_input_prefix_fingerprint == "persisted-fingerprint"
+    assert state.last_pending_function_call_ids == ["call_pending"]
+    assert state.folded_response_id_aliases == {"resp_visible": "resp_hidden_final"}
+
+    # An in-memory hit must not read the store again.
+    again = await service._websocket_continuity_state_for_request(
+        {"session_id": "codex-session-hydrate"},
+        api_key=None,
+        codex_session_affinity=True,
+    )
+    assert again is state
+    assert store.get_calls == [("codex-session-hydrate", "")]
+
+
+@pytest.mark.asyncio
+async def test_websocket_continuity_state_hydration_read_failure_degrades_to_empty_state(caplog):
+    store = _WebsocketContinuityStoreRecorder()
+    store.get_error = RuntimeError("database unavailable")
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder(), store))
+
+    with caplog.at_level(logging.WARNING):
+        state = await service._websocket_continuity_state_for_request(
+            {"session_id": "codex-session-store-down"},
+            api_key=None,
+            codex_session_affinity=True,
+        )
+
+    assert state.is_pristine()
+    assert state.persist_key == ("codex-session-store-down", "")
+    assert any("websocket_continuity_state_hydration_failed" in record.message for record in caplog.records)
+    assert all("codex-session-store-down" not in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_websocket_continuity_state_hydration_discards_corrupt_payload(caplog):
+    store = _WebsocketContinuityStoreRecorder()
+    store.rows[("codex-session-corrupt", "")] = {
+        "last_completed_input_count": "not-an-int",
+        "last_completed_response_id": "resp_persisted",
+        "last_completed_input_prefix_fingerprint": None,
+        "last_pending_function_call_ids": [],
+        "folded_response_id_aliases": {},
+    }
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder(), store))
+
+    with caplog.at_level(logging.WARNING):
+        state = await service._websocket_continuity_state_for_request(
+            {"session_id": "codex-session-corrupt"},
+            api_key=None,
+            codex_session_affinity=True,
+        )
+
+    assert state.is_pristine()
+    assert any(
+        "websocket_continuity_state_hydration_discarded_corrupt_payload" in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_websocket_continuity_state_unkeyed_never_touches_store():
+    store = _WebsocketContinuityStoreRecorder()
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder(), store))
+
+    unscoped = await service._websocket_continuity_state_for_request(
+        {"session_id": "codex-session-unscoped"},
+        api_key=None,
+        codex_session_affinity=False,
+    )
+    sessionless = await service._websocket_continuity_state_for_request(
+        {},
+        api_key=None,
+        codex_session_affinity=True,
+    )
+
+    assert unscoped.persist_key is None
+    assert sessionless.persist_key is None
+    assert store.get_calls == []
+
+    service._schedule_websocket_continuity_persist(unscoped)
+    service._schedule_websocket_continuity_persist(sessionless)
+    await asyncio.gather(*service._websocket_continuity_persist_tasks)
+    assert store.upsert_calls == []
+
+
+@pytest.mark.asyncio
+async def test_websocket_continuity_state_missing_repository_skips_store():
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+
+    state = await service._websocket_continuity_state_for_request(
+        {"session_id": "codex-session-no-repo"},
+        api_key=None,
+        codex_session_affinity=True,
+    )
+    assert state.is_pristine()
+    assert state.persist_key == ("codex-session-no-repo", "")
+
+    state.last_completed_response_id = "resp_no_repo"
+    service._schedule_websocket_continuity_persist(state)
+    await asyncio.gather(*service._websocket_continuity_persist_tasks)
+    assert state.persist_inflight is False
 
 
 def test_record_websocket_continuity_completion_keeps_anchor_fields_in_sync():
@@ -14453,6 +14610,287 @@ async def test_finalize_websocket_empty_prewarm_does_not_store_continuity_anchor
     assert continuity_state.last_completed_response_id == "resp_existing"
     assert continuity_state.last_completed_input_count == 2
     assert continuity_state.last_completed_input_prefix_fingerprint == "existing-fingerprint"
+
+
+@pytest.mark.asyncio
+async def test_process_upstream_websocket_completed_schedules_one_continuity_persist(monkeypatch):
+    request_logs = _RequestLogsRecorder()
+    store = _WebsocketContinuityStoreRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs, store))
+    account = _make_account("acc_ws_continuity_persist")
+    monkeypatch.setattr(service._load_balancer, "record_success", AsyncMock())
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock())
+
+    payload: dict[str, JsonValue] = {
+        "type": "response.completed",
+        "response": {
+            "id": "resp_ws_persist",
+            "usage": {"input_tokens": 9, "output_tokens": 3, "total_tokens": 12},
+        },
+    }
+    continuity_state = proxy_service._WebSocketContinuityState(persist_key=("codex-session-persist", ""))
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="ws_req_persist",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        response_id="resp_ws_persist",
+        input_item_count=3,
+        input_full_fingerprint="persist-fingerprint",
+        pending_function_call_ids=["call_open"],
+    )
+
+    await service._process_upstream_websocket_text(
+        json.dumps(payload),
+        account=account,
+        account_id_value=account.id,
+        pending_requests=deque([request_state]),
+        pending_lock=anyio.Lock(),
+        api_key=None,
+        upstream_control=proxy_service._WebSocketUpstreamControl(),
+        response_create_gate=asyncio.Semaphore(1),
+        continuity_state=continuity_state,
+    )
+    await asyncio.gather(*service._websocket_continuity_persist_tasks)
+
+    assert store.upsert_calls == [
+        (
+            "codex-session-persist",
+            "",
+            {
+                "last_completed_input_count": 3,
+                "last_completed_response_id": "resp_ws_persist",
+                "last_completed_input_prefix_fingerprint": "persist-fingerprint",
+                "last_pending_function_call_ids": ["call_open"],
+                "folded_response_id_aliases": {},
+            },
+        )
+    ]
+    assert continuity_state.persist_inflight is False
+
+
+@pytest.mark.asyncio
+async def test_process_upstream_websocket_fold_terminal_persists_snapshot_with_alias(monkeypatch):
+    request_logs = _RequestLogsRecorder()
+    store = _WebsocketContinuityStoreRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs, store))
+    account = _make_account("acc_ws_fold_persist")
+    monkeypatch.setattr(service._load_balancer, "record_success", AsyncMock())
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock())
+
+    fold = websocket_mixin._WebSocketContinuationFold(
+        CodexContinuationConfig(max_continue=1, rechunk_size=64),
+        {
+            "model": "gpt-5.1",
+            "instructions": "solve",
+            "input": [{"role": "user", "content": "question"}],
+            "previous_response_id": "resp_previous",
+            "stream": True,
+        },
+    )
+    continuity_state = proxy_service._WebSocketContinuityState(persist_key=("codex-session-fold-persist", ""))
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="ws_req_fold_persist",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        awaiting_response_created=True,
+        input_item_count=2,
+        input_full_fingerprint="fold-fingerprint",
+    )
+    request_state.continuation_fold = fold
+    pending_requests: deque[proxy_service._WebSocketRequestState] = deque([request_state])
+    pending_lock = anyio.Lock()
+    response_create_gate = asyncio.Semaphore(1)
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+
+    async def _relay(event: dict[str, JsonValue]) -> None:
+        await service._process_upstream_websocket_text(
+            json.dumps(event),
+            account=account,
+            account_id_value=account.id,
+            pending_requests=pending_requests,
+            pending_lock=pending_lock,
+            api_key=None,
+            upstream_control=upstream_control,
+            response_create_gate=response_create_gate,
+            continuity_state=continuity_state,
+        )
+        upstream_control.suppress_downstream_event = False
+        upstream_control.downstream_texts = None
+
+    truncated_round = [
+        {"type": "response.created", "response": {"id": "resp_visible", "status": "in_progress", "output": []}},
+        {
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {"id": "rs_1", "type": "reasoning"},
+        },
+        {
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {"id": "rs_1", "type": "reasoning", "encrypted_content": "enc1"},
+        },
+        {
+            "type": "response.completed",
+            "response": {
+                "id": "resp_visible",
+                "status": "completed",
+                "output": [],
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 600,
+                    "total_tokens": 700,
+                    "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens_details": {"reasoning_tokens": 516},
+                },
+            },
+        },
+    ]
+    for event in truncated_round:
+        await _relay(cast(dict[str, JsonValue], event))
+
+    assert upstream_control.continuation_resend_body is not None
+    assert store.upsert_calls == []
+
+    hidden_round = [
+        {"type": "response.created", "response": {"id": "resp_hidden", "status": "in_progress", "output": []}},
+        {
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {"id": "msg_final", "type": "message", "role": "assistant", "content": []},
+        },
+        {
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "final answer"}],
+            },
+        },
+        {
+            "type": "response.completed",
+            "response": {
+                "id": "resp_hidden",
+                "status": "completed",
+                "output": [],
+                "usage": {
+                    "input_tokens": 120,
+                    "output_tokens": 20,
+                    "total_tokens": 140,
+                    "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens_details": {"reasoning_tokens": 10},
+                },
+            },
+        },
+    ]
+    for event in hidden_round:
+        await _relay(cast(dict[str, JsonValue], event))
+
+    await asyncio.gather(*service._websocket_continuity_persist_tasks)
+
+    assert continuity_state.folded_response_id_aliases == {"resp_visible": "resp_hidden"}
+    assert store.upsert_calls == [
+        (
+            "codex-session-fold-persist",
+            "",
+            {
+                "last_completed_input_count": 2,
+                "last_completed_response_id": "resp_hidden",
+                "last_completed_input_prefix_fingerprint": "fold-fingerprint",
+                "last_pending_function_call_ids": [],
+                "folded_response_id_aliases": {"resp_visible": "resp_hidden"},
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_process_upstream_websocket_completed_persist_failure_keeps_downstream_text(monkeypatch, caplog):
+    request_logs = _RequestLogsRecorder()
+    store = _WebsocketContinuityStoreRecorder()
+    store.upsert_error = RuntimeError("database unavailable")
+    service = proxy_service.ProxyService(_repo_factory(request_logs, store))
+    account = _make_account("acc_ws_persist_fail")
+    monkeypatch.setattr(service._load_balancer, "record_success", AsyncMock())
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock())
+
+    payload: dict[str, JsonValue] = {
+        "type": "response.completed",
+        "response": {
+            "id": "resp_ws_persist_fail",
+            "usage": {"input_tokens": 9, "output_tokens": 3, "total_tokens": 12},
+        },
+    }
+    continuity_state = proxy_service._WebSocketContinuityState(persist_key=("codex-session-persist-fail", ""))
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="ws_req_persist_fail",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        response_id="resp_ws_persist_fail",
+        input_item_count=3,
+        input_full_fingerprint="persist-fail-fingerprint",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        downstream_text = await service._process_upstream_websocket_text(
+            json.dumps(payload),
+            account=account,
+            account_id_value=account.id,
+            pending_requests=deque([request_state]),
+            pending_lock=anyio.Lock(),
+            api_key=None,
+            upstream_control=proxy_service._WebSocketUpstreamControl(),
+            response_create_gate=asyncio.Semaphore(1),
+            continuity_state=continuity_state,
+        )
+        await asyncio.gather(*service._websocket_continuity_persist_tasks)
+
+    parsed_downstream = json.loads(downstream_text)
+    assert parsed_downstream["type"] == "response.completed"
+    assert parsed_downstream["response"]["id"] == "resp_ws_persist_fail"
+    assert continuity_state.last_completed_response_id == "resp_ws_persist_fail"
+    assert continuity_state.persist_inflight is False
+    assert any("websocket_continuity_state_persist_failed" in record.message for record in caplog.records)
+    assert all("codex-session-persist-fail" not in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_schedule_websocket_continuity_persist_orders_snapshots_within_worker():
+    request_logs = _RequestLogsRecorder()
+    store = _WebsocketContinuityStoreRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs, store))
+
+    continuity_state = proxy_service._WebSocketContinuityState(persist_key=("codex-session-ordered", ""))
+    continuity_state.last_completed_response_id = "resp_first"
+    continuity_state.last_completed_input_count = 1
+    continuity_state.last_completed_input_prefix_fingerprint = "first-fingerprint"
+    service._schedule_websocket_continuity_persist(continuity_state)
+    # A second completion before the first write finishes supersedes it via
+    # the pending snapshot; the persisted order stays first -> second.
+    continuity_state.last_completed_response_id = "resp_second"
+    continuity_state.last_completed_input_count = 2
+    continuity_state.last_completed_input_prefix_fingerprint = "second-fingerprint"
+    service._schedule_websocket_continuity_persist(continuity_state)
+
+    await asyncio.gather(*service._websocket_continuity_persist_tasks)
+
+    assert [snapshot["last_completed_response_id"] for _, _, snapshot in store.upsert_calls] == [
+        "resp_first",
+        "resp_second",
+    ]
+    assert store.rows[("codex-session-ordered", "")]["last_completed_response_id"] == "resp_second"
+    assert continuity_state.persist_inflight is False
+    assert continuity_state.persist_pending_payload is None
 
 
 @pytest.mark.asyncio

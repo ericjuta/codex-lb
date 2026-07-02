@@ -1208,6 +1208,132 @@ def test_backend_responses_websocket_folded_turn_aliases_previous_response_id(ap
     assert second_turn_events[-1]["type"] == "response.completed"
 
 
+def test_backend_responses_websocket_hydrates_persisted_continuity_state_for_fresh_worker(app_instance, monkeypatch):
+    # Cross-worker reconnect: the folded turn completed on another worker,
+    # whose relay persisted the continuity state (including the folded
+    # response-id alias) to the shared store. A fresh service instance with an
+    # empty in-memory index must hydrate the state at connection setup so the
+    # follow-up chaining the folded (visible) id is rewritten to the final
+    # hidden round's upstream id without a fail-closed retry.
+    from sqlalchemy import create_engine
+
+    from app.core.config.settings import get_settings
+    from app.db.migration_url import to_sync_database_url
+    from app.db.models import WebsocketContinuityStateRecord
+
+    # A reconnecting Codex client re-presents the turn-state it accepted on
+    # its previous connection; that turn-state is the continuity session key.
+    turn_state = "turn-ws-hydrate-state"
+    persisted_state = {
+        "last_completed_input_count": 3,
+        "last_completed_response_id": "resp_ws_hydr_h",
+        "last_completed_input_prefix_fingerprint": "hydrated-fingerprint",
+        "last_pending_function_call_ids": ["call_hydrated"],
+        "folded_response_id_aliases": {"resp_ws_hydr_v": "resp_ws_hydr_h"},
+    }
+    sync_engine = create_engine(to_sync_database_url(get_settings().database_url), future=True)
+    try:
+        with sync_engine.begin() as connection:
+            connection.execute(
+                WebsocketContinuityStateRecord.__table__.insert().values(
+                    session_key=turn_state,
+                    api_key_id="",
+                    state=json.dumps(persisted_state),
+                )
+            )
+    finally:
+        sync_engine.dispose()
+
+    followup_turn = [
+        {"type": "response.created", "response": {"id": "resp_ws_hydr_t2", "status": "in_progress", "output": []}},
+        *_ws_message_events(output_index=0, item_id="msg_t2", text="tool result received"),
+        _ws_completed("resp_ws_hydr_t2", input_tokens=50, output_tokens=10, reasoning_tokens=5),
+    ]
+    fake_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[[_ws_msg(e) for e in followup_turn]],
+    )
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        return None
+
+    async def fake_connect_proxy_websocket(
+        self,
+        headers,
+        *,
+        sticky_key,
+        sticky_kind,
+        reallocate_sticky,
+        sticky_max_age_seconds,
+        prefer_earlier_reset,
+        prefer_earlier_reset_window,
+        routing_strategy,
+        model,
+        request_state,
+        api_key,
+        client_send_lock,
+        websocket,
+    ):
+        return SimpleNamespace(id="acct_ws_hydrate", codex_installation_id="account-installation"), fake_upstream
+
+    async def fake_write_request_log(self, **kwargs):
+        return None
+
+    async def fake_settle(self, api_key, reservation, settlement, response_id):
+        return None
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", fake_connect_proxy_websocket)
+    monkeypatch.setattr(proxy_module.ProxyService, "_write_request_log", fake_write_request_log)
+    monkeypatch.setattr(proxy_module.ProxyService, "_settle_stream_api_key_usage", fake_settle)
+
+    followup_payload = {
+        "type": "response.create",
+        "model": "gpt-5.5",
+        "instructions": "",
+        "reasoning": {"effort": "high"},
+        "previous_response_id": "resp_ws_hydr_v",
+        "input": [{"type": "function_call_output", "call_id": "call_hydrated", "output": "ok"}],
+        "stream": True,
+    }
+
+    followup_events: list[dict[str, Any]] = []
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={
+                "Authorization": "Bearer external-token",
+                "chatgpt-account-id": "external-account",
+                "session_id": "thread-ws-hydrate",
+                "x-codex-turn-state": turn_state,
+                "openai-beta": "responses_websockets=2026-02-06",
+            },
+        ) as websocket:
+            websocket.send_text(json.dumps(followup_payload))
+            while True:
+                event = json.loads(websocket.receive_text())
+                followup_events.append(event)
+                if event.get("type") in {"response.completed", "response.failed", "response.incomplete", "error"}:
+                    break
+
+    # The hydrated alias transparently rewrites the folded visible id to the
+    # final hidden round's upstream id on the very first upstream request.
+    assert len(fake_upstream.sent_text) == 1
+    followup_request = json.loads(fake_upstream.sent_text[0])
+    assert followup_request["previous_response_id"] == "resp_ws_hydr_h"
+    assert followup_request["input"] == [{"type": "function_call_output", "call_id": "call_hydrated", "output": "ok"}]
+    assert followup_events[-1]["type"] == "response.completed"
+
+
 def test_backend_responses_websocket_chained_fold_hidden_round_chains_visible_round(app_instance, monkeypatch):
     # A chained turn's input is incremental (tool outputs resolving against the
     # previous_response_id anchor), and the upstream invalidates an anchor once

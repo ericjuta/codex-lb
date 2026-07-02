@@ -1063,6 +1063,23 @@ class HttpBridgeSessionAlias(Base):
     )
 
 
+class WebsocketContinuityStateRecord(Base):
+    __tablename__ = "websocket_continuity_states"
+
+    session_key: Mapped[str] = mapped_column(String, primary_key=True)
+    api_key_id: Mapped[str] = mapped_column(String, primary_key=True, default="", server_default=text("''"))
+    # JSON-encoded continuity snapshot (opaque blob keyed by primary key
+    # only), following the ``latest_turn_state`` Text-storing-JSON precedent.
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 _PRIMARY_WINDOW_INDEX_EXPR = func.coalesce(UsageHistory.window, literal_column("'primary'"))
 
 Index("idx_usage_recorded_at", UsageHistory.recorded_at)
@@ -1184,6 +1201,7 @@ Index(
 Index("idx_http_bridge_sessions_owner_state", HttpBridgeSessionRecord.owner_instance_id, HttpBridgeSessionRecord.state)
 Index("idx_http_bridge_sessions_lease", HttpBridgeSessionRecord.lease_expires_at)
 Index("idx_http_bridge_sessions_last_seen", HttpBridgeSessionRecord.last_seen_at.desc())
+Index("idx_websocket_continuity_states_updated_at", WebsocketContinuityStateRecord.updated_at)
 Index(
     "idx_http_bridge_sessions_latest_turn_scope_state_seen",
     HttpBridgeSessionRecord.latest_turn_state,

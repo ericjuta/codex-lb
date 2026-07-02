@@ -612,7 +612,7 @@ def _websocket_enforce_response_create_text_size(
 
 
 class _WebSocketMixin:
-    def _websocket_continuity_state_for_request(
+    async def _websocket_continuity_state_for_request(
         self,
         headers: Mapping[str, str],
         *,
@@ -628,15 +628,133 @@ class _WebSocketMixin:
             return _WebSocketContinuityState()
         key = (session_id, api_key.id if api_key is not None else None)
         continuity_state = proxy._websocket_continuity_index.get(key)
+        hydrate_from_store = continuity_state is None
         if continuity_state is None:
             continuity_state = _WebSocketContinuityState()
             proxy._websocket_continuity_index[key] = continuity_state
         else:
             proxy._websocket_continuity_index.pop(key, None)
             proxy._websocket_continuity_index[key] = continuity_state
+        continuity_state.persist_key = (session_id, api_key.id if api_key is not None else "")
         while len(proxy._websocket_continuity_index) > _facade()._WEBSOCKET_CONTINUITY_CACHE_LIMIT:
             proxy._websocket_continuity_index.pop(next(iter(proxy._websocket_continuity_index)))
+        if hydrate_from_store:
+            await proxy._hydrate_websocket_continuity_state(continuity_state)
         return continuity_state
+
+    async def _hydrate_websocket_continuity_state(
+        self,
+        continuity_state: "_WebSocketContinuityState",
+    ) -> None:
+        """Best-effort one-shot hydration from the shared continuity store.
+
+        Runs once per downstream connection at setup for in-memory misses.
+        Any store failure logs a warning (hashed session id only) and leaves
+        the empty in-memory state authoritative.
+        """
+        proxy = cast(_WebSocketServiceProtocol, self)
+        persist_key = continuity_state.persist_key
+        if persist_key is None:
+            return
+        session_key, api_key_id = persist_key
+        try:
+            async with proxy._repo_factory() as repos:
+                repository = repos.websocket_continuity
+                if repository is None:
+                    return
+                payload = await repository.get(session_key, api_key_id)
+        except Exception:
+            _facade().logger.warning(
+                "websocket_continuity_state_hydration_failed session_id=%s",
+                _hash_identifier(session_key),
+                exc_info=True,
+            )
+            return
+        if payload is None:
+            return
+        if not continuity_state.is_pristine():
+            # A concurrent connection on this worker already recorded fresher
+            # data into the state while the read was in flight.
+            return
+        if not continuity_state.apply_persisted_dict(payload):
+            _facade().logger.warning(
+                "websocket_continuity_state_hydration_discarded_corrupt_payload session_id=%s",
+                _hash_identifier(session_key),
+            )
+
+    def _schedule_websocket_continuity_persist(
+        self,
+        continuity_state: "_WebSocketContinuityState",
+    ) -> None:
+        """Schedule a non-blocking best-effort upsert of the continuity state.
+
+        The payload is snapshotted synchronously so later turns cannot mutate
+        an in-flight write; per-state inflight/pending flags keep writes for
+        one state ordered within the worker. The relay never awaits the task.
+        """
+        proxy = cast(_WebSocketServiceProtocol, self)
+        persist_key = continuity_state.persist_key
+        if persist_key is None:
+            return
+        payload = continuity_state.to_persistable_dict()
+        if continuity_state.persist_inflight:
+            continuity_state.persist_pending_payload = payload
+            return
+        continuity_state.persist_inflight = True
+        task = asyncio.create_task(
+            proxy._persist_websocket_continuity_state(continuity_state, payload),
+            name=f"websocket-continuity-persist-{_hash_identifier(persist_key[0])}",
+        )
+        proxy._websocket_continuity_persist_tasks.add(task)
+
+        def _persist_done(done_task: asyncio.Task[None]) -> None:
+            proxy._websocket_continuity_persist_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                continuity_state.persist_inflight = False
+                _facade().logger.warning(
+                    "websocket_continuity_state_persist_cancelled session_id=%s",
+                    _hash_identifier(persist_key[0]),
+                )
+            except Exception as exc:
+                continuity_state.persist_inflight = False
+                _facade().logger.warning(
+                    "websocket_continuity_state_persist_task_failed session_id=%s",
+                    _hash_identifier(persist_key[0]),
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+
+        task.add_done_callback(_persist_done)
+
+    async def _persist_websocket_continuity_state(
+        self,
+        continuity_state: "_WebSocketContinuityState",
+        payload: dict[str, JsonValue],
+    ) -> None:
+        proxy = cast(_WebSocketServiceProtocol, self)
+        persist_key = continuity_state.persist_key
+        if persist_key is None:
+            continuity_state.persist_inflight = False
+            return
+        session_key, api_key_id = persist_key
+        current_payload: dict[str, JsonValue] | None = payload
+        while current_payload is not None:
+            try:
+                async with proxy._repo_factory() as repos:
+                    repository = repos.websocket_continuity
+                    if repository is not None:
+                        await repository.upsert(session_key, api_key_id, current_payload)
+            except Exception:
+                _facade().logger.warning(
+                    "websocket_continuity_state_persist_failed session_id=%s",
+                    _hash_identifier(session_key),
+                    exc_info=True,
+                )
+            current_payload = continuity_state.persist_pending_payload
+            continuity_state.persist_pending_payload = None
+            if current_payload is None:
+                continuity_state.persist_inflight = False
 
     async def proxy_responses_websocket(
         self,
@@ -666,7 +784,7 @@ class _WebSocketMixin:
         upstream: UpstreamResponsesWebSocket | None = None
         upstream_reader: asyncio.Task[None] | None = None
         upstream_control: _WebSocketUpstreamControl | None = None
-        continuity_state = proxy._websocket_continuity_state_for_request(
+        continuity_state = await proxy._websocket_continuity_state_for_request(
             headers,
             api_key=api_key,
             codex_session_affinity=codex_session_affinity,
@@ -3284,6 +3402,8 @@ class _WebSocketMixin:
                             folded_visible_response_id,
                             response_id,
                         )
+                if terminal_type == "response.completed" and continuity_state is not None:
+                    proxy._schedule_websocket_continuity_persist(continuity_state)
                 folded_terminal_event = parse_sse_event(format_sse_event(cast(dict[str, JsonValue], terminal_payload)))
                 await proxy._finalize_websocket_request_state(
                     fold_request_state,
@@ -3420,6 +3540,7 @@ class _WebSocketMixin:
                 request_state=request_state,
                 response_id=response_id,
             )
+            proxy._schedule_websocket_continuity_persist(continuity_state)
 
         if request_state is not None and event_type in {"response.failed", "error"}:
             if event_type == "error":
