@@ -38,6 +38,9 @@
 - [x] 1c.3 Integration test: chained truncating turn folds; hidden round
       chains the visible round's id and replays neither the consumed client
       anchor nor the incremental tool output.
+- [x] 1c.4 When a chained truncated round emitted a client-answered tool call,
+      stop the fold and deliver it (anchored hidden round would hold an
+      unanswered call); unit + integration coverage.
 
 ## 2. Orphaned-tool-output classification
 

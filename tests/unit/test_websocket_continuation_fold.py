@@ -84,6 +84,64 @@ def _drive(fold: _WebSocketContinuationFold, events: list[dict[str, Any]]):
     return downstream, continuation, terminal
 
 
+def _function_call_events(*, output_index: int, item_id: str, call_id: str, name: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "response.output_item.added",
+            "output_index": output_index,
+            "item": {"id": item_id, "type": "function_call", "call_id": call_id, "name": name, "arguments": ""},
+        },
+        {
+            "type": "response.output_item.done",
+            "output_index": output_index,
+            "item": {
+                "id": item_id,
+                "type": "function_call",
+                "status": "completed",
+                "call_id": call_id,
+                "name": name,
+                "arguments": "{}",
+            },
+        },
+    ]
+
+
+def test_ws_fold_chained_turn_with_buffered_tool_call_stops_and_delivers() -> None:
+    # A chained hidden round would anchor on the truncated round's response,
+    # where an emitted tool call sits unanswered — the upstream rejects that.
+    # The fold must stop and deliver the tool call instead of continuing.
+    fold = _WebSocketContinuationFold(
+        CodexContinuationConfig(max_continue=3, rechunk_size=64),
+        {
+            "model": "gpt-5.5",
+            "instructions": "solve",
+            "input": [{"type": "function_call_output", "call_id": "call_prev", "output": "done"}],
+            "previous_response_id": "resp_previous",
+            "stream": True,
+        },
+    )
+
+    round_one = [
+        {"type": "response.created", "response": {"id": "resp_visible", "status": "in_progress", "output": []}},
+        *_reasoning_events(output_index=0, item_id="rs_1", encrypted_content="enc1"),
+        *_function_call_events(output_index=1, item_id="fc_1", call_id="call_next", name="shell"),
+        _completed("resp_visible", input_tokens=100, output_tokens=600, reasoning_tokens=516),
+    ]
+    downstream, continuation, terminal = _drive(fold, round_one)
+
+    assert continuation is None
+    assert terminal is not None
+    assert terminal["type"] == "response.completed"
+    output_items = terminal["response"]["output"]
+    assert any(item.get("type") == "function_call" and item.get("call_id") == "call_next" for item in output_items)
+    flushed_call_ids = [
+        event["item"]["call_id"]
+        for event in downstream
+        if event.get("type") == "response.output_item.done" and event.get("item", {}).get("type") == "function_call"
+    ]
+    assert flushed_call_ids == ["call_next"]
+
+
 def test_ws_fold_continues_truncated_round_then_reconstructs_final() -> None:
     fold = _WebSocketContinuationFold(
         CodexContinuationConfig(max_continue=1, rechunk_size=64),

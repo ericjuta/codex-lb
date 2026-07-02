@@ -34,6 +34,11 @@ response has chained off it — the original client anchor is consumed by the
 visible round and MUST NOT be reused, and the incremental input MUST NOT be
 replayed (it already lives in the visible round's stored context). Turns
 without an anchor MUST continue to use the anchorless full-input replay.
+When a chained turn's truncated round emitted a client-answered tool call
+(`function_call`, `custom_tool_call`, or `apply_patch_call`), codex-lb MUST
+NOT open a hidden round (the anchored context would hold an unanswered call);
+it MUST stop the fold and deliver the buffered output, including the tool
+call, to the client.
 
 #### Scenario: Chained turn's hidden round chains the visible round
 - **WHEN** a WebSocket turn carrying `previous_response_id` and incremental
@@ -44,6 +49,12 @@ without an anchor MUST continue to use the anchorless full-input replay.
   marker
 - **AND** the folded turn completes without a stale-anchor or orphaned
   tool-output error
+
+#### Scenario: Truncated chained round with a tool call stops the fold
+- **WHEN** a chained WebSocket turn's round truncates on the continuation
+  fingerprint and its buffered output contains a `function_call`
+- **THEN** no hidden continuation round is opened
+- **AND** the turn completes with the tool call delivered to the client
 
 ### Requirement: Folded Turns Track Only Delivered Calls As Interruptible
 codex-lb MUST, when a folded WebSocket turn completes, limit the turn's

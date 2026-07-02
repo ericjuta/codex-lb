@@ -1314,6 +1314,106 @@ def test_backend_responses_websocket_chained_fold_hidden_round_chains_visible_ro
     )
 
 
+def test_backend_responses_websocket_chained_fold_stops_when_truncated_round_emits_tool_call(
+    app_instance,
+    monkeypatch,
+):
+    # A chained turn whose truncated round emits a tool call cannot continue
+    # hidden rounds (the anchored context would hold an unanswered call); the
+    # fold stops and delivers the tool call as the turn's output.
+    round_one = [
+        {"type": "response.created", "response": {"id": "resp_ws_chainstop_v", "status": "in_progress", "output": []}},
+        *_ws_reasoning_events(output_index=0, item_id="rs_1", encrypted_content="enc1"),
+        *_ws_function_call_events(output_index=1, item_id="fc_1", call_id="call_next", name="shell"),
+        _ws_completed("resp_ws_chainstop_v", input_tokens=100, output_tokens=560, reasoning_tokens=516),
+    ]
+    fake_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[[_ws_msg(e) for e in round_one]],
+    )
+    log_calls: list[dict[str, object]] = []
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        return None
+
+    async def fake_connect_proxy_websocket(
+        self,
+        headers,
+        *,
+        sticky_key,
+        sticky_kind,
+        reallocate_sticky,
+        sticky_max_age_seconds,
+        prefer_earlier_reset,
+        prefer_earlier_reset_window,
+        routing_strategy,
+        model,
+        request_state,
+        api_key,
+        client_send_lock,
+        websocket,
+    ):
+        return SimpleNamespace(id="acct_ws_chain_stop", codex_installation_id="account-installation"), fake_upstream
+
+    async def fake_write_request_log(self, **kwargs):
+        log_calls.append(kwargs)
+
+    async def fake_settle(self, api_key, reservation, settlement, response_id):
+        return None
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", fake_connect_proxy_websocket)
+    monkeypatch.setattr(proxy_module.ProxyService, "_write_request_log", fake_write_request_log)
+    monkeypatch.setattr(proxy_module.ProxyService, "_settle_stream_api_key_usage", fake_settle)
+
+    request_payload = {
+        "type": "response.create",
+        "model": "gpt-5.5",
+        "instructions": "",
+        "reasoning": {"effort": "high"},
+        "previous_response_id": "resp_prev_anchor",
+        "input": [{"type": "function_call_output", "call_id": "call_prev", "output": "done"}],
+        "stream": True,
+    }
+
+    received: list[dict[str, Any]] = []
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={
+                "Authorization": "Bearer external-token",
+                "chatgpt-account-id": "external-account",
+                "session_id": "thread-ws-chain-stop",
+                "openai-beta": "responses_websockets=2026-02-06",
+            },
+        ) as websocket:
+            websocket.send_text(json.dumps(request_payload))
+            while True:
+                event = json.loads(websocket.receive_text())
+                received.append(event)
+                if event.get("type") in {"response.completed", "response.failed", "response.incomplete", "error"}:
+                    break
+
+    # No hidden round is opened; the tool call reaches the client.
+    assert len(fake_upstream.sent_text) == 1
+    assert received[-1]["type"] == "response.completed"
+    delivered_call_ids = [
+        event["item"]["call_id"]
+        for event in received
+        if event.get("type") == "response.output_item.done" and event.get("item", {}).get("type") == "function_call"
+    ]
+    assert delivered_call_ids == ["call_next"]
+
+
 def test_backend_responses_websocket_orphaned_tool_output_error_fails_closed(app_instance, monkeypatch):
     # An upstream 400 "No tool call found for function call output" on a
     # previous_response_id follow-up is continuity corruption: the raw error
