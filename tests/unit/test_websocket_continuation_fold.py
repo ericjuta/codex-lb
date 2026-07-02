@@ -105,10 +105,12 @@ def test_ws_fold_continues_truncated_round_then_reconstructs_final() -> None:
     down1, continuation, terminal1 = _drive(fold, round_one)
 
     # The truncated round streams reasoning live but buffers/suppresses its final
-    # answer and does not terminate; a continuation round is requested.
+    # answer and does not terminate; a continuation round is requested. A
+    # chained turn's hidden round keeps the anchor: the incremental input only
+    # resolves against the previous response's stored context.
     assert continuation is not None
     assert terminal1 is None
-    assert "previous_response_id" not in continuation
+    assert continuation["previous_response_id"] == "resp_previous"
     assert continuation["include"] == ["reasoning.encrypted_content"]
     replay_input = continuation["input"]
     assert replay_input[0] == {"role": "user", "content": "question"}

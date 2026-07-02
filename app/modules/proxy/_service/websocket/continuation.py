@@ -211,11 +211,18 @@ class _WebSocketContinuationFold:
         if should_continue_round:
             marker = commentary_message(self._config.marker_text)
             self._replay_tail.extend([*self._round_reasoning, marker])
+            # Unlike the HTTP fold (full-history clients), a chained ws turn's
+            # input is incremental (e.g. only function_call_output items) and
+            # resolves solely against the previous_response_id anchor. Hidden
+            # rounds re-branch off the same anchor with the augmented input;
+            # dropping it would orphan the replayed tool outputs upstream
+            # ("No tool call found for function call output ..."). Turns
+            # without an anchor are unaffected.
             next_payload = build_round_payload(
                 self._base_body,
                 input_items=[*self._original_input, *self._replay_tail],
                 force_include_encrypted=self._config.force_include_encrypted,
-                drop_previous_response_id=True,
+                drop_previous_response_id=False,
             )
             self._begin_round()
             return _FoldOutcome(continuation_request=next_payload)

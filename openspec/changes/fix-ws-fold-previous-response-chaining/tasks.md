@@ -27,6 +27,15 @@
 - [x] 1b.2 Extend the alias integration test with a discarded truncated-round
       call and assert no synthetic output is injected on the follow-up.
 
+## 1c. Chained hidden-round anchor (found via live verification)
+
+- [x] 1c.1 Send ws hidden continuation rounds with
+      `drop_previous_response_id=False` so chained turns keep their anchor
+      (`websocket/continuation.py`); anchorless turns unaffected.
+- [x] 1c.2 Integration test: chained turn (tool-output input +
+      `previous_response_id`) that truncates folds successfully and the hidden
+      round retains the anchor.
+
 ## 2. Orphaned-tool-output classification
 
 - [x] 2.1 Extend `_is_missing_tool_output_error`

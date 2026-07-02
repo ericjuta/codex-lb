@@ -24,6 +24,22 @@ previous-response owner index for follow-up account routing.
 - **THEN** the downstream `response.completed` carries the same response id as
   the turn's downstream `response.created`
 
+### Requirement: Hidden WebSocket Rounds Preserve The Chained Anchor
+codex-lb MUST send hidden WebSocket continuation rounds with the visible
+round's `previous_response_id` anchor when the visible round was chained. A
+chained turn's input is incremental (e.g. only `function_call_output` items)
+and resolves solely against the anchor's stored context; hidden rounds
+re-branch off the same anchor with the accumulated replay tail appended.
+Turns without an anchor MUST be sent unchanged (no anchor is introduced).
+
+#### Scenario: Chained turn's hidden round keeps the anchor
+- **WHEN** a WebSocket turn carrying `previous_response_id` and incremental
+  tool-output input truncates on the continuation fingerprint
+- **THEN** the hidden continuation round is sent upstream with the same
+  `previous_response_id` and the original input plus the replayed reasoning
+  and continuation marker
+- **AND** the folded turn completes without an orphaned tool-output error
+
 ### Requirement: Folded Turns Track Only Delivered Calls As Interruptible
 codex-lb MUST, when a folded WebSocket turn completes, limit the turn's
 pending (interruptible) function-call tracking to calls present in the folded
