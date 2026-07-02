@@ -211,21 +211,39 @@ class _WebSocketContinuationFold:
         if should_continue_round:
             marker = commentary_message(self._config.marker_text)
             self._replay_tail.extend([*self._round_reasoning, marker])
-            # Unlike the HTTP fold (full-history clients), a chained ws turn's
-            # input is incremental (e.g. only function_call_output items) and
-            # resolves solely against the previous_response_id anchor. Hidden
-            # rounds re-branch off the same anchor with the augmented input;
-            # dropping it would orphan the replayed tool outputs upstream
-            # ("No tool call found for function call output ..."). Turns
-            # without an anchor are unaffected.
-            next_payload = build_round_payload(
-                self._base_body,
-                input_items=[*self._original_input, *self._replay_tail],
-                force_include_encrypted=self._config.force_include_encrypted,
-                drop_previous_response_id=False,
-            )
-            self._begin_round()
-            return _FoldOutcome(continuation_request=next_payload)
+            base_anchor = self._base_body.get("previous_response_id")
+            if isinstance(base_anchor, str) and base_anchor:
+                # Chained turn: its incremental input resolves only against an
+                # anchor, but the upstream invalidates an anchor once a response
+                # has chained off it (the visible round consumed it — re-using
+                # it yields "previous response not found/stale"). Hidden rounds
+                # therefore chain off the just-completed round's own response
+                # id; the accumulated context lives server-side, so only the
+                # round's reasoning and the continuation marker are replayed.
+                round_anchor = _response_payload(terminal).get("id")
+                if not (isinstance(round_anchor, str) and round_anchor.strip()):
+                    should_continue_round = False
+                    stopped_reason = "missing_round_anchor"
+                else:
+                    next_payload = build_round_payload(
+                        {**self._base_body, "previous_response_id": round_anchor.strip()},
+                        input_items=[*self._round_reasoning, marker],
+                        force_include_encrypted=self._config.force_include_encrypted,
+                        drop_previous_response_id=False,
+                    )
+                    self._begin_round()
+                    return _FoldOutcome(continuation_request=next_payload)
+            else:
+                # Full-history turn: replay the original input plus the
+                # accumulated reasoning tail as a fresh anchorless request.
+                next_payload = build_round_payload(
+                    self._base_body,
+                    input_items=[*self._original_input, *self._replay_tail],
+                    force_include_encrypted=self._config.force_include_encrypted,
+                    drop_previous_response_id=True,
+                )
+                self._begin_round()
+                return _FoldOutcome(continuation_request=next_payload)
 
         downstream: list[dict[str, Any]] = []
         for entry in self._buffered_outputs:

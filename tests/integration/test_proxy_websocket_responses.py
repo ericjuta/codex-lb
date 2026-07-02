@@ -1201,10 +1201,12 @@ def test_backend_responses_websocket_folded_turn_aliases_previous_response_id(ap
     assert second_turn_events[-1]["type"] == "response.completed"
 
 
-def test_backend_responses_websocket_chained_fold_hidden_round_keeps_anchor(app_instance, monkeypatch):
+def test_backend_responses_websocket_chained_fold_hidden_round_chains_visible_round(app_instance, monkeypatch):
     # A chained turn's input is incremental (tool outputs resolving against the
-    # previous_response_id anchor). A hidden continuation round must keep that
-    # anchor: dropping it orphans the replayed tool outputs upstream.
+    # previous_response_id anchor), and the upstream invalidates an anchor once
+    # a response chains off it. The hidden continuation round must chain off
+    # the visible round's own response id, replaying only its reasoning and
+    # the continuation marker.
     round_one = [
         {"type": "response.created", "response": {"id": "resp_ws_chain_v", "status": "in_progress", "output": []}},
         *_ws_reasoning_events(output_index=0, item_id="rs_1", encrypted_content="enc1"),
@@ -1300,11 +1302,16 @@ def test_backend_responses_websocket_chained_fold_hidden_round_keeps_anchor(app_
 
     assert len(fake_upstream.sent_text) == 2
     continuation = json.loads(fake_upstream.sent_text[1])
-    assert continuation["previous_response_id"] == "resp_prev_anchor"
+    assert continuation["previous_response_id"] == "resp_ws_chain_v"
     replay_input = continuation["input"]
-    assert {"type": "function_call_output", "call_id": "call_prev", "output": "done"} in replay_input
     assert {"id": "rs_1", "type": "reasoning", "encrypted_content": "enc1"} in replay_input
     assert any(isinstance(item, dict) and item.get("phase") == "commentary" for item in replay_input)
+    # The consumed client anchor and the incremental tool output live in the
+    # visible round's stored context; they must not be replayed.
+    assert "resp_prev_anchor" not in fake_upstream.sent_text[1]
+    assert not any(
+        isinstance(item, dict) and item.get("type") == "function_call_output" for item in replay_input
+    )
 
 
 def test_backend_responses_websocket_orphaned_tool_output_error_fails_closed(app_instance, monkeypatch):

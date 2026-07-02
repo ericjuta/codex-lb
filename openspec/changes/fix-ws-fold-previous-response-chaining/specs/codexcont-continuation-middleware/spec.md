@@ -24,21 +24,26 @@ previous-response owner index for follow-up account routing.
 - **THEN** the downstream `response.completed` carries the same response id as
   the turn's downstream `response.created`
 
-### Requirement: Hidden WebSocket Rounds Preserve The Chained Anchor
-codex-lb MUST send hidden WebSocket continuation rounds with the visible
-round's `previous_response_id` anchor when the visible round was chained. A
-chained turn's input is incremental (e.g. only `function_call_output` items)
-and resolves solely against the anchor's stored context; hidden rounds
-re-branch off the same anchor with the accumulated replay tail appended.
-Turns without an anchor MUST be sent unchanged (no anchor is introduced).
+### Requirement: Chained Hidden WebSocket Rounds Chain The Previous Round
+codex-lb MUST send a hidden WebSocket continuation round for a chained turn
+with `previous_response_id` set to the just-completed round's own response id,
+and an input consisting only of that round's replayed reasoning items plus the
+continuation marker. A chained turn's incremental input resolves solely
+against upstream stored context, and the upstream invalidates an anchor once a
+response has chained off it — the original client anchor is consumed by the
+visible round and MUST NOT be reused, and the incremental input MUST NOT be
+replayed (it already lives in the visible round's stored context). Turns
+without an anchor MUST continue to use the anchorless full-input replay.
 
-#### Scenario: Chained turn's hidden round keeps the anchor
+#### Scenario: Chained turn's hidden round chains the visible round
 - **WHEN** a WebSocket turn carrying `previous_response_id` and incremental
   tool-output input truncates on the continuation fingerprint
-- **THEN** the hidden continuation round is sent upstream with the same
-  `previous_response_id` and the original input plus the replayed reasoning
-  and continuation marker
-- **AND** the folded turn completes without an orphaned tool-output error
+- **THEN** the hidden continuation round is sent upstream with
+  `previous_response_id` equal to the visible round's response id and input
+  containing only the visible round's reasoning items and the continuation
+  marker
+- **AND** the folded turn completes without a stale-anchor or orphaned
+  tool-output error
 
 ### Requirement: Folded Turns Track Only Delivered Calls As Interruptible
 codex-lb MUST, when a folded WebSocket turn completes, limit the turn's

@@ -106,21 +106,23 @@ def test_ws_fold_continues_truncated_round_then_reconstructs_final() -> None:
 
     # The truncated round streams reasoning live but buffers/suppresses its final
     # answer and does not terminate; a continuation round is requested. A
-    # chained turn's hidden round keeps the anchor: the incremental input only
-    # resolves against the previous response's stored context.
+    # chained turn's hidden round chains off the just-completed round's own
+    # response id (the original anchor is consumed once the visible round
+    # chains off it) and replays only that round's reasoning plus the marker.
     assert continuation is not None
     assert terminal1 is None
-    assert continuation["previous_response_id"] == "resp_previous"
+    assert continuation["previous_response_id"] == "resp_visible"
     assert continuation["include"] == ["reasoning.encrypted_content"]
     replay_input = continuation["input"]
-    assert replay_input[0] == {"role": "user", "content": "question"}
-    assert {"id": "rs_1", "type": "reasoning", "encrypted_content": "enc1"} in replay_input
-    assert replay_input[-1] == {
-        "type": "message",
-        "role": "assistant",
-        "content": [{"type": "output_text", "text": "Continue thinking..."}],
-        "phase": "commentary",
-    }
+    assert replay_input == [
+        {"id": "rs_1", "type": "reasoning", "encrypted_content": "enc1"},
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Continue thinking..."}],
+            "phase": "commentary",
+        },
+    ]
     down1_types = [event["type"] for event in down1]
     assert down1_types.count("response.created") == 1
     assert "response.completed" not in down1_types

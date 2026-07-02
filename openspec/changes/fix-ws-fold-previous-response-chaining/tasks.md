@@ -27,14 +27,17 @@
 - [x] 1b.2 Extend the alias integration test with a discarded truncated-round
       call and assert no synthetic output is injected on the follow-up.
 
-## 1c. Chained hidden-round anchor (found via live verification)
+## 1c. Chained hidden-round anchor (found via live verification, revised)
 
-- [x] 1c.1 Send ws hidden continuation rounds with
-      `drop_previous_response_id=False` so chained turns keep their anchor
-      (`websocket/continuation.py`); anchorless turns unaffected.
-- [x] 1c.2 Integration test: chained turn (tool-output input +
-      `previous_response_id`) that truncates folds successfully and the hidden
-      round retains the anchor.
+- [x] 1c.1 First attempt kept the client anchor on hidden rounds; live traffic
+      showed the upstream invalidates an anchor once the visible round chains
+      off it (`codex_previous_response_stale` 1s after decision=continue).
+- [x] 1c.2 Chained hidden rounds now chain off the just-completed round's own
+      response id with input = that round's reasoning + marker
+      (`websocket/continuation.py`); anchorless turns keep full replay.
+- [x] 1c.3 Integration test: chained truncating turn folds; hidden round
+      chains the visible round's id and replays neither the consumed client
+      anchor nor the incremental tool output.
 
 ## 2. Orphaned-tool-output classification
 
