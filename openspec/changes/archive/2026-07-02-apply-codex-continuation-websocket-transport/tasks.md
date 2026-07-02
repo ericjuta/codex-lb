@@ -32,5 +32,8 @@
   usage; non-truncated eligible turn completes in one round.
 - [x] 3.3 `openspec validate --strict`, `ruff`, full `test_proxy_websocket_responses`
   suite (no regressions vs main; no hangs).
-- [ ] 3.4 Live validation on the local deployment: confirm `reasoning_tokens` no
+- [x] 3.4 Live validation on the local deployment: confirm `reasoning_tokens` no
   longer clusters on the `518*n - 2` boundary and error/latency are steady.
+  (Verified 2026-07-02 during the live-verification loops that produced the
+  fix-ws-fold-previous-response-chaining follow-up; fold decisions observed via
+  `codex_lb_codex_continuation_decision_total`.)
