@@ -2023,7 +2023,12 @@ def _is_missing_tool_output_error(
     if code != "invalid_request_error" or param != "input" or message is None:
         return False
     normalized = " ".join(message.lower().split())
-    return normalized.startswith("no tool output found for function call call_")
+    # Both directions of tool-call linkage corruption fail closed: a call whose
+    # output never arrived, and an output whose call is absent from the resolved
+    # previous-response context (e.g. it lives in a folded continuation round).
+    return normalized.startswith("no tool output found for function call call_") or normalized.startswith(
+        "no tool call found for function call output with call_id "
+    )
 
 
 def _is_previous_response_not_found_error(

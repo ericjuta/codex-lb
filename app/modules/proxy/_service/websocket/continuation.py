@@ -84,6 +84,16 @@ class _WebSocketContinuationFold:
         self._rounds_info: list[dict[str, Any]] = []
         self._begin_round()
 
+    @property
+    def created_response_id(self) -> str | None:
+        """Client-visible response id captured from round 1's ``response.created``."""
+        if self._base_response is None:
+            return None
+        response_id = self._base_response.get("id")
+        if isinstance(response_id, str) and response_id.strip():
+            return response_id.strip()
+        return None
+
     def _begin_round(self) -> None:
         self._round_number += 1
         self._output_index_map: dict[Any, int] = {}

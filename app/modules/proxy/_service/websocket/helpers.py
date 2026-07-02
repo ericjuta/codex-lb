@@ -495,7 +495,11 @@ def _websocket_continuity_response_ids(
     upstream_response_id: str | None,
 ) -> tuple[str, ...]:
     response_ids: list[str] = []
-    for response_id in (upstream_response_id, request_state.replay_downstream_response_id):
+    for response_id in (
+        upstream_response_id,
+        request_state.replay_downstream_response_id,
+        request_state.folded_upstream_response_id,
+    ):
         if not isinstance(response_id, str):
             continue
         stripped = response_id.strip()

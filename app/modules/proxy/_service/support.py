@@ -393,6 +393,11 @@ class _WebSocketRequestState:
     # request is not continuation-eligible). Typed Any to avoid an import cycle
     # with the websocket continuation module.
     continuation_fold: Any = None
+    # Final hidden continuation round's upstream response id when this turn was
+    # folded and that id differs from the client-visible one; registered as a
+    # previous-response owner alongside the visible id so follow-ups referencing
+    # either id route to the owning account.
+    folded_upstream_response_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -479,12 +484,26 @@ def _http_bridge_session_supports_service_tier(
     return account_plan_matches_allowed(session.account.plan_type, allowed_plans)
 
 
+_WEBSOCKET_FOLDED_RESPONSE_ALIAS_LIMIT = 8
+
+
 @dataclass(slots=True)
 class _WebSocketContinuityState:
     last_completed_input_count: int = 0
     last_completed_response_id: str | None = None
     last_completed_input_prefix_fingerprint: str | None = None
     last_pending_function_call_ids: list[str] = field(default_factory=list)
+    # Client-visible folded response id -> final hidden round's upstream
+    # response id. A follow-up turn chaining the visible id must be forwarded
+    # upstream with the final round's id (the visible round's stored context
+    # lacks the hidden rounds' output items, e.g. tool calls).
+    folded_response_id_aliases: dict[str, str] = field(default_factory=dict)
+
+    def record_folded_response_id_alias(self, visible_response_id: str, upstream_response_id: str) -> None:
+        self.folded_response_id_aliases.pop(visible_response_id, None)
+        self.folded_response_id_aliases[visible_response_id] = upstream_response_id
+        while len(self.folded_response_id_aliases) > _WEBSOCKET_FOLDED_RESPONSE_ALIAS_LIMIT:
+            self.folded_response_id_aliases.pop(next(iter(self.folded_response_id_aliases)))
 
 
 @dataclass(frozen=True, slots=True)

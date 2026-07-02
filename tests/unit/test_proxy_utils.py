@@ -387,6 +387,38 @@ def test_compact_client_metadata_cannot_spoof_reserved_request_kind():
     )
 
 
+def test_is_missing_tool_output_error_matches_both_linkage_directions():
+    # A call whose output never arrived.
+    assert proxy_service._is_missing_tool_output_error(
+        code="invalid_request_error",
+        param="input",
+        message="No tool output found for function call call_W3U0TC60cgB5OD7gVCyS0qIq.",
+    )
+    # An output whose call is absent from the resolved previous-response
+    # context (e.g. it lives in a folded continuation round).
+    assert proxy_service._is_missing_tool_output_error(
+        code="invalid_request_error",
+        param="input",
+        message="No tool call found for function call output with call_id call_xFT5FETBr0AmnEA3AS52ZS87.",
+    )
+    # Near misses stay unclassified.
+    assert not proxy_service._is_missing_tool_output_error(
+        code="invalid_request_error",
+        param="messages",
+        message="No tool call found for function call output with call_id call_x.",
+    )
+    assert not proxy_service._is_missing_tool_output_error(
+        code="rate_limit_exceeded",
+        param="input",
+        message="No tool call found for function call output with call_id call_x.",
+    )
+    assert not proxy_service._is_missing_tool_output_error(
+        code="invalid_request_error",
+        param="input",
+        message="Previous response with id 'resp_1' not found.",
+    )
+
+
 def test_websocket_precreated_retry_error_code_does_not_replay_missing_tool_output():
     request_state = proxy_service._WebSocketRequestState(
         request_id="req_missing_tool_precreated",

@@ -1365,6 +1365,18 @@ class _WebSocketMixin:
             codex_tool_compat=codex_session_affinity,
             allow_native_tool_types=allow_native_tool_types,
         )
+        if continuity_state is not None and responses_payload.previous_response_id is not None:
+            # A folded turn's client-visible response id lacks the hidden
+            # rounds' output items upstream; chain the final round's stored
+            # response instead.
+            folded_alias = continuity_state.folded_response_id_aliases.get(responses_payload.previous_response_id)
+            if folded_alias is not None and folded_alias != responses_payload.previous_response_id:
+                _facade().logger.info(
+                    "websocket_folded_previous_response_alias_applied previous_response_id=%s aliased_to=%s",
+                    responses_payload.previous_response_id,
+                    folded_alias,
+                )
+                responses_payload = responses_payload.model_copy(update={"previous_response_id": folded_alias})
         previous_response_trimmed_input_count: int | None = None
         previous_response_trimmed_input_fingerprint: str | None = None
         client_full_resend_payload: ResponsesRequest | None = None
@@ -3230,6 +3242,34 @@ class _WebSocketMixin:
                         request_state=fold_request_state,
                         response_id=response_id,
                     )
+                # Hidden continuation rounds are fresh stored upstream responses,
+                # so a folded turn's client-visible id (round 1) and its final
+                # round's upstream id diverge. Alias the visible id for next-turn
+                # previous_response_id rewriting and register the upstream id as
+                # a previous-response owner alongside the visible one.
+                folded_visible_response_id = (
+                    fold_request_state.continuation_fold.created_response_id
+                    if fold_request_state.continuation_fold is not None
+                    else None
+                )
+                if (
+                    terminal_type == "response.completed"
+                    and folded_visible_response_id is not None
+                    and response_id is not None
+                    and response_id != folded_visible_response_id
+                ):
+                    fold_request_state.folded_upstream_response_id = response_id
+                    if continuity_state is not None:
+                        continuity_state.record_folded_response_id_alias(
+                            folded_visible_response_id,
+                            response_id,
+                        )
+                        _facade().logger.info(
+                            "websocket_folded_response_id_alias_recorded request_id=%s visible=%s upstream=%s",
+                            fold_request_state.request_id,
+                            folded_visible_response_id,
+                            response_id,
+                        )
                 folded_terminal_event = parse_sse_event(format_sse_event(cast(dict[str, JsonValue], terminal_payload)))
                 await proxy._finalize_websocket_request_state(
                     fold_request_state,
