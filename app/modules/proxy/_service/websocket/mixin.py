@@ -367,6 +367,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _app_error_to_websocket_event,
     _assign_websocket_response_id,
     _find_websocket_request_state_by_response_id,
+    _folded_terminal_function_call_ids,
     _is_websocket_response_create,
     _match_websocket_request_state_for_anonymous_event,
     _matching_websocket_request_states_for_missing_tool_output_error,
@@ -3236,6 +3237,17 @@ class _WebSocketMixin:
             if fold_outcome.terminal_event is not None:
                 terminal_payload = fold_outcome.terminal_event
                 terminal_type = terminal_payload.get("type")
+                if terminal_type == "response.completed" and fold_request_state.pending_function_call_ids:
+                    # Calls buffered in truncated rounds are discarded by the
+                    # fold: the client never saw them and the final round's
+                    # stored context lacks them, so they must not be tracked as
+                    # interrupted (injecting outputs for them would 400 upstream).
+                    delivered_call_ids = _folded_terminal_function_call_ids(terminal_payload)
+                    fold_request_state.pending_function_call_ids = [
+                        call_id
+                        for call_id in fold_request_state.pending_function_call_ids
+                        if call_id in delivered_call_ids
+                    ]
                 if terminal_type == "response.completed" and continuity_state is not None:
                     _record_websocket_continuity_completion(
                         continuity_state,

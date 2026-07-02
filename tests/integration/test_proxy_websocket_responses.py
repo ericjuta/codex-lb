@@ -1062,7 +1062,11 @@ def test_backend_responses_websocket_folded_turn_aliases_previous_response_id(ap
     round_one = [
         {"type": "response.created", "response": {"id": "resp_ws_fold_v", "status": "in_progress", "output": []}},
         *_ws_reasoning_events(output_index=0, item_id="rs_1", encrypted_content="enc1"),
-        *_ws_message_events(output_index=1, item_id="msg_partial", text="partial answer"),
+        # Buffered tool call in the truncated round: the fold discards it, the
+        # client never sees it, and it must not be treated as interrupted on
+        # the follow-up turn.
+        *_ws_function_call_events(output_index=1, item_id="fc_dropped", call_id="call_dropped", name="shell"),
+        *_ws_message_events(output_index=2, item_id="msg_partial", text="partial answer"),
         _ws_completed("resp_ws_fold_v", input_tokens=100, output_tokens=600, reasoning_tokens=516),
     ]
     round_two = [
@@ -1184,10 +1188,16 @@ def test_backend_responses_websocket_folded_turn_aliases_previous_response_id(ap
     assert folded_call_ids == ["call_folded"]
 
     # The follow-up chaining the visible id is forwarded with the hidden
-    # round's upstream id and completes.
+    # round's upstream id and completes. The truncated round's discarded tool
+    # call must not have a synthetic interrupted output injected (the final
+    # round's stored context has no such call).
     assert len(fake_upstream.sent_text) == 3
     followup_request = json.loads(fake_upstream.sent_text[2])
     assert followup_request["previous_response_id"] == "resp_ws_fold_h"
+    assert followup_request["input"] == [
+        {"type": "function_call_output", "call_id": "call_folded", "output": "ok"}
+    ]
+    assert "call_dropped" not in fake_upstream.sent_text[2]
     assert second_turn_events[-1]["type"] == "response.completed"
 
 

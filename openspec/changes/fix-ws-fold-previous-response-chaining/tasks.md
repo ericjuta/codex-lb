@@ -18,6 +18,15 @@
       `_websocket_continuity_response_ids` so owner registration covers both
       ids.
 
+## 1b. Folded pending-call pruning (found via live verification)
+
+- [x] 1b.1 Prune `pending_function_call_ids` at fold terminal to calls present
+      in the folded output (`_folded_terminal_function_call_ids` in
+      `websocket/helpers.py`), so interrupted-tool-output injection cannot
+      synthesize outputs for calls discarded from truncated rounds.
+- [x] 1b.2 Extend the alias integration test with a discarded truncated-round
+      call and assert no synthetic output is injected on the follow-up.
+
 ## 2. Orphaned-tool-output classification
 
 - [x] 2.1 Extend `_is_missing_tool_output_error`

@@ -24,6 +24,22 @@ previous-response owner index for follow-up account routing.
 - **THEN** the downstream `response.completed` carries the same response id as
   the turn's downstream `response.created`
 
+### Requirement: Folded Turns Track Only Delivered Calls As Interruptible
+codex-lb MUST, when a folded WebSocket turn completes, limit the turn's
+pending (interruptible) function-call tracking to calls present in the folded
+terminal's delivered output. Calls buffered in truncated rounds are discarded
+by the fold — the client never receives them and the final round's stored
+upstream context does not contain them — so interrupted-tool-output injection
+MUST NOT synthesize outputs for them on a follow-up turn.
+
+#### Scenario: Discarded truncated-round call is not injected
+- **WHEN** a truncated round emits a `function_call` that the fold discards
+  and the final hidden round emits a different `function_call` that the client
+  answers on the next turn
+- **THEN** the follow-up request forwarded upstream contains only the client's
+  `function_call_output`
+- **AND** no synthetic interrupted output is injected for the discarded call
+
 ### Requirement: Orphaned Tool-Output Errors Fail Closed
 codex-lb MUST classify the upstream error message
 `"No tool call found for function call output with call_id ..."`

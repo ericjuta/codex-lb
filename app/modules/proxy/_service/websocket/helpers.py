@@ -490,6 +490,27 @@ def _websocket_downstream_response_id(request_state: "_WebSocketRequestState") -
     return request_state.replay_downstream_response_id or request_state.response_id or request_state.request_id
 
 
+def _folded_terminal_function_call_ids(terminal_payload: dict[str, JsonValue]) -> frozenset[str]:
+    """Call ids of ``function_call`` items delivered by a folded terminal.
+
+    The fold discards buffered output from truncated rounds, so calls emitted
+    there never reach the client and are absent from the final round's stored
+    upstream context; the turn's pending-call tracking must not treat them as
+    interrupted.
+    """
+    response = terminal_payload.get("response")
+    output = response.get("output") if isinstance(response, dict) else None
+    call_ids: set[str] = set()
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict) or item.get("type") != "function_call":
+                continue
+            call_id = item.get("call_id")
+            if isinstance(call_id, str) and call_id:
+                call_ids.add(call_id)
+    return frozenset(call_ids)
+
+
 def _websocket_continuity_response_ids(
     request_state: "_WebSocketRequestState",
     upstream_response_id: str | None,
