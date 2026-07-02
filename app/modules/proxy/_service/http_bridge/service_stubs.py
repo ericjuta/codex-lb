@@ -383,6 +383,10 @@ def _is_missing_tool_output_error(*args: Any, **kwargs: Any) -> Any:
     return _service_global("_is_missing_tool_output_error")(*args, **kwargs)
 
 
+def _missing_tool_output_variant(*args: Any, **kwargs: Any) -> Any:
+    return _service_global("_missing_tool_output_variant")(*args, **kwargs)
+
+
 def _previous_response_id_from_not_found_message(*args: Any, **kwargs: Any) -> Any:
     return _service_global("_previous_response_id_from_not_found_message")(*args, **kwargs)
 

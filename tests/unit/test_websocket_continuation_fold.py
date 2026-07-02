@@ -1,13 +1,37 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+import app.core.clients.codex_continuation as codex_continuation_module
 from app.core.clients.codex_continuation import CodexContinuationConfig
 from app.modules.proxy._service.websocket.continuation import _WebSocketContinuationFold
 
 pytestmark = pytest.mark.unit
+
+
+class _ObservedCounter:
+    def __init__(self) -> None:
+        self.samples: list[dict[str, object]] = []
+
+    def labels(self, **labels: str):
+        sample: dict[str, object] = {"labels": dict(labels), "value": 0.0}
+        self.samples.append(sample)
+
+        def inc(amount: float = 1.0) -> None:
+            sample["value"] = float(sample["value"]) + amount
+
+        return SimpleNamespace(inc=inc)
+
+
+@pytest.fixture
+def decision_counter(monkeypatch: pytest.MonkeyPatch) -> _ObservedCounter:
+    counter = _ObservedCounter()
+    monkeypatch.setattr(codex_continuation_module, "PROMETHEUS_AVAILABLE", True)
+    monkeypatch.setattr(codex_continuation_module, "codex_continuation_decision_total", counter, raising=False)
+    return counter
 
 
 def _reasoning_events(*, output_index: int, item_id: str, encrypted_content: str) -> list[dict[str, Any]]:
@@ -106,7 +130,7 @@ def _function_call_events(*, output_index: int, item_id: str, call_id: str, name
     ]
 
 
-def test_ws_fold_chained_turn_with_buffered_tool_call_stops_and_delivers() -> None:
+def test_ws_fold_chained_turn_with_buffered_tool_call_stops_and_delivers(decision_counter: _ObservedCounter) -> None:
     # A chained hidden round would anchor on the truncated round's response,
     # where an emitted tool call sits unanswered — the upstream rejects that.
     # The fold must stop and deliver the tool call instead of continuing.
@@ -140,9 +164,15 @@ def test_ws_fold_chained_turn_with_buffered_tool_call_stops_and_delivers() -> No
         if event.get("type") == "response.output_item.done" and event.get("item", {}).get("type") == "function_call"
     ]
     assert flushed_call_ids == ["call_next"]
+    assert decision_counter.samples == [
+        {
+            "labels": {"transport": "websocket", "decision": "buffered_tool_calls", "tier": "1"},
+            "value": 1.0,
+        }
+    ]
 
 
-def test_ws_fold_continues_truncated_round_then_reconstructs_final() -> None:
+def test_ws_fold_continues_truncated_round_then_reconstructs_final(decision_counter: _ObservedCounter) -> None:
     fold = _WebSocketContinuationFold(
         CodexContinuationConfig(max_continue=1, rechunk_size=64),
         {
@@ -185,6 +215,12 @@ def test_ws_fold_continues_truncated_round_then_reconstructs_final() -> None:
     assert down1_types.count("response.created") == 1
     assert "response.completed" not in down1_types
     assert not any("partial answer" in str(event.get("delta", "")) for event in down1)
+    assert decision_counter.samples == [
+        {
+            "labels": {"transport": "websocket", "decision": "continue", "tier": "1"},
+            "value": 1.0,
+        }
+    ]
 
     round_two = [
         {"type": "response.created", "response": {"id": "resp_hidden", "status": "in_progress", "output": []}},
@@ -219,9 +255,16 @@ def test_ws_fold_continues_truncated_round_then_reconstructs_final() -> None:
         {"round": 1, "reasoning_tokens": 516, "n": 1},
         {"round": 2, "reasoning_tokens": 10, "n": None},
     ]
+    # The non-truncated hidden round's terminal emits no decision sample.
+    assert decision_counter.samples == [
+        {
+            "labels": {"transport": "websocket", "decision": "continue", "tier": "1"},
+            "value": 1.0,
+        }
+    ]
 
 
-def test_ws_fold_passes_through_non_truncated_round() -> None:
+def test_ws_fold_passes_through_non_truncated_round(decision_counter: _ObservedCounter) -> None:
     fold = _WebSocketContinuationFold(
         CodexContinuationConfig(rechunk_size=64),
         {"model": "gpt-5.5", "input": [{"role": "user", "content": "hi"}], "stream": True},
@@ -239,3 +282,4 @@ def test_ws_fold_passes_through_non_truncated_round() -> None:
     assert "all done" in deltas
     assert [e["type"] for e in downstream].count("response.completed") == 1
     assert terminal["response"]["metadata"]["proxy_billed_usage"]["output_tokens"] == 200
+    assert decision_counter.samples == []

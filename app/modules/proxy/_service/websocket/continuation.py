@@ -29,6 +29,7 @@ from app.core.clients.codex_continuation import (
     _int_value,
     _item_payload,
     _reconstruct_terminal,
+    _record_continuation_decision,
     _response_payload,
     _response_usage,
     _Seq,
@@ -236,6 +237,11 @@ class _WebSocketContinuationFold:
                 truncation_tier,
                 has_encrypted_content,
                 "continue" if should_continue_round else (stopped_reason or "stop"),
+            )
+            _record_continuation_decision(
+                transport="websocket",
+                decision="continue" if should_continue_round else (stopped_reason or "stop"),
+                tier=truncation_tier,
             )
 
         if should_continue_round:

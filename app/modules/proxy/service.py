@@ -2014,21 +2014,32 @@ def _normalize_session_id(session_id: str | None) -> str | None:
     return stripped or None
 
 
+def _missing_tool_output_variant(
+    *,
+    code: str | None,
+    param: str | None,
+    message: str | None,
+) -> str | None:
+    if code != "invalid_request_error" or param != "input" or message is None:
+        return None
+    normalized = " ".join(message.lower().split())
+    # Both directions of tool-call linkage corruption fail closed: a call whose
+    # output never arrived, and an output whose call is absent from the resolved
+    # previous-response context (e.g. it lives in a folded continuation round).
+    if normalized.startswith("no tool output found for function call call_"):
+        return "missing_tool_output"
+    if normalized.startswith("no tool call found for function call output with call_id "):
+        return "orphaned_tool_output"
+    return None
+
+
 def _is_missing_tool_output_error(
     *,
     code: str | None,
     param: str | None,
     message: str | None,
 ) -> bool:
-    if code != "invalid_request_error" or param != "input" or message is None:
-        return False
-    normalized = " ".join(message.lower().split())
-    # Both directions of tool-call linkage corruption fail closed: a call whose
-    # output never arrived, and an output whose call is absent from the resolved
-    # previous-response context (e.g. it lives in a folded continuation round).
-    return normalized.startswith("no tool output found for function call call_") or normalized.startswith(
-        "no tool call found for function call output with call_id "
-    )
+    return _missing_tool_output_variant(code=code, param=param, message=message) is not None
 
 
 def _is_previous_response_not_found_error(

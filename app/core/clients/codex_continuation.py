@@ -16,12 +16,31 @@ from app.core.clients.codex_truncation import (
     should_continue,
     tier_n,
 )
+from app.core.metrics.prometheus import PROMETHEUS_AVAILABLE, codex_continuation_decision_total
 from app.core.types import JsonObject, JsonValue
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
 
 logger = logging.getLogger(__name__)
 
 _TERMINAL_EVENT_TYPES = frozenset({"response.completed", "response.failed", "response.incomplete"})
+# Cap the ``tier`` label to keep its cardinality bounded even when
+# ``codex_continuation_max_n=0`` leaves the truncation tier unbounded.
+_DECISION_TIER_LABEL_CAP = 10
+
+
+def _record_continuation_decision(*, transport: str, decision: str, tier: int | None) -> None:
+    """Count one fold round-terminal decision at a truncation fingerprint."""
+    if not PROMETHEUS_AVAILABLE or codex_continuation_decision_total is None:
+        return
+    if tier is not None and tier > _DECISION_TIER_LABEL_CAP:
+        tier_label = f"{_DECISION_TIER_LABEL_CAP}+"
+    else:
+        tier_label = str(tier)
+    codex_continuation_decision_total.labels(
+        transport=transport,
+        decision=decision,
+        tier=tier_label,
+    ).inc()
 
 type OpenRound = Callable[[JsonObject], AsyncIterator[str]]
 
@@ -243,6 +262,12 @@ async def fold_responses_stream_with_codex_continuation(
                 truncation_tier,
                 "continue" if should_continue_round else stopped_reason or "stop",
             )
+            if truncation_tier is not None:
+                _record_continuation_decision(
+                    transport="http",
+                    decision="continue" if should_continue_round else stopped_reason or "stop",
+                    tier=truncation_tier,
+                )
 
             if should_continue_round:
                 marker = commentary_message(config.marker_text)

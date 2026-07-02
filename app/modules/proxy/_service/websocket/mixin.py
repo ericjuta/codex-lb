@@ -2960,22 +2960,23 @@ class _WebSocketMixin:
             and not isinstance(payload.get("type"), str)
             and isinstance(payload.get("error"), dict)
         )
+        # Capture the normalized upstream error code before
+        # rewrite_parallel_tool_call_text / downstream-id rewrites mutate the payload.
+        normalized_upstream_error_code = _normalize_error_code(
+            _websocket_event_error_code(event_type, payload),
+            _websocket_event_error_type(event_type, payload),
+        )
         is_previous_response_not_found_event = _facade()._is_previous_response_not_found_error(
-            code=_normalize_error_code(
-                _websocket_event_error_code(event_type, payload),
-                _websocket_event_error_type(event_type, payload),
-            ),
+            code=normalized_upstream_error_code,
             param=_websocket_event_error_param(event_type, payload),
             message=error_message,
         )
-        is_missing_tool_output_event = _facade()._is_missing_tool_output_error(
-            code=_normalize_error_code(
-                _websocket_event_error_code(event_type, payload),
-                _websocket_event_error_type(event_type, payload),
-            ),
+        missing_tool_output_variant = _facade()._missing_tool_output_variant(
+            code=normalized_upstream_error_code,
             param=_websocket_event_error_param(event_type, payload),
             message=error_message,
         )
+        is_missing_tool_output_event = missing_tool_output_variant is not None
         previous_response_id_hint = _facade()._previous_response_id_from_not_found_message(error_message)
         text, payload, event, event_type, _event_block = rewrite_parallel_tool_call_text(
             text,
@@ -3118,15 +3119,16 @@ class _WebSocketMixin:
                 if (
                     request_state is not None
                     and request_state.previous_response_id is not None
-                    and is_missing_tool_output_event
+                    and missing_tool_output_variant is not None
                 ):
                     request_state.error_http_status_override = 502
                     event, payload, event_type, text = _rewrite_websocket_continuity_corruption_event(
                         request_state=request_state,
                         upstream_control=upstream_control,
-                        reason="missing_tool_output",
+                        reason=missing_tool_output_variant,
                         reconnect_requested=True,
                         original_text=text,
+                        upstream_error_code=normalized_upstream_error_code,
                     )
                 has_other_pending_requests = bool(pending_requests)
             elif fold_outcome is None:
@@ -3141,8 +3143,8 @@ class _WebSocketMixin:
             grouped_error_reason = (
                 "previous_response_not_found"
                 if is_previous_response_not_found_event
-                else "missing_tool_output"
-                if is_missing_tool_output_event
+                else missing_tool_output_variant
+                if missing_tool_output_variant is not None
                 else "stream_incomplete"
             )
             for grouped_request_state in grouped_previous_response_request_states:

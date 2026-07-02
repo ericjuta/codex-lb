@@ -22,6 +22,20 @@ def _assert_codex_previous_response_stale_error(error: dict[str, object]) -> Non
     assert error["message"] == proxy_module.PREVIOUS_RESPONSE_STALE_MESSAGE
 
 
+class _ObservedCounter:
+    def __init__(self) -> None:
+        self.samples: list[dict[str, object]] = []
+
+    def labels(self, **labels: str):
+        sample: dict[str, object] = {"labels": dict(labels), "value": 0.0}
+        self.samples.append(sample)
+
+        def inc(amount: float = 1.0) -> None:
+            sample["value"] = cast(float, sample["value"]) + amount
+
+        return SimpleNamespace(inc=inc)
+
+
 def _without_installation_metadata(value: Any) -> Any:
     if isinstance(value, list):
         return [_without_installation_metadata(item) for item in value]
@@ -1439,6 +1453,9 @@ def test_backend_responses_websocket_orphaned_tool_output_error_fails_closed(app
         ]
     )
     log_calls: list[dict[str, object]] = []
+    fail_closed_counter = _ObservedCounter()
+    monkeypatch.setattr(proxy_module, "PROMETHEUS_AVAILABLE", True)
+    monkeypatch.setattr(proxy_module, "continuity_fail_closed_total", fail_closed_counter, raising=False)
 
     class _FakeSettingsCache:
         async def get(self):
@@ -1507,6 +1524,13 @@ def test_backend_responses_websocket_orphaned_tool_output_error_fails_closed(app
     assert len(log_calls) == 1
     assert log_calls[0]["status"] == "error"
     assert log_calls[0]["error_code"] == "stream_incomplete"
+    # The fail-closed diagnostic labels the orphaned linkage direction distinctly.
+    assert fail_closed_counter.samples == [
+        {
+            "labels": {"surface": "websocket_stream", "reason": "orphaned_tool_output"},
+            "value": 1.0,
+        }
+    ]
 
 
 def test_backend_responses_websocket_keeps_same_response_distinct_tool_call_ids(

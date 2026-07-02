@@ -867,25 +867,32 @@ def _maybe_rewrite_websocket_previous_response_not_found_event(
         message=error_message,
     )
     reason = "previous_response_not_found"
+    variant: str | None = None
     if not should_rewrite:
         if request_state.previous_response_id is None:
             return event, payload, event_type, original_text
-        should_rewrite = _facade()._is_missing_tool_output_error(
+        variant = _facade()._missing_tool_output_variant(
             code=error_code,
             param=error_param,
             message=error_message,
         )
-        reason = "missing_tool_output"
+        should_rewrite = variant is not None
+        if variant is not None:
+            reason = variant
     if not should_rewrite:
         return event, payload, event_type, original_text
 
-    reconnect_requested = reason == "missing_tool_output" or request_state.preferred_account_id is not None
+    reconnect_requested = variant is not None or request_state.preferred_account_id is not None
     return _rewrite_websocket_continuity_corruption_event(
         request_state=request_state,
         upstream_control=upstream_control,
         reason=reason,
         reconnect_requested=reconnect_requested,
         original_text=original_text,
+        upstream_error_code=_normalize_error_code(
+            error_code,
+            _websocket_event_error_type(event_type, payload),
+        ),
     )
 
 
@@ -906,6 +913,7 @@ def _rewrite_websocket_continuity_corruption_event(
     reason: str,
     reconnect_requested: bool,
     original_text: str,
+    upstream_error_code: str | None = None,
 ) -> tuple[OpenAIEvent | None, dict[str, JsonValue] | None, str | None, str]:
     del original_text
     if reconnect_requested:
@@ -915,6 +923,7 @@ def _rewrite_websocket_continuity_corruption_event(
         reason=reason,
         previous_response_id=request_state.previous_response_id,
         session_id=request_state.session_id,
+        upstream_error_code=upstream_error_code,
     )
     rewritten_code, rewritten_message = _websocket_continuity_error_fields(
         reason=reason,
@@ -1027,12 +1036,14 @@ def _sanitize_websocket_previous_response_error(
         message=normalized_message,
     )
     if not should_rewrite:
-        should_rewrite = _facade()._is_missing_tool_output_error(
+        variant = _facade()._missing_tool_output_variant(
             code=normalized_code,
             param=parsed_error.param if parsed_error else None,
             message=normalized_message,
         )
-        reason = "missing_tool_output"
+        should_rewrite = variant is not None
+        if variant is not None:
+            reason = variant
     if not should_rewrite:
         return status_code, payload, error_code, error_message
 

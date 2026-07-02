@@ -189,6 +189,12 @@ if PROMETHEUS_AVAILABLE:
         ["surface", "reason"],
         registry=REGISTRY,
     )
+    codex_continuation_decision_total = Counter(
+        "codex_lb_codex_continuation_decision_total",
+        "Total codex continuation fold decisions at truncation-fingerprint round terminals",
+        ["transport", "decision", "tier"],
+        registry=REGISTRY,
+    )
     account_lease_acquired_total = Counter(
         "codex_lb_account_lease_acquired_total",
         "Total account pressure leases acquired by kind",
@@ -286,6 +292,7 @@ else:
     bridge_public_contract_error_total: CounterLike | None = None
     continuity_owner_resolution_total: CounterLike | None = None
     continuity_fail_closed_total: CounterLike | None = None
+    codex_continuation_decision_total: CounterLike | None = None
     account_lease_acquired_total: CounterLike | None = None
     account_lease_released_total: CounterLike | None = None
     account_lease_stale_reclaimed_total: CounterLike | None = None
@@ -328,6 +335,7 @@ __all__ = [
     "bridge_soft_local_rebind_total",
     "client_exposed_errors_total",
     "circuit_breaker_state",
+    "codex_continuation_decision_total",
     "continuity_fail_closed_total",
     "continuity_owner_resolution_total",
     "drain_transitions_total",

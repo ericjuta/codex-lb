@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
+import app.core.clients.codex_continuation as codex_continuation_module
 from app.core.clients.codex_continuation import (
     CodexContinuationConfig,
+    _record_continuation_decision,
     fold_responses_stream_with_codex_continuation,
     should_apply_codex_continuation,
 )
@@ -14,6 +17,28 @@ from app.core.types import JsonObject, JsonValue
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
 
 pytestmark = pytest.mark.unit
+
+
+class _ObservedCounter:
+    def __init__(self) -> None:
+        self.samples: list[dict[str, object]] = []
+
+    def labels(self, **labels: str):
+        sample: dict[str, object] = {"labels": dict(labels), "value": 0.0}
+        self.samples.append(sample)
+
+        def inc(amount: float = 1.0) -> None:
+            sample["value"] = float(sample["value"]) + amount
+
+        return SimpleNamespace(inc=inc)
+
+
+@pytest.fixture
+def decision_counter(monkeypatch: pytest.MonkeyPatch) -> _ObservedCounter:
+    counter = _ObservedCounter()
+    monkeypatch.setattr(codex_continuation_module, "PROMETHEUS_AVAILABLE", True)
+    monkeypatch.setattr(codex_continuation_module, "codex_continuation_decision_total", counter, raising=False)
+    return counter
 
 
 def _event(payload: dict[str, JsonValue]) -> str:
@@ -117,7 +142,9 @@ async def _collect_events(chunks: AsyncIterator[str]) -> list[dict[str, JsonValu
 
 
 @pytest.mark.asyncio
-async def test_fold_responses_stream_continues_truncated_round_and_reuses_payload_shape() -> None:
+async def test_fold_responses_stream_continues_truncated_round_and_reuses_payload_shape(
+    decision_counter: _ObservedCounter,
+) -> None:
     base_payload: JsonObject = {
         "model": "gpt-5.5",
         "instructions": "solve",
@@ -207,6 +234,69 @@ async def test_fold_responses_stream_continues_truncated_round_and_reuses_payloa
     assert usage["output_tokens"] == 536
     assert usage["total_tokens"] == 636
     assert usage["output_tokens_details"] == {"reasoning_tokens": 526}
+
+    # Round 1 hits the truncation fingerprint and continues; round 2 does not
+    # (reasoning_tokens=10) and emits no decision sample.
+    assert decision_counter.samples == [
+        {
+            "labels": {"transport": "http", "decision": "continue", "tier": "1"},
+            "value": 1.0,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fold_responses_stream_counts_terminal_stop_decision(
+    decision_counter: _ObservedCounter,
+) -> None:
+    # min_n=2 leaves tier 1 outside the continuation window, so the truncated
+    # round terminates the fold with a tier_out_of_window stop decision.
+    async def open_round(payload: JsonObject) -> AsyncIterator[str]:
+        del payload
+        yield _event(_created("resp_stop"))
+        for event in _reasoning_events(output_index=0, item_id="rs_stop", encrypted_content="enc_stop"):
+            yield _event(event)
+        yield _event(_completed("resp_stop", input_tokens=50, output_tokens=550, reasoning_tokens=516))
+
+    events = await _collect_events(
+        fold_responses_stream_with_codex_continuation(
+            base_payload={"model": "gpt-5.5", "instructions": "solve", "input": [], "stream": True},
+            open_round=open_round,
+            config=CodexContinuationConfig(min_n=2, rechunk_size=64),
+        )
+    )
+
+    assert events[-1]["type"] == "response.completed"
+    assert decision_counter.samples == [
+        {
+            "labels": {"transport": "http", "decision": "tier_out_of_window", "tier": "1"},
+            "value": 1.0,
+        }
+    ]
+
+
+def test_record_continuation_decision_caps_tier_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    counter = _ObservedCounter()
+    monkeypatch.setattr(codex_continuation_module, "PROMETHEUS_AVAILABLE", True)
+    monkeypatch.setattr(codex_continuation_module, "codex_continuation_decision_total", counter, raising=False)
+
+    _record_continuation_decision(transport="http", decision="continue", tier=3)
+    _record_continuation_decision(transport="websocket", decision="max_continue", tier=11)
+
+    assert [sample["labels"] for sample in counter.samples] == [
+        {"transport": "http", "decision": "continue", "tier": "3"},
+        {"transport": "websocket", "decision": "max_continue", "tier": "10+"},
+    ]
+
+
+def test_record_continuation_decision_noops_without_prometheus(monkeypatch: pytest.MonkeyPatch) -> None:
+    counter = _ObservedCounter()
+    monkeypatch.setattr(codex_continuation_module, "PROMETHEUS_AVAILABLE", False)
+    monkeypatch.setattr(codex_continuation_module, "codex_continuation_decision_total", counter, raising=False)
+
+    _record_continuation_decision(transport="http", decision="continue", tier=1)
+
+    assert counter.samples == []
 
 
 @pytest.mark.asyncio

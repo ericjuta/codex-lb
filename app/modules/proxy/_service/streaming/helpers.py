@@ -483,14 +483,15 @@ def _rewrite_previous_response_stream_error(
             PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
             None,
         )
-    if _facade()._is_missing_tool_output_error(
+    missing_tool_output_variant = _facade()._missing_tool_output_variant(
         code=error_code,
         param=error_param,
         message=error_message,
-    ):
+    )
+    if missing_tool_output_variant is not None:
         _record_continuity_fail_closed(
             surface="http_stream",
-            reason="missing_tool_output",
+            reason=missing_tool_output_variant,
             previous_response_id=previous_response_id,
             upstream_error_code=error_code,
         )

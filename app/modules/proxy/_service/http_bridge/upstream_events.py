@@ -50,13 +50,13 @@ from app.modules.proxy._service.http_bridge.service_stubs import (
     _build_stream_incomplete_terminal_event_for_request,
     _find_websocket_request_state_by_response_id,
     _http_error_status_from_payload,
-    _is_missing_tool_output_error,
     _is_previous_response_not_found_error,
     _is_security_work_authorization_required_error,
     _match_websocket_request_state_for_anonymous_event,
     _matching_websocket_request_states_for_missing_tool_output_error,
     _matching_websocket_request_states_for_previous_response_error,
     _maybe_rewrite_websocket_previous_response_not_found_event,
+    _missing_tool_output_variant,
     _pop_matching_websocket_request_states,
     _pop_terminal_websocket_request_state,
     _previous_response_id_from_not_found_message,
@@ -340,22 +340,23 @@ class _HTTPBridgeUpstreamEventsMixin:
             and not isinstance(payload.get("type"), str)
             and isinstance(payload.get("error"), dict)
         )
+        # Capture the normalized upstream error code before
+        # rewrite_parallel_tool_call_text / downstream-id rewrites mutate the payload.
+        normalized_upstream_error_code = _normalize_error_code(
+            _websocket_event_error_code(event_type, payload),
+            _websocket_event_error_type(event_type, payload),
+        )
         is_previous_response_not_found_event = _is_previous_response_not_found_error(
-            code=_normalize_error_code(
-                _websocket_event_error_code(event_type, payload),
-                _websocket_event_error_type(event_type, payload),
-            ),
+            code=normalized_upstream_error_code,
             param=_websocket_event_error_param(event_type, payload),
             message=error_message,
         )
-        is_missing_tool_output_event = _is_missing_tool_output_error(
-            code=_normalize_error_code(
-                _websocket_event_error_code(event_type, payload),
-                _websocket_event_error_type(event_type, payload),
-            ),
+        missing_tool_output_variant = _missing_tool_output_variant(
+            code=normalized_upstream_error_code,
             param=_websocket_event_error_param(event_type, payload),
             message=error_message,
         )
+        is_missing_tool_output_event = missing_tool_output_variant is not None
         previous_response_id_hint = _previous_response_id_from_not_found_message(error_message)
         text, payload, event, event_type, event_block = rewrite_parallel_tool_call_text(
             text,
@@ -516,8 +517,8 @@ class _HTTPBridgeUpstreamEventsMixin:
             grouped_error_reason = (
                 "previous_response_not_found"
                 if is_previous_response_not_found_event
-                else "missing_tool_output"
-                if is_missing_tool_output_event
+                else missing_tool_output_variant
+                if missing_tool_output_variant is not None
                 else "stream_incomplete"
             )
             for grouped_request_state in grouped_previous_response_request_states:
@@ -608,15 +609,16 @@ class _HTTPBridgeUpstreamEventsMixin:
         if (
             status_request_state is not None
             and status_request_state.previous_response_id is not None
-            and is_missing_tool_output_event
+            and missing_tool_output_variant is not None
         ):
             status_request_state.error_http_status_override = 502
             event, payload, event_type, rewritten_text = _rewrite_websocket_continuity_corruption_event(
                 request_state=status_request_state,
                 upstream_control=session.upstream_control,
-                reason="missing_tool_output",
+                reason=missing_tool_output_variant,
                 reconnect_requested=True,
                 original_text=text,
+                upstream_error_code=normalized_upstream_error_code,
             )
             event_block = f"data: {rewritten_text}\n\n"
 
