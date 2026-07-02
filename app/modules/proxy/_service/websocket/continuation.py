@@ -25,6 +25,7 @@ from app.core.clients.codex_continuation import (
     _event_type,
     _find_buffer,
     _flush_entry,
+    _has_buffered_client_tool_calls,
     _input_items,
     _int_value,
     _item_payload,
@@ -47,10 +48,6 @@ from app.core.clients.codex_truncation import (
 logger = logging.getLogger(__name__)
 
 _TERMINAL_EVENT_TYPES = frozenset({"response.completed", "response.failed", "response.incomplete"})
-# Buffered output item types the downstream client must answer with outputs;
-# a chained hidden round anchored on a response containing one of these would
-# be rejected upstream for the missing tool output.
-_CLIENT_TOOL_CALL_ITEM_TYPES = frozenset({"function_call", "custom_tool_call", "apply_patch_call"})
 
 
 @dataclass(slots=True)
@@ -198,26 +195,27 @@ class _WebSocketContinuationFold:
             else None
         )
         round_anchor = None
-        chained_stop_reason = None
+        fold_stop_reason = None
+        # A truncated round that emitted a client-answered tool call is never
+        # continued past, in either anchor mode. Chained: hidden rounds chain
+        # off the just-completed round's own response id (see below), so the
+        # call would sit unanswered in that anchored context and the upstream
+        # rejects the round ("No tool output found for function call ...").
+        # Anchorless: the full-history replay would silently discard the
+        # delivered-worthy call and re-think, risking a duplicate side-effect
+        # call with a fresh call_id. Stop the fold and deliver the calls.
+        if should_continue_round and _has_buffered_client_tool_calls(self._buffered_outputs):
+            should_continue_round = False
+            fold_stop_reason = "buffered_tool_calls"
         if should_continue_round and chained_anchor is not None:
-            # Chained continuation rounds chain off the just-completed round's
-            # own response id (see below), so any client-answered tool call the
-            # truncated round emitted would sit unanswered in that anchored
-            # context and the upstream rejects the round ("No tool output found
-            # for function call ..."). Those calls are real actionable output:
-            # stop the fold and deliver them instead of continuing.
-            if any(entry.item_type in _CLIENT_TOOL_CALL_ITEM_TYPES for entry in self._buffered_outputs):
+            terminal_id = _response_payload(terminal).get("id")
+            round_anchor = (
+                terminal_id.strip() if isinstance(terminal_id, str) and terminal_id.strip() else None
+            )
+            if round_anchor is None:
                 should_continue_round = False
-                chained_stop_reason = "buffered_tool_calls"
-            else:
-                terminal_id = _response_payload(terminal).get("id")
-                round_anchor = (
-                    terminal_id.strip() if isinstance(terminal_id, str) and terminal_id.strip() else None
-                )
-                if round_anchor is None:
-                    should_continue_round = False
-                    chained_stop_reason = "missing_round_anchor"
-        stopped_reason = chained_stop_reason or _stopped_reason(
+                fold_stop_reason = "missing_round_anchor"
+        stopped_reason = fold_stop_reason or _stopped_reason(
             should_continue_round=should_continue_round,
             reasoning_token_count=round_reasoning_tokens,
             has_encrypted_content=has_encrypted_content,

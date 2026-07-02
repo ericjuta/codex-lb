@@ -8,6 +8,7 @@ import pytest
 import app.core.clients.codex_continuation as codex_continuation_module
 from app.core.clients.codex_continuation import CodexContinuationConfig
 from app.modules.proxy._service.websocket.continuation import _WebSocketContinuationFold
+from app.modules.proxy._service.websocket.helpers import _folded_terminal_function_call_ids
 
 pytestmark = pytest.mark.unit
 
@@ -164,6 +165,52 @@ def test_ws_fold_chained_turn_with_buffered_tool_call_stops_and_delivers(decisio
         if event.get("type") == "response.output_item.done" and event.get("item", {}).get("type") == "function_call"
     ]
     assert flushed_call_ids == ["call_next"]
+    assert terminal["response"]["metadata"]["proxy_stopped_reason"] == "buffered_tool_calls"
+    assert decision_counter.samples == [
+        {
+            "labels": {"transport": "websocket", "decision": "buffered_tool_calls", "tier": "1"},
+            "value": 1.0,
+        }
+    ]
+
+
+def test_ws_fold_anchorless_turn_with_buffered_tool_call_stops_and_delivers(
+    decision_counter: _ObservedCounter,
+) -> None:
+    # An anchorless full-history replay could technically continue past the
+    # truncated round, but doing so would silently discard the buffered tool
+    # call — real actionable output — and re-think, risking a duplicate
+    # side-effect call. The fold must stop and deliver it, same as chained.
+    fold = _WebSocketContinuationFold(
+        CodexContinuationConfig(max_continue=3, rechunk_size=64),
+        {
+            "model": "gpt-5.5",
+            "instructions": "solve",
+            "input": [{"role": "user", "content": "question"}],
+            "stream": True,
+        },
+    )
+
+    round_one = [
+        {"type": "response.created", "response": {"id": "resp_visible", "status": "in_progress", "output": []}},
+        *_reasoning_events(output_index=0, item_id="rs_1", encrypted_content="enc1"),
+        *_function_call_events(output_index=1, item_id="fc_1", call_id="call_next", name="shell"),
+        _completed("resp_visible", input_tokens=100, output_tokens=600, reasoning_tokens=516),
+    ]
+    downstream, continuation, terminal = _drive(fold, round_one)
+
+    assert continuation is None
+    assert terminal is not None
+    assert terminal["type"] == "response.completed"
+    output_items = terminal["response"]["output"]
+    assert any(item.get("type") == "function_call" and item.get("call_id") == "call_next" for item in output_items)
+    flushed_call_ids = [
+        event["item"]["call_id"]
+        for event in downstream
+        if event.get("type") == "response.output_item.done" and event.get("item", {}).get("type") == "function_call"
+    ]
+    assert flushed_call_ids == ["call_next"]
+    assert terminal["response"]["metadata"]["proxy_stopped_reason"] == "buffered_tool_calls"
     assert decision_counter.samples == [
         {
             "labels": {"transport": "websocket", "decision": "buffered_tool_calls", "tier": "1"},
@@ -262,6 +309,29 @@ def test_ws_fold_continues_truncated_round_then_reconstructs_final(decision_coun
             "value": 1.0,
         }
     ]
+
+
+def test_folded_terminal_function_call_ids_prune_only_delivered_calls() -> None:
+    # Defense-in-depth invariant: the relay prunes pending-call tracking to
+    # calls present in the folded terminal's delivered output. No fold mode
+    # discards buffered tool calls anymore, but a regression that did must not
+    # have the undelivered call treated as interrupted on the follow-up turn.
+    terminal_payload = {
+        "type": "response.completed",
+        "response": {
+            "id": "resp_folded",
+            "status": "completed",
+            "output": [
+                {"id": "rs_1", "type": "reasoning"},
+                {"id": "fc_1", "type": "function_call", "call_id": "call_delivered", "name": "shell"},
+                {"id": "fc_2", "type": "function_call", "call_id": "", "name": "shell"},
+                {"id": "msg_1", "type": "message", "role": "assistant", "content": []},
+            ],
+        },
+    }
+
+    assert _folded_terminal_function_call_ids(terminal_payload) == frozenset({"call_delivered"})
+    assert _folded_terminal_function_call_ids({"type": "response.completed"}) == frozenset()
 
 
 def test_ws_fold_passes_through_non_truncated_round(decision_counter: _ObservedCounter) -> None:

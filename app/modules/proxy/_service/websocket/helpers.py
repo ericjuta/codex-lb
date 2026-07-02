@@ -493,10 +493,12 @@ def _websocket_downstream_response_id(request_state: "_WebSocketRequestState") -
 def _folded_terminal_function_call_ids(terminal_payload: dict[str, JsonValue]) -> frozenset[str]:
     """Call ids of ``function_call`` items delivered by a folded terminal.
 
-    The fold discards buffered output from truncated rounds, so calls emitted
-    there never reach the client and are absent from the final round's stored
-    upstream context; the turn's pending-call tracking must not treat them as
-    interrupted.
+    Under the unified stop rule no fold mode discards a buffered client tool
+    call (a truncated round emitting one stops the fold and delivers it), so
+    this prune is defense-in-depth: should a regression reintroduce a
+    discarded call, it never reached the client and is absent from the final
+    round's stored upstream context, and the turn's pending-call tracking
+    must not treat it as interrupted.
     """
     response = terminal_payload.get("response")
     output = response.get("output") if isinstance(response, dict) else None

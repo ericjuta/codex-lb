@@ -59,18 +59,21 @@ call, to the client.
 ### Requirement: Folded Turns Track Only Delivered Calls As Interruptible
 codex-lb MUST, when a folded WebSocket turn completes, limit the turn's
 pending (interruptible) function-call tracking to calls present in the folded
-terminal's delivered output. Calls buffered in truncated rounds are discarded
-by the fold — the client never receives them and the final round's stored
-upstream context does not contain them — so interrupted-tool-output injection
-MUST NOT synthesize outputs for them on a follow-up turn.
+terminal's delivered output. Under the unified stop rule no fold mode
+discards a buffered client tool call — a truncated round emitting one stops
+the fold and delivers it — so this prune is a defense-in-depth invariant:
+should a regression reintroduce a discarded call, the client never received
+it and the final round's stored upstream context does not contain it, so
+interrupted-tool-output injection MUST NOT synthesize an output for any call
+absent from the delivered terminal output on a follow-up turn.
 
-#### Scenario: Discarded truncated-round call is not injected
-- **WHEN** a truncated round emits a `function_call` that the fold discards
-  and the final hidden round emits a different `function_call` that the client
-  answers on the next turn
+#### Scenario: Undelivered call is not treated as interrupted
+- **WHEN** a folded turn's terminal output omits a `function_call` observed
+  mid-turn (a discard regression) and the client answers a different
+  delivered `function_call` on the next turn
 - **THEN** the follow-up request forwarded upstream contains only the client's
   `function_call_output`
-- **AND** no synthetic interrupted output is injected for the discarded call
+- **AND** no synthetic interrupted output is injected for the undelivered call
 
 ### Requirement: Orphaned Tool-Output Errors Fail Closed
 codex-lb MUST classify the upstream error message

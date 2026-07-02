@@ -108,6 +108,28 @@ def _message_events(*, output_index: int, item_id: str, text: str) -> list[dict[
     ]
 
 
+def _function_call_events(*, output_index: int, item_id: str, call_id: str, name: str) -> list[dict[str, JsonValue]]:
+    return [
+        {
+            "type": "response.output_item.added",
+            "output_index": output_index,
+            "item": {"id": item_id, "type": "function_call", "call_id": call_id, "name": name, "arguments": ""},
+        },
+        {
+            "type": "response.output_item.done",
+            "output_index": output_index,
+            "item": {
+                "id": item_id,
+                "type": "function_call",
+                "status": "completed",
+                "call_id": call_id,
+                "name": name,
+                "arguments": "{}",
+            },
+        },
+    ]
+
+
 def _completed(
     response_id: str,
     *,
@@ -240,6 +262,64 @@ async def test_fold_responses_stream_continues_truncated_round_and_reuses_payloa
     assert decision_counter.samples == [
         {
             "labels": {"transport": "http", "decision": "continue", "tier": "1"},
+            "value": 1.0,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fold_responses_stream_stops_and_delivers_truncated_round_tool_calls(
+    decision_counter: _ObservedCounter,
+) -> None:
+    # A truncated round that emitted a client-answered tool call must not be
+    # continued past: the anchorless replay would discard the call and
+    # re-think, risking a duplicate side-effect call. The fold stops, flushes
+    # the buffered call, and reports the overriding stopped reason.
+    opened_payloads: list[JsonObject] = []
+
+    async def open_round(payload: JsonObject) -> AsyncIterator[str]:
+        opened_payloads.append(payload)
+        yield _event(_created("resp_visible"))
+        for event in _reasoning_events(output_index=0, item_id="rs_1", encrypted_content="enc1"):
+            yield _event(event)
+        for event in _function_call_events(output_index=1, item_id="fc_1", call_id="call_next", name="shell"):
+            yield _event(event)
+        yield _event(_completed("resp_visible", input_tokens=100, output_tokens=600, reasoning_tokens=516))
+
+    events = await _collect_events(
+        fold_responses_stream_with_codex_continuation(
+            base_payload={
+                "model": "gpt-5.5",
+                "instructions": "solve",
+                "input": [{"role": "user", "content": "question"}],
+                "stream": True,
+            },
+            open_round=open_round,
+            config=CodexContinuationConfig(max_continue=3, rechunk_size=64),
+        )
+    )
+
+    # No hidden continuation round is opened.
+    assert len(opened_payloads) == 1
+
+    terminal = events[-1]
+    assert terminal["type"] == "response.completed"
+    response = cast(dict[str, JsonValue], terminal["response"])
+    output_items = cast(list[dict[str, JsonValue]], response["output"])
+    assert any(item.get("type") == "function_call" and item.get("call_id") == "call_next" for item in output_items)
+    delivered_call_ids = [
+        cast(dict[str, JsonValue], event["item"])["call_id"]
+        for event in events
+        if event.get("type") == "response.output_item.done"
+        and cast(dict[str, JsonValue], event.get("item", {})).get("type") == "function_call"
+    ]
+    assert delivered_call_ids == ["call_next"]
+    metadata = cast(dict[str, JsonValue], response["metadata"])
+    assert metadata["proxy_stopped_reason"] == "buffered_tool_calls"
+    assert [event["sequence_number"] for event in events] == list(range(len(events)))
+    assert decision_counter.samples == [
+        {
+            "labels": {"transport": "http", "decision": "buffered_tool_calls", "tier": "1"},
             "value": 1.0,
         }
     ]

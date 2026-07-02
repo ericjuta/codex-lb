@@ -23,6 +23,13 @@ from app.core.utils.sse import format_sse_event, parse_sse_data_json
 logger = logging.getLogger(__name__)
 
 _TERMINAL_EVENT_TYPES = frozenset({"response.completed", "response.failed", "response.incomplete"})
+# Buffered output item types the downstream client must answer with outputs.
+# These are real actionable output: continuing past them discards them and
+# re-thinks the same task, risking a duplicate side-effect call with a fresh
+# call_id (see app/modules/proxy/tool_call_dedupe.py), and a chained hidden
+# round anchored on a response containing one of these is rejected upstream
+# for the missing tool output.
+_CLIENT_TOOL_CALL_ITEM_TYPES = frozenset({"function_call", "custom_tool_call", "apply_patch_call"})
 # Cap the ``tier`` label to keep its cardinality bounded even when
 # ``codex_continuation_max_n=0`` leaves the truncation tier unbounded.
 _DECISION_TIER_LABEL_CAP = 10
@@ -247,13 +254,26 @@ async def fold_responses_stream_with_codex_continuation(
                 and within_output_cap
             )
 
-            stopped_reason = _stopped_reason(
-                should_continue_round=should_continue_round,
-                reasoning_token_count=round_reasoning_tokens,
-                has_encrypted_content=has_encrypted_content,
-                round_number=round_number,
-                within_output_cap=within_output_cap,
-                config=config,
+            # A truncated round that emitted a client-answered tool call is never
+            # continued past: the buffered call is delivered instead of being
+            # discarded by the anchorless full-history replay. Override the
+            # generic stopped-reason derivation (its fallback would mislabel
+            # this stop "tier_out_of_window").
+            buffered_tool_call_stop = should_continue_round and _has_buffered_client_tool_calls(buffered_outputs)
+            if buffered_tool_call_stop:
+                should_continue_round = False
+
+            stopped_reason = (
+                "buffered_tool_calls"
+                if buffered_tool_call_stop
+                else _stopped_reason(
+                    should_continue_round=should_continue_round,
+                    reasoning_token_count=round_reasoning_tokens,
+                    has_encrypted_content=has_encrypted_content,
+                    round_number=round_number,
+                    within_output_cap=within_output_cap,
+                    config=config,
+                )
             )
             logger.debug(
                 "codex_continuation_round request_round=%s reasoning_tokens=%s tier=%s decision=%s",
@@ -407,6 +427,10 @@ def _find_buffer(entries: list[_BufferedOutput], upstream_output_index: Any) -> 
         if entry.upstream_output_index == upstream_output_index:
             return entry
     return None
+
+
+def _has_buffered_client_tool_calls(entries: list[_BufferedOutput]) -> bool:
+    return any(entry.item_type in _CLIENT_TOOL_CALL_ITEM_TYPES for entry in entries)
 
 
 def _int_value(value: Any) -> int:
