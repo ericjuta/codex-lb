@@ -430,7 +430,18 @@ def _find_buffer(entries: list[_BufferedOutput], upstream_output_index: Any) -> 
 
 
 def _has_buffered_client_tool_calls(entries: list[_BufferedOutput]) -> bool:
-    return any(entry.item_type in _CLIENT_TOOL_CALL_ITEM_TYPES for entry in entries)
+    return any(_is_client_tool_call_entry(entry) for entry in entries)
+
+
+def _is_client_tool_call_entry(entry: _BufferedOutput) -> bool:
+    if entry.item_type in _CLIENT_TOOL_CALL_ITEM_TYPES:
+        return True
+    # Any call item the client must pair with an output carries a call_id
+    # (e.g. tool_search_call), while reasoning/messages and server-executed
+    # calls (web_search_call, ...) do not. Match on that invariant so new
+    # call kinds cannot slip a fold past an unanswered call.
+    call_id = entry.item.get("call_id") if isinstance(entry.item, dict) else None
+    return isinstance(call_id, str) and bool(call_id)
 
 
 def _int_value(value: Any) -> int:

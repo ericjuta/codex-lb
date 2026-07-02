@@ -441,6 +441,24 @@ def test_missing_tool_output_variant_labels_each_linkage_direction():
         )
         == "orphaned_tool_output"
     )
+    # The call-kind wording varies by item type (observed live 2026-07-02:
+    # tool_search_call); both frames must classify regardless of kind.
+    assert (
+        proxy_service._missing_tool_output_variant(
+            code="invalid_request_error",
+            param="input",
+            message="No tool output found for tool search call call_dVlIuf11aIpyIVdeLcvtGvOd.",
+        )
+        == "missing_tool_output"
+    )
+    assert (
+        proxy_service._missing_tool_output_variant(
+            code="invalid_request_error",
+            param="input",
+            message="No tool search call found for tool search call output with call_id call_dVlIuf11aIpyIVdeLcvtGvOd.",
+        )
+        == "orphaned_tool_output"
+    )
     # Near misses stay unclassified.
     assert (
         proxy_service._missing_tool_output_variant(

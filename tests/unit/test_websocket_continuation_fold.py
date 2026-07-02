@@ -174,6 +174,57 @@ def test_ws_fold_chained_turn_with_buffered_tool_call_stops_and_delivers(decisio
     ]
 
 
+def test_ws_fold_stops_on_buffered_call_kind_outside_known_types(decision_counter: _ObservedCounter) -> None:
+    # Observed live 2026-07-02: a truncated round emitted a tool_search_call —
+    # a call kind outside _CLIENT_TOOL_CALL_ITEM_TYPES — and the fold continued
+    # past it, so the hidden round 400'd upstream ("No tool output found for
+    # tool search call ..."). Any buffered item carrying a call_id must stop
+    # the fold, regardless of its type string.
+    fold = _WebSocketContinuationFold(
+        CodexContinuationConfig(max_continue=3, rechunk_size=64),
+        {
+            "model": "gpt-5.5",
+            "instructions": "solve",
+            "input": [{"type": "function_call_output", "call_id": "call_prev", "output": "done"}],
+            "previous_response_id": "resp_previous",
+            "stream": True,
+        },
+    )
+
+    round_one = [
+        {"type": "response.created", "response": {"id": "resp_visible", "status": "in_progress", "output": []}},
+        *_reasoning_events(output_index=0, item_id="rs_1", encrypted_content="enc1"),
+        {
+            "type": "response.output_item.added",
+            "output_index": 1,
+            "item": {"id": "tsc_1", "type": "tool_search_call", "call_id": "call_search", "query": ""},
+        },
+        {
+            "type": "response.output_item.done",
+            "output_index": 1,
+            "item": {
+                "id": "tsc_1",
+                "type": "tool_search_call",
+                "status": "completed",
+                "call_id": "call_search",
+                "query": "docs",
+            },
+        },
+        _completed("resp_visible", input_tokens=100, output_tokens=600, reasoning_tokens=516),
+    ]
+    downstream, continuation, terminal = _drive(fold, round_one)
+
+    assert continuation is None
+    assert terminal is not None
+    assert terminal["type"] == "response.completed"
+    assert any(
+        item.get("type") == "tool_search_call" and item.get("call_id") == "call_search"
+        for item in terminal["response"]["output"]
+    )
+    assert terminal["response"]["metadata"]["proxy_stopped_reason"] == "buffered_tool_calls"
+    del downstream
+
+
 def test_ws_fold_anchorless_turn_with_buffered_tool_call_stops_and_delivers(
     decision_counter: _ObservedCounter,
 ) -> None:

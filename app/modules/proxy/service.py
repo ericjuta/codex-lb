@@ -2030,9 +2030,11 @@ def _missing_tool_output_variant(
     # Both directions of tool-call linkage corruption fail closed: a call whose
     # output never arrived, and an output whose call is absent from the resolved
     # previous-response context (e.g. it lives in a folded continuation round).
-    if normalized.startswith("no tool output found for function call call_"):
+    # The call-kind wording varies by item type ("function call", "tool search
+    # call", ...), so match the invariant frame rather than the kind.
+    if normalized.startswith("no tool output found for ") and " call call_" in normalized:
         return "missing_tool_output"
-    if normalized.startswith("no tool call found for function call output with call_id "):
+    if normalized.startswith("no tool") and " call found for " in normalized and " output with call_id " in normalized:
         return "orphaned_tool_output"
     return None
 
