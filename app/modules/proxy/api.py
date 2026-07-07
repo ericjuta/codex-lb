@@ -2450,6 +2450,12 @@ def _is_codex_backend_catalog_model(model: UpstreamModel) -> bool:
     return model.raw.get("shell_type") == "shell_command"
 
 
+def _is_codex_backend_catalog_model(model: UpstreamModel) -> bool:
+    if model.supported_in_api:
+        return True
+    return model.raw.get("shell_type") == "shell_command"
+
+
 def _to_codex_model_entry(model: UpstreamModel, *, visibility: str | None = None) -> CodexModelEntry:
     raw = model.raw
     effective_context_window = _effective_context_window(model)
