@@ -1099,7 +1099,7 @@ def test_responses_websocket_builder_normalizes_non_native_sdk_fingerprint():
     assert "responses_websockets=2026-02-06" in headers["openai-beta"]
 
 
-def test_responses_websocket_builder_strips_internal_responses_lite_header():
+def test_responses_websocket_builder_preserves_internal_responses_lite_header():
     from app.core.clients.proxy_websocket import _build_upstream_websocket_headers
 
     inbound = {
@@ -1108,9 +1108,8 @@ def test_responses_websocket_builder_strips_internal_responses_lite_header():
         "openai-beta": "responses_websockets=2026-02-06",
     }
     headers = _build_upstream_websocket_headers(inbound, "tok", "acct-1")
-    lowered = {key.lower() for key in headers}
 
-    assert "x-openai-internal-codex-responses-lite" not in lowered
+    assert headers["X-OpenAI-Internal-Codex-Responses-Lite"] == "1"
     assert "responses_websockets=2026-02-06" in headers["openai-beta"]
 
 

@@ -103,11 +103,6 @@ IGNORE_INBOUND_HEADERS = {
     CODEX_INSTALLATION_ID_HEADER,
     "true-client-ip",
 }
-INTERNAL_OPENAI_UPSTREAM_HEADERS = frozenset(
-    {
-        CODEX_RESPONSES_LITE_HEADER,
-    }
-)
 
 _ERROR_TYPE_CODE_MAP = {
     "rate_limit_exceeded": "rate_limit_exceeded",
@@ -467,8 +462,6 @@ def _should_drop_inbound_header(name: str) -> bool:
     normalized = name.lower()
     if normalized in IGNORE_INBOUND_HEADERS:
         return True
-    if normalized in INTERNAL_OPENAI_UPSTREAM_HEADERS:
-        return True
     if normalized.startswith("x-forwarded-"):
         return True
     if normalized.startswith("cf-"):
@@ -478,6 +471,13 @@ def _should_drop_inbound_header(name: str) -> bool:
 
 def filter_inbound_headers(headers: Mapping[str, str]) -> dict[str, str]:
     return {key: value for key, value in headers.items() if not _should_drop_inbound_header(key)}
+
+
+def _find_responses_lite_header(headers: Mapping[str, str]) -> tuple[str, str] | None:
+    for key, value in headers.items():
+        if key.lower() == CODEX_RESPONSES_LITE_HEADER:
+            return key, value
+    return None
 
 
 def apply_codex_installation_metadata(payload: dict[str, JsonValue], codex_installation_id: str | None) -> None:
@@ -645,7 +645,11 @@ def _build_upstream_transcribe_headers(
     return headers
 
 
-def _build_upstream_compact_headers(access_token: str, account_id: str | None) -> dict[str, str]:
+def _build_upstream_compact_headers(
+    access_token: str,
+    account_id: str | None,
+    inbound: Mapping[str, str] | None = None,
+) -> dict[str, str]:
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
@@ -653,6 +657,10 @@ def _build_upstream_compact_headers(access_token: str, account_id: str | None) -
     }
     if account_id:
         headers["chatgpt-account-id"] = account_id
+    if inbound is not None:
+        lite_header = _find_responses_lite_header(inbound)
+        if lite_header is not None:
+            headers[lite_header[0]] = lite_header[1]
     return headers
 
 
@@ -3225,6 +3233,7 @@ class _CompactCommandTransport:
         upstream_headers = _build_upstream_compact_headers(
             self.access_token,
             upstream_account_id,
+            self.headers,
         )
         pre_request_started_at = time.monotonic()
         compact_timeout_seconds = _effective_compact_total_timeout(settings.upstream_compact_timeout_seconds)

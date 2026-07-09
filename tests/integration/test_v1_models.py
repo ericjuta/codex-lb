@@ -50,6 +50,12 @@ EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS = {
     "codex-auto-review": "0.98.0",
 }
 
+EXPECTED_BOOTSTRAP_GPT_5_6_CAPABILITIES = {
+    "gpt-5.6-sol": "v2",
+    "gpt-5.6-terra": "v2",
+    "gpt-5.6-luna": "v1",
+}
+
 
 def _make_upstream_model(
     slug: str,
@@ -151,6 +157,13 @@ async def test_backend_codex_models_uses_bootstrap_upstream_metadata(async_clien
     assert set(entries) == set(EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS)
     for slug, expected_version in EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS.items():
         assert entries[slug]["minimal_client_version"] == expected_version
+
+    for slug, multi_agent_version in EXPECTED_BOOTSTRAP_GPT_5_6_CAPABILITIES.items():
+        entry = entries[slug]
+        assert entry["use_responses_lite"] is True
+        assert entry["tool_mode"] == "code_mode_only"
+        assert entry["experimental_supported_tools"] == ["exec", "wait"]
+        assert entry["multi_agent_version"] == multi_agent_version
 
     gpt54 = entries["gpt-5.4"]
     assert gpt54["minimal_client_version"] == "0.98.0"

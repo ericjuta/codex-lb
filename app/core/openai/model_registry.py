@@ -153,7 +153,13 @@ _BOOTSTRAP_STATIC_MODELS: tuple[UpstreamModel, ...] = (
         prefer_websockets=True,
         minimal_client_version="0.144.0",
         context_window=372_000,
-        raw={"max_context_window": 372_000},
+        raw={
+            "max_context_window": 372_000,
+            "use_responses_lite": True,
+            "tool_mode": "code_mode_only",
+            "experimental_supported_tools": ["exec", "wait"],
+            "multi_agent_version": "v2",
+        },
     ),
     _bootstrap_model(
         "gpt-5.6-terra",
@@ -161,7 +167,13 @@ _BOOTSTRAP_STATIC_MODELS: tuple[UpstreamModel, ...] = (
         prefer_websockets=True,
         minimal_client_version="0.144.0",
         context_window=372_000,
-        raw={"max_context_window": 372_000},
+        raw={
+            "max_context_window": 372_000,
+            "use_responses_lite": True,
+            "tool_mode": "code_mode_only",
+            "experimental_supported_tools": ["exec", "wait"],
+            "multi_agent_version": "v2",
+        },
     ),
     _bootstrap_model(
         "gpt-5.6-luna",
@@ -169,7 +181,13 @@ _BOOTSTRAP_STATIC_MODELS: tuple[UpstreamModel, ...] = (
         prefer_websockets=True,
         minimal_client_version="0.144.0",
         context_window=372_000,
-        raw={"max_context_window": 372_000},
+        raw={
+            "max_context_window": 372_000,
+            "use_responses_lite": True,
+            "tool_mode": "code_mode_only",
+            "experimental_supported_tools": ["exec", "wait"],
+            "multi_agent_version": "v1",
+        },
     ),
     _bootstrap_model(
         "gpt-5.5",
