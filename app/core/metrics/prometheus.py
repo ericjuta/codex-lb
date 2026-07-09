@@ -279,6 +279,24 @@ if PROMETHEUS_AVAILABLE:
         ["reason", "affinity_kind", "model_class"],
         registry=REGISTRY,
     )
+    proxy_phase_latency_seconds = Histogram(
+        "codex_lb_proxy_phase_latency_seconds",
+        "Proxy phase latency by low-cardinality phase and transport labels",
+        ["phase", "transport", "upstream_transport", "model_class"],
+        registry=REGISTRY,
+    )
+    http_bridge_prewarm_total = Counter(
+        "codex_lb_http_bridge_prewarm_total",
+        "Total HTTP bridge Codex prewarm outcomes by cohort and canary bucket",
+        ["outcome", "cohort", "bucket"],
+        registry=REGISTRY,
+    )
+    http_bridge_stuck_retire_total = Counter(
+        "codex_lb_http_bridge_stuck_retire_total",
+        "Total HTTP bridge stuck-session retirements",
+        ["reason", "affinity_kind", "model_class"],
+        registry=REGISTRY,
+    )
 
     def make_scrape_registry() -> CollectorRegistryLike:
         if MULTIPROCESS_MODE:

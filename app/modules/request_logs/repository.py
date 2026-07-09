@@ -284,7 +284,7 @@ class RequestLogsRepository:
         resolved_requested_at = requested_at or utcnow()
 
         async def _add_once() -> RequestLog:
-            
+
             log = RequestLog(
                 account_id=account_id,
                 api_key_id=api_key_id,
