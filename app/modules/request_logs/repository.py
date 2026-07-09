@@ -231,6 +231,15 @@ class RequestLogsRepository:
         status: str,
         error_code: str | None,
         latency_first_token_ms: int | None = None,
+        latency_response_created_ms: int | None = None,
+        latency_first_upstream_event_ms: int | None = None,
+        latency_response_create_gate_wait_ms: int | None = None,
+        latency_bridge_queue_wait_ms: int | None = None,
+        prewarm_status: str | None = None,
+        prewarm_latency_ms: int | None = None,
+        prewarm_canary_bucket: str | None = None,
+        prewarm_eligible_reason: str | None = None,
+        session_previous_gap_ms: int | None = None,
         error_message: str | None = None,
         requested_at: datetime | None = None,
         cached_input_tokens: int | None = None,
@@ -275,6 +284,7 @@ class RequestLogsRepository:
         resolved_requested_at = requested_at or utcnow()
 
         async def _add_once() -> RequestLog:
+            
             log = RequestLog(
                 account_id=account_id,
                 api_key_id=api_key_id,
@@ -315,6 +325,15 @@ class RequestLogsRepository:
                 upstream_proxy_fallback_used=upstream_proxy_fallback_used,
                 upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
                 requested_at=resolved_requested_at,
+                latency_response_created_ms=latency_response_created_ms,
+                latency_first_upstream_event_ms=latency_first_upstream_event_ms,
+                latency_response_create_gate_wait_ms=latency_response_create_gate_wait_ms,
+                latency_bridge_queue_wait_ms=latency_bridge_queue_wait_ms,
+                prewarm_status=prewarm_status,
+                prewarm_latency_ms=prewarm_latency_ms,
+                prewarm_canary_bucket=prewarm_canary_bucket,
+                prewarm_eligible_reason=prewarm_eligible_reason,
+                session_previous_gap_ms=session_previous_gap_ms,
             )
             log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
             self._session.add(log)
