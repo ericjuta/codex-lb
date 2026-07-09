@@ -148,6 +148,30 @@ def _bootstrap_model(
 # upstream, and live upstream data always takes precedence once available.
 _BOOTSTRAP_STATIC_MODELS: tuple[UpstreamModel, ...] = (
     _bootstrap_model(
+        "gpt-5.6-sol",
+        "GPT-5.6-Sol",
+        prefer_websockets=True,
+        minimal_client_version="0.144.0",
+        context_window=372_000,
+        raw={"max_context_window": 372_000},
+    ),
+    _bootstrap_model(
+        "gpt-5.6-terra",
+        "GPT-5.6-Terra",
+        prefer_websockets=True,
+        minimal_client_version="0.144.0",
+        context_window=372_000,
+        raw={"max_context_window": 372_000},
+    ),
+    _bootstrap_model(
+        "gpt-5.6-luna",
+        "GPT-5.6-Luna",
+        prefer_websockets=True,
+        minimal_client_version="0.144.0",
+        context_window=372_000,
+        raw={"max_context_window": 372_000},
+    ),
+    _bootstrap_model(
         "gpt-5.5",
         "GPT-5.5",
         prefer_websockets=True,
