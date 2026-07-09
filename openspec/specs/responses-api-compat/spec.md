@@ -33,6 +33,23 @@ When the static bootstrap catalog is serving `gpt-5.6-sol`, `gpt-5.6-terra`, or 
 - **AND** each entry advertises `exec` and `wait` as experimental supported tools
 - **AND** the entries retain their configured multi-agent version
 
+### Requirement: Responses Lite tool definitions survive input normalization
+
+When a Responses Lite request contains an input item with `type: "additional_tools"`, the service MUST preserve that item, including its `role` and complete `tools` array, in the upstream request payload. Instruction normalization MUST NOT move it into top-level `instructions` or drop it because it has no textual content.
+
+#### Scenario: Codex Code Mode tools reach upstream
+
+- **WHEN** a Codex client sends a Responses Lite request whose input contains a developer `additional_tools` item with `exec` and `wait` definitions
+- **THEN** the normalized upstream payload contains the same `additional_tools` item
+- **AND** the item retains the complete `exec` and `wait` tool definitions
+- **AND** ordinary textual system and developer messages continue to merge into top-level `instructions`
+
+#### Scenario: Tool definitions are not mistaken for developer instructions
+
+- **WHEN** an `additional_tools` item has no textual content
+- **THEN** it is not removed as an empty developer instruction item
+- **AND** it remains in its original position relative to the other input items
+
 ### Requirement: Use prompt_cache_key as OpenAI cache affinity
 For OpenAI-style `/v1/responses`, `/v1/responses/compact`, and chat-completions requests mapped onto Responses, the service MUST treat a non-empty `prompt_cache_key` as the bounded upstream account affinity key for prompt-cache correctness even when a `session_id` header is present. OpenAI-style route wiring MUST NOT upgrade those requests to durable `CODEX_SESSION` affinity by default. This affinity MUST apply even when dashboard `sticky_threads_enabled` is disabled, the service MUST continue forwarding the same `prompt_cache_key` upstream unchanged, and the stored affinity MUST expire after the configured freshness window so older keys can rebalance. The freshness window MUST come from dashboard settings so operators can adjust it without restart.
 

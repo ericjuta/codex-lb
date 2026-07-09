@@ -618,6 +618,28 @@ def test_responses_input_system_message_moves_to_instructions():
     assert request.input == [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
 
 
+def test_responses_lite_additional_tools_are_preserved():
+    additional_tools = {
+        "type": "additional_tools",
+        "role": "developer",
+        "tools": [
+            {"type": "freeform", "name": "exec", "description": "Run code."},
+            {"type": "freeform", "name": "wait", "description": "Wait."},
+        ],
+    }
+    payload = {
+        "model": "gpt-5.6-luna",
+        "instructions": "primary",
+        "input": [additional_tools, {"type": "message", "role": "user", "content": "hi"}],
+    }
+
+    request = ResponsesRequest.model_validate(payload)
+
+    assert request.instructions == "primary"
+    assert request.input == payload["input"]
+    assert request.to_payload()["input"] == payload["input"]
+
+
 def test_responses_input_system_message_keeps_user_text_parts():
     payload = {
         "model": "gpt-5.1",
