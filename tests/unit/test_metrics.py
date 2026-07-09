@@ -139,6 +139,21 @@ def test_prometheus_metrics_defined_when_dependency_available(monkeypatch: pytes
     assert prometheus_module.sqlite_lock_retries_total.labelnames == ("operation", "outcome")
     assert prometheus_module.service_tier_mismatch_total.name == "codex_lb_service_tier_mismatch_total"
     assert prometheus_module.service_tier_mismatch_total.labelnames == ("kind", "requested_tier", "actual_tier")
+    assert prometheus_module.proxy_phase_latency_seconds.name == "codex_lb_proxy_phase_latency_seconds"
+    assert prometheus_module.proxy_phase_latency_seconds.labelnames == (
+        "phase",
+        "transport",
+        "upstream_transport",
+        "model_class",
+    )
+    assert prometheus_module.http_bridge_prewarm_total.name == "codex_lb_http_bridge_prewarm_total"
+    assert prometheus_module.http_bridge_prewarm_total.labelnames == ("outcome", "cohort", "bucket")
+    assert prometheus_module.http_bridge_stuck_retire_total.name == "codex_lb_http_bridge_stuck_retire_total"
+    assert prometheus_module.http_bridge_stuck_retire_total.labelnames == (
+        "reason",
+        "affinity_kind",
+        "model_class",
+    )
     assert prometheus_module.image_requests_total.name == "codex_lb_image_requests_total"
     assert prometheus_module.image_requests_total.labelnames == (
         "route",
