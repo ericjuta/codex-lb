@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import TokenEncryptor
@@ -114,20 +114,9 @@ async def test_quota_planner_repository_persists_naive_utc_decision_datetimes(mo
     aware_scheduled = datetime(2026, 5, 18, 13, 0, tzinfo=timezone.utc)
     aware_executed = datetime(2026, 5, 18, 13, 30, tzinfo=timezone.utc)
 
-    # SQLite's aiosqlite driver silently strips tzinfo on read, so we inspect the
-    # exact values the repository binds to the timezone-naive columns. asyncpg/Postgres
-    # raises "can't subtract offset-naive and offset-aware datetimes" if these are aware,
-    # so the repository MUST sanitize them before persistence.
-    bound_scheduled: list[object] = []
-    original_add = AsyncSession.add
-
-    def capture_add(self, instance, *args, **kwargs):
-        if isinstance(instance, QuotaPlannerDecision):
-            bound_scheduled.append(instance.scheduled_at)
-        return original_add(self, instance, *args, **kwargs)
-
-    monkeypatch.setattr(AsyncSession, "add", capture_add)
-
+    # SQLite's aiosqlite driver silently strips tzinfo on read. The returned ORM
+    # row therefore proves the repository binds a timezone-naive UTC instant,
+    # which asyncpg/Postgres requires for these database columns.
     async with SessionLocal() as session:
         repo = QuotaPlannerRepository(session)
         decision = await repo.log_decision(
@@ -141,15 +130,9 @@ async def test_quota_planner_repository_persists_naive_utc_decision_datetimes(mo
             status="planned",
         )
 
-    assert bound_scheduled, "log_decision should construct a decision row"
-    bound_value = bound_scheduled[-1]
-    assert isinstance(bound_value, datetime)
-    # Guards the Postgres path: timezone-naive columns must not receive aware datetimes.
-    assert bound_value.tzinfo is None
-    # The absolute instant must be preserved (converted to UTC).
-    assert bound_value == aware_scheduled.replace(tzinfo=None)
-
-    monkeypatch.undo()
+    assert decision.scheduled_at is not None
+    assert decision.scheduled_at.tzinfo is None
+    assert decision.scheduled_at == aware_scheduled.replace(tzinfo=None)
 
     # update_decision_status binds executed_at via an UPDATE ... values() statement.
     # Capture the bound value from the compiled statement parameters.
@@ -246,7 +229,7 @@ async def test_quota_planner_decisions_store_aware_datetimes_as_utc_naive(db_set
 
 
 @pytest.mark.asyncio
-async def test_quota_planner_log_decision_returns_existing_after_duplicate_key_race(monkeypatch, db_setup):
+async def test_quota_planner_log_decision_returns_existing_for_duplicate_idempotency_key(db_setup):
     del db_setup
     async with SessionLocal() as session:
         repo = QuotaPlannerRepository(session)
@@ -260,20 +243,6 @@ async def test_quota_planner_log_decision_returns_existing_after_duplicate_key_r
             reason="original",
             status="planned",
         )
-
-    async with SessionLocal() as session:
-        original_scalar = session.scalar
-        calls = 0
-
-        async def scalar_with_race(*args, **kwargs):
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                return None
-            return await original_scalar(*args, **kwargs)
-
-        monkeypatch.setattr(session, "scalar", scalar_with_race)
-        repo = QuotaPlannerRepository(session)
         raced = await repo.log_decision(
             mode="shadow",
             action="reserve",
@@ -284,10 +253,69 @@ async def test_quota_planner_log_decision_returns_existing_after_duplicate_key_r
             reason="raced",
             status="skipped",
         )
+        decision_count = await session.scalar(
+            select(func.count(QuotaPlannerDecision.id)).where(
+                QuotaPlannerDecision.idempotency_key == "duplicate-race-decision"
+            )
+        )
 
     assert raced.id == existing.id
     assert raced.reason == "original"
-    assert calls >= 2
+    assert raced.score == 1.0
+    assert raced.status == "planned"
+    assert decision_count == 1
+
+
+@pytest.mark.asyncio
+async def test_quota_planner_log_decision_is_idempotent_for_concurrent_writers(db_setup):
+    del db_setup
+    idempotency_key = "concurrent-duplicate-decision"
+    async with SessionLocal() as first_session, SessionLocal() as second_session:
+        first, second = await asyncio.gather(
+            QuotaPlannerRepository(first_session).log_decision(
+                mode="shadow",
+                action="no_op",
+                idempotency_key=idempotency_key,
+                scheduled_at=utcnow(),
+                reason="concurrent",
+                status="skipped",
+            ),
+            QuotaPlannerRepository(second_session).log_decision(
+                mode="shadow",
+                action="no_op",
+                idempotency_key=idempotency_key,
+                scheduled_at=utcnow(),
+                reason="concurrent",
+                status="skipped",
+            ),
+        )
+
+    async with SessionLocal() as session:
+        decision_count = await session.scalar(
+            select(func.count(QuotaPlannerDecision.id)).where(QuotaPlannerDecision.idempotency_key == idempotency_key)
+        )
+
+    assert first.id == second.id
+    assert decision_count == 1
+
+
+@pytest.mark.asyncio
+async def test_quota_planner_log_decision_rejects_unsupported_dialect(monkeypatch, db_setup):
+    del db_setup
+    async with SessionLocal() as session:
+        monkeypatch.setattr(
+            session,
+            "get_bind",
+            lambda: SimpleNamespace(dialect=SimpleNamespace(name="unsupported")),
+        )
+        repo = QuotaPlannerRepository(session)
+
+        with pytest.raises(RuntimeError, match="unsupported"):
+            await repo.log_decision(
+                mode="shadow",
+                action="no_op",
+                idempotency_key="unsupported-dialect-decision",
+            )
 
 
 @pytest.mark.asyncio

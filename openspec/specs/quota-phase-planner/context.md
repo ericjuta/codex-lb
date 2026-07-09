@@ -70,6 +70,11 @@ guard: candidates still need positive peak-aligned value. Multiple cold accounts
 accepted reset is included in the next account's synchronization penalty, which staggers windows across the prewarm
 band instead of creating one shared reset cliff.
 
+Decision persistence uses the database unique key as the final idempotency boundary. PostgreSQL and SQLite writes
+use conflict-safe inserts, so overlapping ticks return the canonical audit row without treating the expected collision
+as a database error. If `quota_planner_decisions_idempotency_key_key` appears again in PostgreSQL logs, investigate
+it as an unexpected persistence-path regression rather than routine scheduler contention.
+
 The simulator is deliberately simple and explainable. It treats each account window as a finite capacity bucket,
 routes forecast demand into active or planned windows, and scores unmet demand, wasted capacity, cold starts, and
 synchronized reset times. This is a planner/control-loop primitive, not an ML optimizer.

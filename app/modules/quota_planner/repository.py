@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlalchemy import Integer, and_, cast, func, literal, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.utils.time import to_utc_naive, utcnow
@@ -107,38 +108,43 @@ class QuotaPlannerRepository:
         status: str = "planned",
         executed_at: datetime | None = None,
     ) -> QuotaPlannerDecision:
-        existing = await self._session.scalar(
+        dialect = self._session.get_bind().dialect.name
+        if dialect == "postgresql":
+            insert_fn = pg_insert
+        elif dialect == "sqlite":
+            insert_fn = sqlite_insert
+        else:
+            raise RuntimeError(f"Quota planner decision insert unsupported for dialect={dialect!r}")
+
+        statement = (
+            insert_fn(QuotaPlannerDecision)
+            .values(
+                mode=mode,
+                action=action,
+                account_id=account_id,
+                scheduled_at=_to_db_naive_utc(scheduled_at),
+                executed_at=_to_db_naive_utc(executed_at),
+                score=score,
+                reason=reason,
+                forecast_snapshot_hash=forecast_snapshot_hash,
+                state_before_json=state_before_json,
+                state_after_json=state_after_json,
+                status=status,
+                idempotency_key=idempotency_key,
+            )
+            .on_conflict_do_nothing(index_elements=[QuotaPlannerDecision.idempotency_key])
+        )
+        async with sqlite_writer_section():
+            await self._session.execute(statement)
+            await self._session.commit()
+
+        row = await self._session.scalar(
             select(QuotaPlannerDecision).where(QuotaPlannerDecision.idempotency_key == idempotency_key)
         )
-        if existing is not None:
-            return existing
-        row = QuotaPlannerDecision(
-            mode=mode,
-            action=action,
-            account_id=account_id,
-            scheduled_at=_to_db_naive_utc(scheduled_at),
-            executed_at=_to_db_naive_utc(executed_at),
-            score=score,
-            reason=reason,
-            forecast_snapshot_hash=forecast_snapshot_hash,
-            state_before_json=state_before_json,
-            state_after_json=state_after_json,
-            status=status,
-            idempotency_key=idempotency_key,
-        )
-        self._session.add(row)
-        try:
-            async with sqlite_writer_section():
-                await self._session.commit()
-                await self._session.refresh(row)
-        except IntegrityError:
-            await self._session.rollback()
-            existing = await self._session.scalar(
-                select(QuotaPlannerDecision).where(QuotaPlannerDecision.idempotency_key == idempotency_key)
+        if row is None:
+            raise RuntimeError(
+                f"Quota planner decision missing after conflict-safe insert for idempotency_key={idempotency_key!r}"
             )
-            if existing is not None:
-                return existing
-            raise
         return row
 
     async def recent_decisions(self, limit: int = 50) -> list[QuotaPlannerDecision]:
@@ -321,6 +327,7 @@ class QuotaPlannerRepository:
             )
             for row in result.all()
         ]
+
 
 def _settings_from_row(row: QuotaPlannerSettings) -> PlannerSettings:
     return PlannerSettings(
