@@ -277,10 +277,13 @@ async def test_proxy_responses_compaction_trigger_streams_single_compaction_item
         return CompactResponsePayload.model_validate(
             {
                 "object": "response.compaction",
-                "compaction_summary": {
-                    "encrypted_content": "ENCRYPTED_CONTEXT_COMPACTION_SUMMARY",
-                    "summary_text": "condensed thread state",
-                },
+                "output": [
+                    {
+                        "id": "cmp_compact_trigger",
+                        "type": "compaction",
+                        "encrypted_content": "ENCRYPTED_CONTEXT_COMPACTION_SUMMARY",
+                    }
+                ],
                 "usage": {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
             }
         )
@@ -320,16 +323,13 @@ async def test_proxy_responses_compaction_trigger_streams_single_compaction_item
     assert compact_payload["prompt_cache_key"] == "compact-cache-affinity"
     assert "include" not in compact_payload
     assert "stream" not in compact_payload
-    assert events[0]["item"] == {
+    compact_item = {
+        "id": "cmp_compact_trigger",
         "type": "compaction",
         "encrypted_content": "ENCRYPTED_CONTEXT_COMPACTION_SUMMARY",
     }
-    assert events[1]["response"]["output"] == [
-        {
-            "type": "compaction",
-            "encrypted_content": "ENCRYPTED_CONTEXT_COMPACTION_SUMMARY",
-        }
-    ]
+    assert events[0]["item"] == compact_item
+    assert events[1]["response"]["output"] == [compact_item]
     assert events[1]["response"]["usage"] == {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15}
     assert lines[-1] == "data: [DONE]"
 

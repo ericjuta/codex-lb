@@ -291,7 +291,13 @@ async def test_proxy_compact_normalizes_summary_output_for_codex_remote_v2(async
     assert response.status_code == 200
     compact_json = response.json()
     assert compact_json["object"] == "response.compaction"
-    assert compact_json["output"] == [{"type": "compaction", "encrypted_content": "enc_compact_v2"}]
+    assert compact_json["output"] == [
+        {
+            "id": "cmp_compact_v2",
+            "type": "compaction",
+            "encrypted_content": "enc_compact_v2",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -394,6 +400,7 @@ async def test_proxy_compact_hides_upstream_quota_for_api_key_clients_when_setti
     assert response.headers.get("x-codex-credits-has-credits") is None
     assert response.headers.get("x-codex-credits-unlimited") is None
     assert response.headers.get("x-codex-credits-balance") is None
+
 
 @pytest.mark.asyncio
 async def test_proxy_compact_does_not_forward_client_transport_headers(async_client, monkeypatch):

@@ -26,6 +26,7 @@ def test_compact_response_output_item_accepts_modeled_output_field() -> None:
             "object": "response.compaction",
             "output": [
                 {
+                    "id": "cmp_modeled_context",
                     "type": "compaction",
                     "encrypted_content": "MODELED_CONTEXT",
                 }
@@ -34,8 +35,25 @@ def test_compact_response_output_item_accepts_modeled_output_field() -> None:
     )
 
     assert proxy_api_module._compact_response_output_item(payload) == {
+        "id": "cmp_modeled_context",
         "type": "compaction",
         "encrypted_content": "MODELED_CONTEXT",
+    }
+
+
+def test_compact_response_output_item_does_not_invent_missing_id() -> None:
+    payload = CompactResponsePayload.model_validate(
+        {
+            "object": "response.compaction",
+            "compaction_summary": {
+                "encrypted_content": "SUMMARY_WITHOUT_ID",
+            },
+        }
+    )
+
+    assert proxy_api_module._compact_response_output_item(payload) == {
+        "type": "compaction",
+        "encrypted_content": "SUMMARY_WITHOUT_ID",
     }
 
 
@@ -52,20 +70,32 @@ def test_compact_response_id_generates_unique_fallback(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
-async def test_synthetic_compaction_stream_preserves_mapping_usage() -> None:
+async def test_synthetic_compaction_stream_preserves_item_and_mapping_usage() -> None:
+    compact_item: dict[str, JsonValue] = {
+        "id": "cmp_stream",
+        "type": "compaction",
+        "encrypted_content": "SUMMARY",
+    }
     blocks = [
         block
         async for block in proxy_api_module._synthetic_compaction_response_stream(
-            {"type": "compaction", "encrypted_content": "SUMMARY"},
+            compact_item,
             response_id="resp_mapping_usage",
             usage={"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
         )
     ]
 
+    output_done = proxy_api_module._parse_sse_payload(blocks[0])
     completed = proxy_api_module._parse_sse_payload(blocks[1])
+    assert output_done == {
+        "type": "response.output_item.done",
+        "output_index": 0,
+        "item": compact_item,
+    }
     assert completed is not None
     response = completed["response"]
     assert isinstance(response, dict)
+    assert response["output"] == [compact_item]
     assert response["usage"] == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
 
 
