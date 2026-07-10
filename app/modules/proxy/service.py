@@ -446,7 +446,7 @@ from app.modules.proxy._service.response_create import (
     _response_create_too_large_error_envelope as _response_create_too_large_error_envelope,
 )
 from app.modules.proxy._service.response_create import (
-    _response_output_item_done_function_call_id as _response_output_item_done_function_call_id,
+    _response_output_item_done_tool_call as _response_output_item_done_tool_call,
 )
 from app.modules.proxy._service.response_create import (
     _responses_request_contains_input_image as _responses_request_contains_input_image,

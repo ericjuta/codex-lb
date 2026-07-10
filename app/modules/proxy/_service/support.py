@@ -385,6 +385,7 @@ class _WebSocketRequestState:
     suppressed_downstream_tool_call: bool = False
     suppressed_duplicate_tool_call: bool = False
     pending_function_call_ids: list[str] = field(default_factory=list)
+    pending_tool_call_types: dict[str, str] = field(default_factory=dict)
     seen_tool_call_keys: dict[tuple[str, str, str | None, str | None, str], None] = field(default_factory=dict)
     input_item_count: int = 0
     input_full_fingerprint: str | None = None
@@ -467,6 +468,7 @@ class _HTTPBridgeSession:
     last_completed_input_count: int = 0
     last_completed_response_id: str | None = None
     last_completed_input_prefix_fingerprint: str | None = None
+    last_pending_tool_calls: dict[str, str] = field(default_factory=dict)
     durable_session_id: str | None = None
     durable_owner_epoch: int | None = None
     upstream_reader: asyncio.Task[None] | None = None
@@ -580,6 +582,7 @@ class _WebSocketContinuityState:
         for visible_id, upstream_id in aliases.items():
             self.record_folded_response_id_alias(visible_id, upstream_id)
         return True
+    last_pending_tool_call_types: dict[str, str] = field(default_factory=dict)
     responses_lite_model: str | None = None
     responses_lite_response_id: str | None = None
 
