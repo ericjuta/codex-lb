@@ -13,6 +13,7 @@ from app.core.openai.requests import (
     ResponsesCompactRequest,
     ResponsesReasoning,
     ResponsesRequest,
+    responses_input_uses_lite_tools,
 )
 from app.core.openai.strict_schema import (
     validate_strict_function_tool_schema,
@@ -105,6 +106,8 @@ def validate_model_access(api_key: ApiKeyData | None, model: str | None) -> None
 def apply_api_key_enforcement(
     payload: ResponsesRequest | ResponsesCompactRequest,
     api_key: ApiKeyData | None,
+    *,
+    registry: ModelRegistry | None = None,
 ) -> None:
     normalize_upstream_model_alias(payload)
 
@@ -112,16 +115,30 @@ def apply_api_key_enforcement(
         normalize_unsupported_reasoning_effort(payload)
         return
 
-    if api_key.enforced_model and payload.model != api_key.enforced_model:
-        logger.info(
-            "api_key_model_enforced request_id=%s key_id=%s requested_model=%s enforced_model=%s",
-            get_request_id(),
-            api_key.id,
-            payload.model,
-            api_key.enforced_model,
-        )
+    if api_key.enforced_model:
+        requested_model = payload.model
+        if requested_model != api_key.enforced_model:
+            logger.info(
+                "api_key_model_enforced request_id=%s key_id=%s requested_model=%s enforced_model=%s",
+                get_request_id(),
+                api_key.id,
+                requested_model,
+                api_key.enforced_model,
+            )
         payload.model = api_key.enforced_model
         normalize_upstream_model_alias(payload)
+        if (
+            responses_input_uses_lite_tools(payload.input)
+            and _model_responses_lite_capability(
+                payload.model,
+                registry=registry or get_model_registry(),
+            )
+            is False
+        ):
+            raise ProxyModelNotAllowed(
+                f"API key enforced model '{payload.model}' does not support Responses Lite",
+                code="responses_lite_model_mismatch",
+            )
 
     if api_key.enforced_reasoning_effort is not None:
         requested_effort = payload.reasoning.effort if payload.reasoning else None
@@ -164,6 +181,72 @@ def apply_api_key_enforcement(
                 api_key.enforced_service_tier,
                 effective_service_tier,
             )
+
+def _model_responses_lite_capability(
+    model: str,
+    *,
+    registry: ModelRegistry,
+) -> bool | None:
+    normalized_model = model.strip().lower()
+    models = registry.get_models_with_fallback()
+    model_entry = models.get(model) or models.get(normalized_model)
+    if model_entry is None:
+        return None
+    capability = model_entry.raw.get("use_responses_lite")
+    return capability if isinstance(capability, bool) else None
+
+
+# Non-standard reasoning toggles some OpenAI-compatible clients attach
+# (OpenRouter/SGLang style). Forwarding them to a source whose model does not
+# support reasoning flips the upstream into reasoning-extraction mode: the
+# answer lands in ``message.reasoning`` instead of ``message.content``.
+_SOURCE_REASONING_TOGGLE_KEYS: tuple[str, ...] = (
+    "include_reasoning",
+    "separate_reasoning",
+    "stream_reasoning",
+    "reasoning",
+    "reasoning_effort",
+)
+
+
+def sanitize_source_chat_payload(
+    payload: dict[str, JsonValue],
+    *,
+    allow_reasoning: bool,
+) -> None:
+    """Clean a chat-completions wire payload before forwarding to a source."""
+    tools = payload.get("tools")
+    if isinstance(tools, list) and not tools:
+        payload.pop("tools", None)
+        payload.pop("tool_choice", None)
+        payload.pop("parallel_tool_calls", None)
+    if not allow_reasoning:
+        for key in _SOURCE_REASONING_TOGGLE_KEYS:
+            payload.pop(key, None)
+
+
+def apply_api_key_enforcement_to_chat_payload(
+    payload: dict[str, JsonValue],
+    api_key: ApiKeyData | None,
+) -> None:
+    """Apply API-key enforcement to an original chat-completions payload."""
+    if api_key is None:
+        return
+
+    if api_key.enforced_reasoning_effort is not None:
+        enforced_effort = resolve_wire_reasoning_effort(api_key.enforced_reasoning_effort)
+        payload["reasoning_effort"] = enforced_effort
+        reasoning = payload.get("reasoning")
+        if isinstance(reasoning, dict):
+            payload["reasoning"] = {**reasoning, "effort": enforced_effort}
+        else:
+            payload["reasoning"] = {"effort": enforced_effort}
+
+    if api_key.enforced_service_tier is not None:
+        if api_key.enforced_service_tier in _UPSTREAM_OMIT_SERVICE_TIERS:
+            payload.pop("service_tier", None)
+        else:
+            payload["service_tier"] = api_key.enforced_service_tier
 
 
 def resolve_model_alias(model: str | None) -> str | None:
