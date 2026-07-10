@@ -19,7 +19,7 @@ from fastapi import WebSocket
 
 from app.core.auth.refresh import RefreshError
 from app.core.balancer.types import ClassifiedFailure
-from app.core.clients.proxy import ProxyResponseError
+from app.core.clients.proxy import CODEX_RESPONSES_LITE_WEBSOCKET_METADATA_KEY, ProxyResponseError
 from app.core.clients.proxy_websocket import (
     CodexResponsesWebSocket,
     UpstreamResponsesWebSocket,
