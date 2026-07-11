@@ -576,7 +576,7 @@ class _StreamingMixin(_StreamingRetryMixin):
                     },
                     raise_for_status=True,
                 )
-            iterator = stream.__aiter__()
+            iterator = _facade()._stream_iterator_after_capacity_admission(stream)
             try:
                 first = await iterator.__anext__()
             except StopAsyncIteration:

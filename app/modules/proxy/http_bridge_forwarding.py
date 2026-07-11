@@ -5,7 +5,7 @@ import hashlib
 import hmac
 import json
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from typing import cast
 
@@ -121,6 +121,7 @@ class HTTPBridgeOwnerClient:
         context: HTTPBridgeForwardContext,
         request_started_at: float,
         proxy_request_budget_seconds: float,
+        on_response_ready: Callable[[], None] | None = None,
     ) -> AsyncIterator[str]:
         settings = get_settings()
         timeout = _owner_forward_timeout(
@@ -143,6 +144,8 @@ class HTTPBridgeOwnerClient:
                         failure_detail="owner_forward_non_200",
                         upstream_status_code=response.status,
                     )
+                if on_response_ready is not None:
+                    on_response_ready()
                 yielded_event = False
                 try:
                     async for event_block in _iter_sse_event_blocks(
