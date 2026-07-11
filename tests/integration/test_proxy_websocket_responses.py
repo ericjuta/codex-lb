@@ -710,7 +710,9 @@ def test_backend_responses_websocket_proxies_upstream_and_persists_log(app_insta
         "instructions": "",
         "client_metadata": {
             "x-codex-installation-id": "client-installation",
-            "x-codex-turn-metadata": '{"turn_id":"turn_123","sandbox":"workspace-write"}',
+            "x-codex-turn-metadata": (
+                '{"installation_id":"client-installation","turn_id":"turn_123","sandbox":"workspace-write"}'
+            ),
         },
         "service_tier": "fast",
         "reasoning": {"effort": "high"},
@@ -750,7 +752,9 @@ def test_backend_responses_websocket_proxies_upstream_and_persists_log(app_insta
                 "instructions": "",
                 "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
                 "reasoning": {"effort": "high"},
-                "client_metadata": {"x-codex-turn-metadata": '{"turn_id":"turn_123","sandbox":"workspace-write"}'},
+                "client_metadata": {"x-codex-turn-metadata": (
+                    '{"installation_id":"account-installation","turn_id":"turn_123","sandbox":"workspace-write"}'
+                )},
                 "service_tier": "priority",
                 "store": False,
                 "include": ["reasoning.encrypted_content"],
