@@ -6876,6 +6876,7 @@ async def test_forward_prompt_cache_request_does_not_claim_unanchored_session_la
             headers={},
             api_key_reservation=None,
             codex_session_affinity=False,
+            proxy_request_budget_seconds=75.0,
             downstream_turn_state=None,
             request_started_at=10.0,
             proxy_api_authorization=None,
