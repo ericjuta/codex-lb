@@ -249,13 +249,20 @@ class LoadBalancer:
         _record_account_lease_acquired(kind)
         return lease
 
-    def _account_lease_allowed_locked(self, account_id: str, *, kind: AccountLeaseKind) -> bool:
+    def _account_lease_allowed_locked(
+        self,
+        account_id: str,
+        *,
+        kind: AccountLeaseKind,
+        stream_reserve_slots: int = 0,
+    ) -> bool:
         runtime = self._runtime.setdefault(account_id, RuntimeState())
         if kind == "response_create":
             cap = get_settings().proxy_account_response_create_limit
             return cap <= 0 or runtime.inflight_response_creates < cap
         cap = get_settings().proxy_account_stream_limit
-        return cap <= 0 or runtime.inflight_streams < cap
+        effective_cap = max(1, cap - max(0, stream_reserve_slots))
+        return cap <= 0 or runtime.inflight_streams < effective_cap
 
     def _release_account_lease_locked(self, lease: AccountLease, *, reason: str) -> bool:
         runtime = self._runtime.get(lease.account_id)
@@ -318,6 +325,7 @@ class LoadBalancer:
         routing_costs_by_account_id: RoutingCostsByAccount | None = None,
         lease_kind: AccountLeaseKind | None = None,
         estimated_lease_tokens: float = 0.0,
+        stream_reserve_slots: int = 0,
         traffic_class: TrafficClass = TRAFFIC_CLASS_FOREGROUND,
     ) -> AccountSelection:
         excluded_ids = set(exclude_account_ids or ())
@@ -435,7 +443,11 @@ class LoadBalancer:
                             now=datetime.now(timezone.utc),
                         )
                     )
-                    selection_states = _filter_states_for_account_caps(states, lease_kind=lease_kind)
+                    selection_states = _filter_states_for_account_caps(
+                        states,
+                        lease_kind=lease_kind,
+                        stream_reserve_slots=stream_reserve_slots,
+                    )
                     if not selection_states and states:
                         selection_error_code = _account_cap_error_code(lease_kind)
                         error_message = _account_cap_error_message(lease_kind)
@@ -626,7 +638,13 @@ class LoadBalancer:
                     sticky_existing_account_id, str
                 )
                 selection_states = (
-                    states if hard_sticky else _filter_states_for_account_caps(states, lease_kind=lease_kind)
+                    states
+                    if hard_sticky
+                    else _filter_states_for_account_caps(
+                        states,
+                        lease_kind=lease_kind,
+                        stream_reserve_slots=stream_reserve_slots,
+                    )
                 )
                 if not selection_states and states:
                     selection_error_code = _account_cap_error_code(lease_kind)
@@ -691,7 +709,11 @@ class LoadBalancer:
                             selected_snapshot.deactivation_reason = result.account.deactivation_reason
                             selected_snapshot.reset_at = selected_reset_at
                             if lease_kind is not None:
-                                if not self._account_lease_allowed_locked(selected.id, kind=lease_kind):
+                                if not self._account_lease_allowed_locked(
+                                    selected.id,
+                                    kind=lease_kind,
+                                    stream_reserve_slots=stream_reserve_slots,
+                                ):
                                     selected_snapshot = None
                                     selection_error_code = _account_cap_error_code(lease_kind)
                                     error_message = _account_cap_error_message(lease_kind)
@@ -1740,6 +1762,7 @@ def _filter_states_for_account_caps(
     states: Iterable[AccountState],
     *,
     lease_kind: AccountLeaseKind | None,
+    stream_reserve_slots: int = 0,
 ) -> list[AccountState]:
     if lease_kind is None:
         return list(states)
@@ -1752,7 +1775,8 @@ def _filter_states_for_account_caps(
                 continue
         else:
             cap = settings.proxy_account_stream_limit
-            if cap > 0 and state.inflight_streams >= cap:
+            effective_cap = max(1, cap - max(0, stream_reserve_slots))
+            if cap > 0 and state.inflight_streams >= effective_cap:
                 continue
         filtered.append(state)
     return filtered
