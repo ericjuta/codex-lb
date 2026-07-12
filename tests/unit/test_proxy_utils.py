@@ -15224,14 +15224,14 @@ async def test_prepare_websocket_response_create_request_allows_native_tool_surf
 
     normalized_payload = json.loads(prepared.text_data)
     assert normalized_payload["tools"] == [
-        {"type": "image_generation"},
-        {"type": "web_search"},
         {
             "type": "custom",
             "name": "exec",
             "description": "Run JS",
             "format": {"type": "grammar", "syntax": "lark", "definition": "start: /x/"},
         },
+        {"type": "image_generation"},
+        {"type": "web_search"},
     ]
     assert normalized_payload["tool_choice"] == "auto"
 
