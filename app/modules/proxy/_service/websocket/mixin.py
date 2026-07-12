@@ -2058,56 +2058,69 @@ class _WebSocketMixin:
                 if request_state.preferred_account_id == forced_refresh_account_id:
                     request_state.preferred_account_id = None
 
-            try:
-                connect_result = await proxy._try_open_websocket_connect_attempt(
-                    account,
-                    headers,
-                    deadline=deadline,
-                    api_key=api_key,
-                    request_state=request_state,
-                    client_send_lock=client_send_lock,
-                    websocket=websocket,
-                    force_refresh=forced_refresh_account_id == account.id,
-                )
-            except ProxyResponseError as exc:
-                action = await proxy._decide_websocket_failover_action(
-                    account=account,
-                    exc=exc,
-                    request_state=request_state,
-                    attempt=attempt + 1,
-                    max_attempts=max_attempts,
-                    deterministic_failover_enabled=getattr(base_settings, "deterministic_failover_enabled", True),
-                )
-                if action == "failover_next":
+            failover_to_next_account = False
+            same_account_retry_used = False
+            while True:
+                try:
+                    connect_result = await proxy._try_open_websocket_connect_attempt(
+                        account,
+                        headers,
+                        deadline=deadline,
+                        api_key=api_key,
+                        request_state=request_state,
+                        client_send_lock=client_send_lock,
+                        websocket=websocket,
+                        force_refresh=forced_refresh_account_id == account.id,
+                    )
+                except ProxyResponseError as exc:
+                    action = await proxy._decide_websocket_failover_action(
+                        account=account,
+                        exc=exc,
+                        request_state=request_state,
+                        attempt=attempt + 1,
+                        max_attempts=max_attempts,
+                        deterministic_failover_enabled=getattr(base_settings, "deterministic_failover_enabled", True),
+                        same_account_retry_available=(
+                            not same_account_retry_used and _facade()._remaining_budget_seconds(deadline) > 0
+                        ),
+                    )
+                    if action == "retry_same_account":
+                        same_account_retry_used = True
+                        continue
+                    if action == "failover_next":
+                        await proxy._load_balancer.release_account_lease(selected_stream_lease)
+                        last_failover_exc = exc
+                        last_failover_account = account
+                        excluded_account_ids.add(account.id)
+                        failover_to_next_account = True
+                        break
+                    error = _parse_openai_error(exc.payload)
+                    error_code = _normalize_error_code(error.code if error else None, error.type if error else None)
+                    error_message = error.message if error else None
+                    request_log_error_code = _facade()._websocket_connect_request_log_error_code(
+                        exc,
+                        error_code or "upstream_error",
+                    )
                     await proxy._load_balancer.release_account_lease(selected_stream_lease)
-                    last_failover_exc = exc
-                    last_failover_account = account
-                    excluded_account_ids.add(account.id)
-                    continue
-                error = _parse_openai_error(exc.payload)
-                error_code = _normalize_error_code(error.code if error else None, error.type if error else None)
-                error_message = error.message if error else None
-                request_log_error_code = _facade()._websocket_connect_request_log_error_code(
-                    exc,
-                    error_code or "upstream_error",
-                )
-                await proxy._load_balancer.release_account_lease(selected_stream_lease)
-                selected_stream_lease = None
-                await proxy._emit_websocket_connect_failure(
-                    websocket,
-                    client_send_lock=client_send_lock,
-                    account_id=account.id,
-                    api_key=api_key,
-                    request_state=request_state,
-                    status_code=exc.status_code,
-                    payload=exc.payload,
-                    error_code=request_log_error_code,
-                    error_message=error_message or "Upstream error",
-                )
-                return None, None
-            except BaseException:
-                await proxy._load_balancer.release_account_lease(selected_stream_lease)
-                raise
+                    selected_stream_lease = None
+                    await proxy._emit_websocket_connect_failure(
+                        websocket,
+                        client_send_lock=client_send_lock,
+                        account_id=account.id,
+                        api_key=api_key,
+                        request_state=request_state,
+                        status_code=exc.status_code,
+                        payload=exc.payload,
+                        error_code=request_log_error_code,
+                        error_message=error_message or "Upstream error",
+                    )
+                    return None, None
+                except BaseException:
+                    await proxy._load_balancer.release_account_lease(selected_stream_lease)
+                    raise
+                break
+            if failover_to_next_account:
+                continue
 
             if connect_result is None:
                 await proxy._load_balancer.release_account_lease(selected_stream_lease)
@@ -2605,13 +2618,23 @@ class _WebSocketMixin:
         attempt: int,
         max_attempts: int,
         deterministic_failover_enabled: bool,
+        same_account_retry_available: bool = False,
     ) -> str:
         proxy = cast(_WebSocketServiceProtocol, self)
         _ = proxy
         classified = await proxy._handle_websocket_connect_error(account, exc)
         failure_class = classified["failure_class"] if isinstance(classified, dict) else "non_retryable"
         candidates_remaining = max_attempts - attempt
-        if exc.status_code == 401 and candidates_remaining > 0:
+        if (
+            same_account_retry_available
+            and exc.failure_phase == "websocket_open_timeout"
+            and exc.retryable_same_contract
+        ):
+            # Transient open-handshake timeouts are usually network-side, not
+            # account-side: retry the same account once before breaking sticky
+            # affinity via exclude-and-reallocate.
+            action = "retry_same_account"
+        elif exc.status_code == 401 and candidates_remaining > 0:
             action = "failover_next"
         elif deterministic_failover_enabled:
             action = failover_decision(

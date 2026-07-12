@@ -14178,17 +14178,25 @@ async def test_connect_proxy_websocket_fails_over_on_upstream_open_timeout(monke
         ]
     )
     record_error = AsyncMock()
-    first_open_timeout = proxy_module.ProxyResponseError(
-        502,
-        openai_error("upstream_unavailable", "Request to upstream timed out"),
-        failure_phase="websocket_open_timeout",
-        retryable_same_contract=True,
-    )
+
+    def _open_timeout() -> proxy_module.ProxyResponseError:
+        return proxy_module.ProxyResponseError(
+            502,
+            openai_error("upstream_unavailable", "Request to upstream timed out"),
+            failure_phase="websocket_open_timeout",
+            retryable_same_contract=True,
+        )
 
     monkeypatch.setattr(service._load_balancer, "select_account", select_account)
     monkeypatch.setattr(service._load_balancer, "record_error", record_error)
-    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=[account_a, account_b]))
-    monkeypatch.setattr(service, "_open_upstream_websocket", AsyncMock(side_effect=[first_open_timeout, upstream]))
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=[account_a, account_a, account_b]))
+    # First timeout consumes the same-account retry; second timeout on the
+    # same account triggers the exclude-and-reallocate failover ladder.
+    monkeypatch.setattr(
+        service,
+        "_open_upstream_websocket",
+        AsyncMock(side_effect=[_open_timeout(), _open_timeout(), upstream]),
+    )
     monkeypatch.setattr(service, "_release_websocket_reservation", AsyncMock())
 
     request_state = proxy_service._WebSocketRequestState(
@@ -14221,7 +14229,64 @@ async def test_connect_proxy_websocket_fails_over_on_upstream_open_timeout(monke
     first_call, second_call = select_account.await_args_list
     assert first_call.kwargs["exclude_account_ids"] == set()
     assert second_call.kwargs["exclude_account_ids"] == {account_a.id}
-    record_error.assert_awaited_once_with(account_a)
+    assert record_error.await_count == 2
+    websocket_send.assert_not_awaited()
+    assert request_logs.calls == []
+
+
+@pytest.mark.asyncio
+async def test_connect_proxy_websocket_open_timeout_retries_same_account(monkeypatch):
+    """A single transient open timeout must retry the same account and keep
+    sticky affinity instead of excluding and reallocating."""
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    account_a = _make_account("acc_ws_open_timeout_same_account")
+    upstream = SimpleNamespace()
+
+    select_account = AsyncMock(return_value=AccountSelection(account=account_a, error_message=None))
+    record_error = AsyncMock()
+    open_timeout = proxy_module.ProxyResponseError(
+        502,
+        openai_error("upstream_unavailable", "Request to upstream timed out"),
+        failure_phase="websocket_open_timeout",
+        retryable_same_contract=True,
+    )
+
+    monkeypatch.setattr(service._load_balancer, "select_account", select_account)
+    monkeypatch.setattr(service._load_balancer, "record_error", record_error)
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(return_value=account_a))
+    monkeypatch.setattr(service, "_open_upstream_websocket", AsyncMock(side_effect=[open_timeout, upstream]))
+    monkeypatch.setattr(service, "_release_websocket_reservation", AsyncMock())
+
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="ws_req_open_timeout_same_account",
+        model="gpt-5.1",
+        service_tier="fast",
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+    )
+
+    websocket_send = AsyncMock()
+    websocket = cast(WebSocket, SimpleNamespace(send_text=websocket_send))
+    selected_account, selected_upstream = await service._connect_proxy_websocket(
+        {},
+        sticky_key=None,
+        sticky_kind=None,
+        prefer_earlier_reset=False,
+        routing_strategy="usage_weighted",
+        model="gpt-5.1",
+        request_state=request_state,
+        api_key=None,
+        client_send_lock=anyio.Lock(),
+        websocket=websocket,
+    )
+
+    assert selected_account == account_a
+    assert selected_upstream is upstream
+    # No reallocation: the account selection ran exactly once.
+    assert select_account.await_count == 1
+    assert select_account.await_args_list[0].kwargs["exclude_account_ids"] == set()
     websocket_send.assert_not_awaited()
     assert request_logs.calls == []
 

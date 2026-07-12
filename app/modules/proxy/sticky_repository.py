@@ -215,6 +215,9 @@ class StickySessionsRepository:
     async def purge_prompt_cache_before(self, cutoff: datetime) -> int:
         return await self.purge_before(cutoff, kind=StickySessionKind.PROMPT_CACHE)
 
+    async def purge_codex_session_before(self, cutoff: datetime) -> int:
+        return await self.purge_before(cutoff, kind=StickySessionKind.CODEX_SESSION)
+
     async def purge_before(self, cutoff: datetime, *, kind: StickySessionKind | None = None) -> int:
         async def _purge_once() -> int:
             stmt = delete(StickySession).where(StickySession.updated_at < to_utc_naive(cutoff))

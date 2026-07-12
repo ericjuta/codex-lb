@@ -79,6 +79,23 @@ class StickySessionCleanupScheduler:
                     deleted_count = await sticky_repo.purge_prompt_cache_before(cutoff)
                     if deleted_count > 0:
                         logger.info("Purged stale prompt-cache sticky sessions deleted_count=%s", deleted_count)
+                    # Guarded independently so a failure cannot break the
+                    # prompt-cache or bridge purges.
+                    try:
+                        retention_days = get_settings().sticky_codex_session_retention_days
+                        if retention_days > 0:
+                            codex_session_cutoff = utcnow() - timedelta(days=retention_days)
+                            codex_session_deleted_count = await sticky_repo.purge_codex_session_before(
+                                codex_session_cutoff
+                            )
+                            if codex_session_deleted_count > 0:
+                                logger.info(
+                                    "Purged aged codex-session sticky sessions deleted_count=%s",
+                                    codex_session_deleted_count,
+                                )
+                    except Exception:
+                        logger.warning("Codex-session sticky purge failed", exc_info=True)
+
                     if startup_module._bridge_durable_schema_ready or not await missing_durable_bridge_tables(session):
                         bridge_deleted_count = await bridge_repo.purge_closed_before(cutoff)
                         if bridge_deleted_count > 0:

@@ -236,6 +236,7 @@ class Settings(BaseSettings):
     http_responses_session_bridge_worker_pool_mode: bool = False
     sticky_session_cleanup_enabled: bool = True
     sticky_session_cleanup_interval_seconds: int = Field(default=300, gt=0)
+    sticky_codex_session_retention_days: int = Field(default=30, ge=0)
     quota_planner_scheduler_enabled: bool = True
     quota_planner_tick_seconds: int = Field(default=300, gt=0)
     automations_scheduler_enabled: bool = True
