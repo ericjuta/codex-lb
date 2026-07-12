@@ -96,6 +96,10 @@ class _WebSocketContinuationFold:
             return response_id.strip()
         return None
 
+    @property
+    def has_hidden_round(self) -> bool:
+        return self._round_number > 1
+
     def _begin_round(self) -> None:
         self._round_number += 1
         self._output_index_map: dict[Any, int] = {}

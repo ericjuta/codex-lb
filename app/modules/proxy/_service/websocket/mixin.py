@@ -3111,7 +3111,9 @@ class _WebSocketMixin:
                             and downstream_sequence_request_state is not None
                             and downstream_sequence_number is not None
                         ):
-                            downstream_sequence_request_state.last_downstream_sequence_number = downstream_sequence_number
+                            downstream_sequence_request_state.last_downstream_sequence_number = (
+                                downstream_sequence_number
+                            )
                         if downstream_activity.disconnected:
                             break
                     elif not suppress_downstream_event:
@@ -3650,7 +3652,11 @@ class _WebSocketMixin:
             if fold_outcome.terminal_event is not None:
                 terminal_payload = fold_outcome.terminal_event
                 terminal_type = terminal_payload.get("type")
-                if terminal_type == "response.completed" and fold_request_state.pending_function_call_ids:
+                if (
+                    terminal_type == "response.completed"
+                    and fold_request_state.pending_function_call_ids
+                    and fold_request_state.continuation_fold.has_hidden_round
+                ):
                     # Calls buffered in truncated rounds are discarded by the
                     # fold: the client never saw them and the final round's
                     # stored context lacks them, so they must not be tracked as

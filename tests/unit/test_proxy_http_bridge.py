@@ -19,7 +19,7 @@ from fastapi import WebSocket
 
 from app.core.auth.refresh import RefreshError
 from app.core.balancer.types import ClassifiedFailure
-from app.core.clients.proxy import CODEX_RESPONSES_LITE_WEBSOCKET_METADATA_KEY, ProxyResponseError
+from app.core.clients.proxy import ProxyResponseError
 from app.core.clients.proxy_websocket import (
     CodexResponsesWebSocket,
     UpstreamResponsesWebSocket,
@@ -288,13 +288,19 @@ async def test_http_bridge_request_cleanup_releases_pre_submit_handoff(
     session = _make_bridge_session(key_value="scope-pre-submit")
     session.unanchored_reservation_id = "scope-pre-submit"
     service._http_bridge_sessions[session.key] = session
-    runtime_config = SimpleNamespace(
+    runtime_config = http_bridge_helpers_module._HTTPBridgeRuntimeConfig(
         enabled=True,
         idle_ttl_seconds=120.0,
         codex_idle_ttl_seconds=1800.0,
         max_sessions=8,
         queue_limit=4,
         prompt_cache_idle_ttl_seconds=120.0,
+        gateway_safe_mode=False,
+    )
+    settings = SimpleNamespace(
+        prefer_earlier_reset_accounts=False,
+        sticky_threads_enabled=False,
+        openai_cache_affinity_max_age_seconds=1800,
     )
 
     async def fail_before_submit(*args: object, **kwargs: object):
@@ -305,9 +311,18 @@ async def test_http_bridge_request_cleanup_releases_pre_submit_handoff(
     monkeypatch.setattr(
         http_bridge_streaming_module,
         "_service_get_settings_cache",
-        lambda: SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace())),
+        lambda: SimpleNamespace(get=AsyncMock(return_value=settings)),
     )
-    monkeypatch.setattr(http_bridge_streaming_module, "_service_get_settings", _make_app_settings)
+    monkeypatch.setattr(
+        http_bridge_streaming_module,
+        "_service_get_settings",
+        lambda: _make_app_settings(codex_continuation_bypass_http_bridge=False),
+    )
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings_cache",
+        lambda: SimpleNamespace(get=AsyncMock(return_value=settings)),
+    )
     monkeypatch.setattr(http_bridge_streaming_module, "_http_bridge_runtime_config", lambda *args: runtime_config)
     monkeypatch.setattr(service, "_resolve_file_account_for_responses", AsyncMock(return_value=None))
     monkeypatch.setattr(service, "_stream_via_http_bridge", fail_before_submit)

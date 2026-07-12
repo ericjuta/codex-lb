@@ -3279,9 +3279,9 @@ def test_backend_responses_websocket_allows_native_codex_tool_surface(app_instan
         {"role": "user", "content": [{"type": "input_text", "text": "draw something"}]}
     ]
     assert sent_payloads[0]["tools"] == [
+        request_payload["tools"][0],
         request_payload["tools"][1],
         {"type": "web_search"},
-        request_payload["tools"][0],
     ]
     assert sent_payloads[0]["tool_choice"] == "auto"
 
@@ -3660,7 +3660,7 @@ def test_backend_responses_websocket_injects_interrupted_custom_tool_output_on_f
                 "instructions": "",
                 "input": [first_user_message],
                 "store": False,
-                "include": [],
+                "include": ["reasoning.encrypted_content"],
                 "type": "response.create",
             },
             {
@@ -3675,7 +3675,7 @@ def test_backend_responses_websocket_injects_interrupted_custom_tool_output_on_f
                     interrupted_user_message,
                 ],
                 "store": False,
-                "include": [],
+                "include": ["reasoning.encrypted_content"],
                 "previous_response_id": "resp_ws_custom_interrupt",
                 "type": "response.create",
             },
@@ -3886,7 +3886,7 @@ def test_backend_responses_websocket_injects_interrupted_custom_tool_output_afte
                 "instructions": "",
                 "input": expected_first_upstream_input,
                 "store": False,
-                "include": [],
+                "include": ["reasoning.encrypted_content"],
                 "type": "response.create",
             },
             {
@@ -3901,7 +3901,7 @@ def test_backend_responses_websocket_injects_interrupted_custom_tool_output_afte
                     interrupted_user_message,
                 ],
                 "store": False,
-                "include": [],
+                "include": ["reasoning.encrypted_content"],
                 "previous_response_id": first_response_id,
                 "type": "response.create",
             },
@@ -6682,7 +6682,7 @@ def test_backend_responses_websocket_same_owner_followup_skips_selector_revalida
                 "instructions": "",
                 "input": [{"role": "user", "content": [{"type": "input_text", "text": "anchor"}]}],
                 "store": False,
-                "include": [],
+                "include": ["reasoning.encrypted_content"],
                 "type": "response.create",
             },
             {
@@ -6691,7 +6691,7 @@ def test_backend_responses_websocket_same_owner_followup_skips_selector_revalida
                 "input": [{"role": "user", "content": [{"type": "input_text", "text": "continue"}]}],
                 "previous_response_id": "resp_ws_prev_anchor",
                 "store": False,
-                "include": [],
+                "include": ["reasoning.encrypted_content"],
                 "type": "response.create",
             },
         ],
