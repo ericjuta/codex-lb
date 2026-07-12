@@ -1,0 +1,4 @@
+- [x] 1.1 Add normalized Responses context estimation and conservative local overflow rejection.
+- [x] 1.2 Cover HTTP and WebSocket-compatible context overflow error behavior without leaking payload data.
+- [x] 1.3 Add Docker label, runtime environment, deployment build-argument, and health header for the Git SHA.
+- [x] 1.4 Update normative main specs and run focused tests plus OpenSpec validation.

@@ -446,6 +446,7 @@ from app.modules.proxy.http_bridge_forwarding import (
 from app.modules.proxy.load_balancer import AccountLease
 from app.modules.proxy.request_policy import (
     apply_api_key_enforcement,
+    enforce_context_window,
     normalize_responses_request_payload,
     openai_client_payload_error,
     openai_invalid_payload_error,
@@ -1433,9 +1434,7 @@ class _WebSocketMixin:
                         prepared_body = _parse_websocket_payload(text_data) if text_data is not None else None
                         fold_base_body = {
                             key: value
-                            for key, value in (
-                                prepared_body if isinstance(prepared_body, dict) else payload
-                            ).items()
+                            for key, value in (prepared_body if isinstance(prepared_body, dict) else payload).items()
                             if key != "type"
                         }
                         request_state.continuation_fold = _WebSocketContinuationFold(
@@ -1651,6 +1650,7 @@ class _WebSocketMixin:
                 )
                 responses_payload = responses_payload.model_copy(update={"previous_response_id": folded_alias})
         apply_api_key_enforcement(responses_payload, refreshed_api_key)
+        enforce_context_window(responses_payload)
         normalized_payload = responses_payload.to_payload()
         body_uses_responses_lite = _payload_uses_responses_lite(normalized_payload)
         trusted_incremental_responses_lite = bool(
@@ -3644,8 +3644,7 @@ class _WebSocketMixin:
                 return text
             if fold_outcome.downstream:
                 upstream_control.downstream_texts = [
-                    json.dumps(event, ensure_ascii=True, separators=(",", ":"))
-                    for event in fold_outcome.downstream
+                    json.dumps(event, ensure_ascii=True, separators=(",", ":")) for event in fold_outcome.downstream
                 ]
             else:
                 upstream_control.suppress_downstream_event = True

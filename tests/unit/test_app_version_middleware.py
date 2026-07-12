@@ -21,7 +21,8 @@ _Dispatch = Callable[[Request, Callable[[Request], Awaitable[Response]]], Awaita
 
 
 @pytest.mark.asyncio
-async def test_app_version_middleware_adds_header_to_2xx_response():
+async def test_app_version_middleware_adds_header_to_2xx_response(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("CODEX_LB_BUILD_SHA", "test-sha")
     app = FastAPI()
     add_app_version_middleware(app)
     dispatch = cast(_Dispatch, app.user_middleware[0].kwargs["dispatch"])
@@ -49,6 +50,7 @@ async def test_app_version_middleware_adds_header_to_2xx_response():
     response = await dispatch(request, call_next)
 
     assert response.headers["X-App-Version"] == __version__
+    assert response.headers["X-App-Build-SHA"] == "test-sha"
 
 
 @pytest.mark.asyncio
@@ -80,6 +82,7 @@ async def test_app_version_middleware_skips_header_on_5xx_response():
     response = await dispatch(request, call_next)
 
     assert "X-App-Version" not in response.headers
+    assert "X-App-Build-SHA" not in response.headers
 
 
 @pytest.mark.asyncio

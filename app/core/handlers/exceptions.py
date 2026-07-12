@@ -17,6 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.core.errors import dashboard_error, openai_error
 from app.core.exceptions import (
     AppError,
+    ContextWindowExceededError,
     DashboardAuthError,
     DashboardBadRequestError,
     DashboardConflictError,
@@ -43,6 +44,7 @@ _OPENAI_EXCEPTION_TYPES: tuple[type[AppError], ...] = (
     ProxyModelNotAllowed,
     ProxyRateLimitError,
     ProxyUpstreamError,
+    ContextWindowExceededError,
 )
 
 _DASHBOARD_EXCEPTION_TYPES: tuple[type[AppError], ...] = (

@@ -10,6 +10,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        CODEX_LB_GIT_SHA: ${CODEX_LB_GIT_SHA:-unknown}
     env_file:
       - .env.local
     ports:

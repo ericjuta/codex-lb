@@ -4,8 +4,9 @@ import logging
 
 from pydantic import ValidationError
 
+from app.core.config.settings import get_settings
 from app.core.errors import OpenAIErrorEnvelope, openai_error
-from app.core.exceptions import ProxyModelNotAllowed
+from app.core.exceptions import ContextWindowExceededError, ProxyModelNotAllowed
 from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.model_registry import ModelRegistry, get_model_registry
 from app.core.openai.requests import (
@@ -13,6 +14,7 @@ from app.core.openai.requests import (
     ResponsesCompactRequest,
     ResponsesReasoning,
     ResponsesRequest,
+    estimate_responses_input_tokens,
     responses_input_uses_lite_tools,
 )
 from app.core.openai.strict_schema import (
@@ -103,6 +105,47 @@ def validate_model_access(api_key: ApiKeyData | None, model: str | None) -> None
     raise ProxyModelNotAllowed(f"This API key does not have access to model '{model}'")
 
 
+_CONTEXT_WINDOW_GUARD_RATIO = 0.9
+
+
+def enforce_context_window(
+    payload: ResponsesRequest | ResponsesCompactRequest,
+    *,
+    registry: ModelRegistry | None = None,
+) -> None:
+    """Reject locally estimable requests that leave too little context headroom."""
+    estimated_tokens = estimate_responses_input_tokens(payload)
+    if estimated_tokens is None:
+        return
+
+    models = (registry or get_model_registry()).get_models_with_fallback()
+    model = models.get(payload.model) or models.get(payload.model.strip().lower())
+    if model is None:
+        return
+
+    context_window = get_settings().model_context_window_overrides.get(model.slug, model.context_window)
+    if context_window <= 0:
+        return
+    guard_limit = max(1, int(context_window * _CONTEXT_WINDOW_GUARD_RATIO))
+    if estimated_tokens < guard_limit:
+        return
+
+    logger.warning(
+        "context_window_guard_rejected request_id=%s model=%s estimated_tokens=%s guard_limit=%s context_window=%s",
+        get_request_id(),
+        model.slug,
+        estimated_tokens,
+        guard_limit,
+        context_window,
+    )
+    raise ContextWindowExceededError(
+        model=model.slug,
+        estimated_tokens=estimated_tokens,
+        guard_limit=guard_limit,
+        context_window=context_window,
+    )
+
+
 def apply_api_key_enforcement(
     payload: ResponsesRequest | ResponsesCompactRequest,
     api_key: ApiKeyData | None,
@@ -181,6 +224,7 @@ def apply_api_key_enforcement(
                 api_key.enforced_service_tier,
                 effective_service_tier,
             )
+
 
 def _model_responses_lite_capability(
     model: str,
@@ -458,6 +502,7 @@ def normalize_responses_request_payload(
     enforce_strict_text_format(responses)
     enforce_strict_function_tools_format(responses.tools)
     return responses
+
 
 def strip_terminal_compaction_trigger_input(payload: ResponsesRequest) -> list[JsonValue] | None:
     input_value = payload.input

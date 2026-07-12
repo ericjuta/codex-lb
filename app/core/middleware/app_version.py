@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI, Request
@@ -17,4 +18,8 @@ def add_app_version_middleware(app: FastAPI) -> None:
         response = await call_next(request)
         if 200 <= response.status_code < 500:
             response.headers.setdefault("X-App-Version", __version__)
+            response.headers.setdefault(
+                "X-App-Build-SHA",
+                os.environ.get("CODEX_LB_BUILD_SHA", "unknown").strip() or "unknown",
+            )
         return response

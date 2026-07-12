@@ -42,6 +42,29 @@ class ProxyUpstreamError(AppError):
     error_type = "server_error"
 
 
+class ContextWindowExceededError(AppError):
+    status_code = 400
+    code = "context_length_exceeded"
+    error_type = "invalid_request_error"
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        estimated_tokens: int,
+        guard_limit: int,
+        context_window: int,
+    ) -> None:
+        self.model = model
+        self.estimated_tokens = estimated_tokens
+        self.guard_limit = guard_limit
+        self.context_window = context_window
+        super().__init__(
+            f"Estimated input for model '{model}' is too large for its context window; "
+            "reduce the input or use a model with a larger context window."
+        )
+
+
 # --- Dashboard-envelope errors ---
 
 

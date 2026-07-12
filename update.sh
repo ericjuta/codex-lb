@@ -34,7 +34,8 @@ case "${metrics_enabled}" in
     ;;
 esac
 
-docker build --pull -t "${image_name}" .
+git_sha="$(git rev-parse HEAD)"
+docker build --pull --build-arg CODEX_LB_GIT_SHA="${git_sha}" -t "${image_name}" .
 echo "Checking migration graph in ${image_name}"
 docker run --rm "${image_name}" python -m app.db.migrate check-policy
 docker volume create "${volume_name}" >/dev/null

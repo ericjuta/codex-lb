@@ -31,10 +31,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project --extra metrics --extra tracing
 
 FROM python:3.14-slim AS runtime
+ARG CODEX_LB_GIT_SHA=unknown
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/opt/venv/bin:$PATH"
+    PATH="/opt/venv/bin:$PATH" \
+    CODEX_LB_BUILD_SHA=$CODEX_LB_GIT_SHA
+LABEL org.opencontainers.image.revision=$CODEX_LB_GIT_SHA
 
 WORKDIR /app
 

@@ -1299,3 +1299,30 @@ When Codex-affinity compaction selects an upstream compaction output item with o
 - **WHEN** the selected upstream compaction result contains encrypted content without a non-empty string `id`
 - **THEN** the normalized compaction item omits `id`
 - **AND** the proxy does not invent one
+
+### Requirement: Estimable context overflow is rejected before upstream connection
+
+The proxy MUST return HTTP 400 with an OpenAI error envelope using code
+'context_length_exceeded' and type 'invalid_request_error' when a normalized
+Responses request has an estimable inline context whose estimated input tokens
+reach the conservative guard limit for the effective model context window.
+The rejection MUST occur before admission, account selection, or upstream
+connection. Opaque prior-response, conversation, and file/image contexts MAY
+remain on the existing upstream handling path when their complete size is not
+locally knowable.
+
+#### Scenario: Spark request is rejected locally
+
+- **GIVEN** the effective context window for 'gpt-5.3-codex-spark' is 128000
+- **AND** the normalized inline input estimate reaches the configured guard
+  threshold
+- **WHEN** a Responses request is received
+- **THEN** the proxy returns 400 with 'error.code=context_length_exceeded'
+- **AND** no upstream account connection is attempted
+
+#### Scenario: Opaque context is not guessed
+
+- **GIVEN** a request includes a prior-response or conversation anchor, or an
+  opaque file/image reference
+- **WHEN** the proxy cannot estimate the complete upstream context
+- **THEN** the proxy preserves the existing upstream handling path

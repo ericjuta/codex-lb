@@ -1,5 +1,6 @@
 PYTEST_ARGS := -q -ra -o faulthandler_timeout=300 -o faulthandler_exit_on_timeout=true --timeout=180 --timeout-method=thread --durations=20
 POSTGRES_TEST_DATABASE_URL ?= postgresql+asyncpg://codex_lb:codex_lb@127.0.0.1:5432/codex_lb
+CODEX_LB_GIT_SHA ?= $(shell git rev-parse HEAD 2>/dev/null || printf unknown)
 POSTGRES_PYTEST_TARGETS := \
 	tests/integration/test_migrations.py::test_postgresql_migration_contract_policy_and_drift_match \
 	tests/integration/test_migrations.py::test_postgresql_upgrade_head_from_empty_database \
@@ -104,7 +105,7 @@ package: frontend-build
 
 .PHONY: docker
 docker:
-	docker build -t codex-lb:ci .
+	docker build --build-arg CODEX_LB_GIT_SHA="$(CODEX_LB_GIT_SHA)" -t codex-lb:ci .
 	trivy image --format table --exit-code 1 --severity CRITICAL --ignore-unfixed codex-lb:ci
 
 .PHONY: helm-deps helm-lint helm-template helm-kubeconform
@@ -152,7 +153,7 @@ helm-check: helm-lint helm-template helm-kubeconform
 
 helm-smoke-kind:
 	kind create cluster --name codex-lb-smoke --image kindest/node:v1.35.0 --wait 120s
-	docker build -t ghcr.io/soju06/codex-lb:ci .
+	docker build --build-arg CODEX_LB_GIT_SHA="$(CODEX_LB_GIT_SHA)" -t ghcr.io/soju06/codex-lb:ci .
 	kind load docker-image ghcr.io/soju06/codex-lb:ci --name codex-lb-smoke
 	KUBE_CONTEXT=kind-codex-lb-smoke IMAGE_REGISTRY=ghcr.io IMAGE_REPOSITORY=soju06/codex-lb IMAGE_TAG=ci ./scripts/helm-kind-smoke.sh bundled
 	KUBE_CONTEXT=kind-codex-lb-smoke IMAGE_REGISTRY=ghcr.io IMAGE_REPOSITORY=soju06/codex-lb IMAGE_TAG=ci ./scripts/helm-kind-smoke.sh external-db

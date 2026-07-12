@@ -1302,6 +1302,26 @@ def _estimated_json_array_item_tokens(value: JsonValue) -> int:
     return max(1, (wire_chars + _ESTIMATED_CHARS_PER_TOKEN - 1) // _ESTIMATED_CHARS_PER_TOKEN)
 
 
+def estimate_responses_input_tokens(payload: ResponsesRequest | ResponsesCompactRequest) -> int | None:
+    """Estimate normalized request tokens when the full context is locally visible."""
+    if getattr(payload, "previous_response_id", None) or getattr(payload, "conversation", None):
+        return None
+    if _contains_opaque_context(payload.input):
+        return None
+    return _estimated_json_tokens(cast(JsonValue, payload.to_payload()))
+
+
+def _contains_opaque_context(value: JsonValue) -> bool:
+    if is_json_mapping(value):
+        item_type = value.get("type")
+        if item_type in {"input_file", "input_image"} or "file_id" in value:
+            return True
+        return any(_contains_opaque_context(child) for child in value.values())
+    if is_json_list(value):
+        return any(_contains_opaque_context(item) for item in value)
+    return False
+
+
 def _sanitize_interleaved_reasoning_input(payload: MutableJsonObject) -> None:
     input_value = payload.get("input")
     input_items = _json_list_or_none(input_value)
