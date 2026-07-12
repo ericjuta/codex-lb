@@ -3535,7 +3535,7 @@ def test_websocket_installation_metadata_stamping_rechecks_response_create_size(
     with pytest.raises(proxy_service.ProxyResponseError) as exc_info:
         websocket_mixin._websocket_enforce_response_create_text_size(request_state, stamped_text)
 
-    assert exc_info.value.status_code == 413
+    assert exc_info.value.status_code == 400
     assert exc_info.value.payload["error"]["code"] == "payload_too_large"
 
 
@@ -6722,7 +6722,7 @@ async def test_stream_responses_websocket_rejects_oversized_response_create_befo
             )
         ]
 
-    assert exc_info.value.status_code == 413
+    assert exc_info.value.status_code == 400
     assert exc_info.value.payload["error"]["code"] == "payload_too_large"
     assert session.ws_calls == []
 
@@ -15345,7 +15345,7 @@ async def test_prepare_websocket_response_create_request_releases_reservation_on
             api_key=api_key,
         )
 
-    assert exc_info.value.status_code == 413
+    assert exc_info.value.status_code == 400
     release_usage.assert_awaited_once_with(reservation)
 
 
@@ -16457,7 +16457,7 @@ async def test_prepare_websocket_full_replay_rejects_oversized_unslimmable_paylo
             continuity_state=continuity_state,
         )
 
-    assert exc_info.value.status_code == 413
+    assert exc_info.value.status_code == 400
     assert exc_info.value.payload["error"]["code"] == "payload_too_large"
 
 
@@ -16564,8 +16564,7 @@ async def test_websocket_continuity_state_hydration_discards_corrupt_payload(cap
 
     assert state.is_pristine()
     assert any(
-        "websocket_continuity_state_hydration_discarded_corrupt_payload" in record.message
-        for record in caplog.records
+        "websocket_continuity_state_hydration_discarded_corrupt_payload" in record.message for record in caplog.records
     )
 
 
@@ -22526,7 +22525,6 @@ async def test_stream_with_retry_preserves_useragent_on_preflight_timeout(monkey
     assert event["response"]["error"]["code"] == "upstream_request_timeout"
     assert request_logs.calls[0]["useragent"] == "opencode/1.15.13 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
     assert request_logs.calls[0]["useragent_group"] == "opencode"
-
 
 
 @pytest.mark.asyncio
@@ -31385,7 +31383,7 @@ async def test_inline_http_bridge_image_urls_rechecks_expanded_payload_size(monk
     with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
         await service._inline_http_bridge_image_urls(text_data, request_state)
 
-    assert exc_info.value.status_code == 413
+    assert exc_info.value.status_code == 400
     assert exc_info.value.failure_phase == "validation"
     assert request_state.request_text is not None
     assert "data:image/png;base64," in request_state.request_text

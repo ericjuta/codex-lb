@@ -136,6 +136,8 @@ class BridgeWorkerPool:
                 self._options.http,
                 "--timeout-keep-alive",
                 str(self._options.timeout_keep_alive),
+                "--ws-max-size",
+                str(self._options.ws_max_size),
                 env=build_worker_env(worker, base_env=base_env),
             )
             self._processes.append(process)

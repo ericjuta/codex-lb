@@ -2104,7 +2104,7 @@ def test_http_bridge_request_text_rejects_installation_metadata_size_overflow(
             request_state.request_text or "{}",
         )
 
-    assert exc_info.value.status_code == 413
+    assert exc_info.value.status_code == 400
     assert exc_info.value.payload["error"]["code"] == "payload_too_large"
 
 
@@ -7867,7 +7867,6 @@ async def _run_owner_forward_recovery_with_session(
     capacity_error_on_first_submit: bool = False,
     submit_attempts: list[str] | None = None,
 ) -> list[Any]:
-
     """Drive owner-forward failure -> local recovery; return prepared inputs.
 
     The owner relay fails before yielding, the local recovery path rebinds to
@@ -11281,8 +11280,7 @@ async def test_process_http_bridge_upstream_text_records_unmatched_previous_resp
     assert request_state_a.event_queue.empty()
     assert request_state_b.event_queue.empty()
     assert (
-        "continuity_fail_closed surface=http_bridge_stream reason=previous_response_not_found_unmatched"
-        in caplog.text
+        "continuity_fail_closed surface=http_bridge_stream reason=previous_response_not_found_unmatched" in caplog.text
     )
     assert "upstream_error_code=previous_response_not_found" in caplog.text
     assert "previous_response_id=sha256:" in caplog.text

@@ -33,6 +33,7 @@ class RuntimeOptions:
     loop: str
     http: str
     timeout_keep_alive: int
+    ws_max_size: int
     ssl_certfile: str | None
     ssl_keyfile: str | None
 
@@ -110,6 +111,17 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--ws-max-size",
+        default=os.getenv("UVICORN_WS_MAX_SIZE", str(128 * 1024 * 1024)),
+        help=(
+            "Maximum decompressed size in bytes of a single incoming websocket message. "
+            "Codex clients resend the full conversation history (inline screenshots "
+            "included) as one response.create message after a reconnect; messages above "
+            "this budget are closed at the protocol layer with 1009 before the "
+            "application-level slimming guard can run."
+        ),
+    )
+    parser.add_argument(
         "--workers",
         default=_env_str(
             "CODEX_LB_UVICORN_WORKERS",
@@ -145,6 +157,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     port = _parse_server_port(args.port)
     timeout_keep_alive = _parse_server_timeout_keep_alive(args.timeout_keep_alive)
+    ws_max_size = _parse_server_ws_max_size(args.ws_max_size)
     workers = _parse_server_workers(args.workers)
     os.environ["PORT"] = str(port)
     if workers > 1 and _http_responses_session_bridge_enabled():
@@ -158,6 +171,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 loop=args.loop,
                 http=args.http,
                 timeout_keep_alive=timeout_keep_alive,
+                ws_max_size=ws_max_size,
                 ssl_certfile=args.ssl_certfile,
                 ssl_keyfile=args.ssl_keyfile,
             ),
@@ -175,6 +189,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         ssl_certfile=args.ssl_certfile,
         ssl_keyfile=args.ssl_keyfile,
         timeout_keep_alive=timeout_keep_alive,
+        ws_max_size=ws_max_size,
         log_config=_build_log_config(),
     )
 
@@ -204,6 +219,17 @@ def _parse_server_timeout_keep_alive(raw_timeout: str) -> int:
     except ValueError as exc:
         message = f"--timeout-keep-alive/UVICORN_TIMEOUT_KEEP_ALIVE must be an integer, got {raw_timeout!r}."
         raise SystemExit(message) from exc
+
+
+def _parse_server_ws_max_size(raw_ws_max_size: str) -> int:
+    try:
+        ws_max_size = int(raw_ws_max_size)
+    except ValueError as exc:
+        message = f"--ws-max-size/UVICORN_WS_MAX_SIZE must be an integer, got {raw_ws_max_size!r}."
+        raise SystemExit(message) from exc
+    if ws_max_size <= 0:
+        raise SystemExit(f"--ws-max-size/UVICORN_WS_MAX_SIZE must be positive, got {raw_ws_max_size!r}.")
+    return ws_max_size
 
 
 def _parse_server_workers(raw_workers: str) -> int:

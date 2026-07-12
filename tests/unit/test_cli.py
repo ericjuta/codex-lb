@@ -40,6 +40,7 @@ def test_main_passes_timestamped_log_config(monkeypatch):
     assert kwargs["loop"] == "auto"
     assert kwargs["http"] == "auto"
     assert kwargs["timeout_keep_alive"] == 7200
+    assert kwargs["ws_max_size"] == 128 * 1024 * 1024
 
 
 def test_main_passes_custom_keep_alive_timeout(monkeypatch):
@@ -55,6 +56,68 @@ def test_main_passes_custom_keep_alive_timeout(monkeypatch):
     cli.main()
 
     assert captured["kwargs"]["timeout_keep_alive"] == 900
+
+
+def test_main_passes_custom_ws_max_size_flag(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(sys, "argv", ["codex-lb", "--ws-max-size", "33554432"])
+    monkeypatch.setattr(cli, "_load_uvicorn", lambda: SimpleNamespace(run=fake_run))
+
+    cli.main()
+
+    assert captured["kwargs"]["ws_max_size"] == 33554432
+
+
+def test_main_reads_ws_max_size_from_env(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(sys, "argv", ["codex-lb"])
+    monkeypatch.setenv("UVICORN_WS_MAX_SIZE", "67108864")
+    monkeypatch.setattr(cli, "_load_uvicorn", lambda: SimpleNamespace(run=fake_run))
+
+    cli.main()
+
+    assert captured["kwargs"]["ws_max_size"] == 67108864
+
+
+def test_main_ws_max_size_flag_overrides_env(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(sys, "argv", ["codex-lb", "--ws-max-size", "33554432"])
+    monkeypatch.setenv("UVICORN_WS_MAX_SIZE", "67108864")
+    monkeypatch.setattr(cli, "_load_uvicorn", lambda: SimpleNamespace(run=fake_run))
+
+    cli.main()
+
+    assert captured["kwargs"]["ws_max_size"] == 33554432
+
+
+def test_main_reports_invalid_ws_max_size_env(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["codex-lb"])
+    monkeypatch.setenv("UVICORN_WS_MAX_SIZE", "not-a-size")
+
+    with pytest.raises(SystemExit, match="--ws-max-size/UVICORN_WS_MAX_SIZE must be an integer"):
+        cli.main()
+
+
+def test_main_reports_non_positive_ws_max_size(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["codex-lb", "--ws-max-size", "0"])
+
+    with pytest.raises(SystemExit, match="--ws-max-size/UVICORN_WS_MAX_SIZE must be positive"):
+        cli.main()
 
 
 def test_main_reports_invalid_server_port_env(monkeypatch):
@@ -303,6 +366,7 @@ def test_main_uses_addressable_worker_pool_when_bridge_enabled(monkeypatch):
     assert options.loop == "uvloop"
     assert options.http == "httptools"
     assert options.timeout_keep_alive == 7200
+    assert options.ws_max_size == 128 * 1024 * 1024
     assert isinstance(captured["log_config"], dict)
 
 

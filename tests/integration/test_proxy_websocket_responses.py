@@ -754,9 +754,11 @@ def test_backend_responses_websocket_proxies_upstream_and_persists_log(app_insta
                 "instructions": "",
                 "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
                 "reasoning": {"effort": "high"},
-                "client_metadata": {"x-codex-turn-metadata": (
-                    '{"installation_id":"account-installation","turn_id":"turn_123","sandbox":"workspace-write"}'
-                )},
+                "client_metadata": {
+                    "x-codex-turn-metadata": (
+                        '{"installation_id":"account-installation","turn_id":"turn_123","sandbox":"workspace-write"}'
+                    )
+                },
                 "service_tier": "priority",
                 "store": False,
                 "include": ["reasoning.encrypted_content"],
@@ -1348,9 +1350,7 @@ def test_backend_responses_websocket_folded_turn_aliases_previous_response_id(ap
     assert len(fake_upstream.sent_text) == 3
     followup_request = json.loads(fake_upstream.sent_text[2])
     assert followup_request["previous_response_id"] == "resp_ws_fold_h"
-    assert followup_request["input"] == [
-        {"type": "function_call_output", "call_id": "call_folded", "output": "ok"}
-    ]
+    assert followup_request["input"] == [{"type": "function_call_output", "call_id": "call_folded", "output": "ok"}]
     assert second_turn_events[-1]["type"] == "response.completed"
 
 
@@ -1588,9 +1588,7 @@ def test_backend_responses_websocket_chained_fold_hidden_round_chains_visible_ro
     # The consumed client anchor and the incremental tool output live in the
     # visible round's stored context; they must not be replayed.
     assert "resp_prev_anchor" not in fake_upstream.sent_text[1]
-    assert not any(
-        isinstance(item, dict) and item.get("type") == "function_call_output" for item in replay_input
-    )
+    assert not any(isinstance(item, dict) and item.get("type") == "function_call_output" for item in replay_input)
 
 
 def test_backend_responses_websocket_chained_fold_stops_when_truncated_round_emits_tool_call(
@@ -7332,7 +7330,7 @@ def test_backend_responses_websocket_rejects_oversized_response_create_before_up
             error_event = json.loads(websocket.receive_text())
 
     assert error_event["type"] == "error"
-    assert error_event["status"] == 413
+    assert error_event["status"] == 400
     assert error_event["error"]["code"] == "payload_too_large"
     assert error_event["error"]["type"] == "invalid_request_error"
     assert error_event["error"]["param"] == "input"

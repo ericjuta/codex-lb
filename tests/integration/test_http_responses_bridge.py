@@ -4231,7 +4231,7 @@ async def test_v1_responses_http_bridge_size_guard_covers_injected_interrupted_t
     )
 
     assert followup_cap_armed is True
-    assert second.status_code == 413
+    assert second.status_code == 400
     error = second.json()["error"]
     assert error["code"] == "payload_too_large"
     assert error["type"] == "invalid_request_error"
@@ -6231,7 +6231,7 @@ async def test_v1_responses_http_bridge_rejects_oversized_response_create_before
         },
     )
 
-    assert response.status_code == 413
+    assert response.status_code == 400
     payload = response.json()
     assert payload["error"]["code"] == "payload_too_large"
     assert payload["error"]["type"] == "invalid_request_error"
