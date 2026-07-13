@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Proxy-injected continuity anchors preserve reasoning pairing
-When the service rewrites a client's self-contained websocket full replay into a proxy-injected `previous_response_id` plus a sliced input delta, it MUST verify that the sliced delta is reasoning-consistent before using it. A delta is reasoning-consistent only when it contains no assistant output item (such as a `message`) whose paired `reasoning` item precedes the slice boundary and is therefore absent from the delta. If the delta would not be reasoning-consistent, the service MUST skip anchor injection for that request and forward the client's original full replay unchanged, and it MUST log a distinct skip reason for observability.
+When the service rewrites a client's self-contained websocket full replay into a proxy-injected `previous_response_id` plus a sliced input delta, it MUST verify that the sliced delta is reasoning-consistent before using it. A delta is reasoning-consistent unless it contains an assistant `message` item that is not preceded by a `reasoning` item within the same delta; re-sent `reasoning` items without a following message and complete `reasoning`-then-`message` groups are consistent because upstream accepts and dedupes them on anchored turns. If the delta would not be reasoning-consistent, the service MUST skip anchor injection for that request and forward the client's original full replay unchanged, and it MUST log a distinct skip reason for observability.
 
 
 #### Scenario: slice boundary would orphan an assistant message from its reasoning item
@@ -15,6 +15,11 @@ When the service rewrites a client's self-contained websocket full replay into a
 - **WHEN** a websocket `/backend-api/codex/responses` request has no `previous_response_id` and its input prefix matches the stored continuity fingerprint
 - **AND** the sliced delta contains only self-consistent items (for example tool outputs whose calls are anchored upstream, or complete reasoning+message groups)
 - **THEN** the service injects `previous_response_id` and forwards the sliced delta as today
+
+#### Scenario: reasoning-led incremental delta keeps the anchor
+- **WHEN** a websocket `/backend-api/codex/responses` request has no `previous_response_id` and its input prefix matches the stored continuity fingerprint
+- **AND** the sliced delta begins with the prior turn's outputs (`reasoning` items, tool calls, and their outputs) followed by new user input, with any assistant `message` preceded by a `reasoning` item within the delta
+- **THEN** the service injects `previous_response_id` and forwards the sliced delta
 
 ### Requirement: Orphaned-reasoning rejections of proxy-injected anchors recover via full replay
 When upstream rejects a websocket turn with an `invalid_request_error` stating that an item was provided without its required `reasoning` item, and the service injected the `previous_response_id` for that turn while retaining a retry-safe self-contained full replay body, the service MUST treat the failure like a stale-anchor continuity loss: reconnect and replay the retained full payload as a fresh turn without `previous_response_id` instead of forwarding the raw upstream error. If no retry-safe full replay body was retained, the service MUST surface a retryable continuity failure rather than the raw upstream invalid-request error. Client-authored payloads whose anchors were not proxy-injected MUST NOT trigger this recovery and continue to receive the upstream error unchanged.

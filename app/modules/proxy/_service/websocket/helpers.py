@@ -438,18 +438,27 @@ def _websocket_anchor_delta_is_reasoning_consistent(delta_items: list[JsonValue]
 
     Codex clients omit ``reasoning`` items they cannot replay, so the stored
     prefix boundary can land between a ``reasoning`` item and its paired
-    assistant ``message`` in the current replay. Upstream rejects such a delta
+    assistant ``message`` in the current replay. Upstream rejects a delta whose
+    assistant ``message`` arrives without its required ``reasoning`` sibling
     with ``invalid_request_error`` ("... without its required 'reasoning'
-    item"). Incremental deltas that clients produce for anchored turns carry
-    tool outputs and new user input only; any assistant ``message`` or
-    ``reasoning`` item in the delta means the boundary is unsafe, and the
-    client's original full replay must be forwarded instead.
+    item"), while re-sent ``reasoning`` items on an anchored turn are accepted
+    and deduped server-side. Incremental deltas structurally begin with the
+    prior turn's outputs (``reasoning``, tool calls, sometimes a visible
+    ``message``), so only an assistant ``message`` with no ``reasoning`` item
+    earlier in the same delta marks an unsafe boundary; those requests must
+    forward the client's original full replay instead.
     """
+    seen_reasoning = False
     for item in delta_items:
         item_type = _websocket_input_item_type(item)
         if item_type == "reasoning":
-            return False
-        if item_type == "message" and isinstance(item, dict) and item.get("role") == "assistant":
+            seen_reasoning = True
+        elif (
+            item_type == "message"
+            and isinstance(item, dict)
+            and item.get("role") == "assistant"
+            and not seen_reasoning
+        ):
             return False
     return True
 

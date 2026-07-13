@@ -9113,6 +9113,142 @@ def test_backend_responses_websocket_skips_injected_anchor_when_delta_orphans_re
     assert second_upstream_payload["input"] == [first_input, orphan_message, second_input]
 
 
+def test_backend_responses_websocket_anchors_reasoning_led_incremental_delta(
+    app_instance,
+    monkeypatch,
+):
+    # The dominant incremental client shape: the delta begins with the prior
+    # turn's reasoning/tool-call outputs. Upstream dedupes re-sent reasoning on
+    # anchored turns, so the anchor must be injected and the delta sliced.
+    def upstream_messages(response_id: str) -> list[_FakeUpstreamMessage]:
+        return [
+            _FakeUpstreamMessage(
+                "text",
+                text=json.dumps(
+                    {"type": "response.created", "response": {"id": response_id, "status": "in_progress"}},
+                    separators=(",", ":"),
+                ),
+            ),
+            _FakeUpstreamMessage(
+                "text",
+                text=json.dumps(
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": response_id,
+                            "status": "completed",
+                            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                        },
+                    },
+                    separators=(",", ":"),
+                ),
+            ),
+        ]
+
+    first_upstream = _FakeUpstreamWebSocket(upstream_messages("resp_incr_anchor"))
+    second_upstream = _FakeUpstreamWebSocket(upstream_messages("resp_incr_followup"))
+    upstreams = deque([first_upstream, second_upstream])
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_proxy_api_key(authorization: str | None, *, request: object | None = None):
+        return None
+
+    async def fake_connect_proxy_websocket(
+        self,
+        headers,
+        *,
+        sticky_key,
+        sticky_kind,
+        reallocate_sticky,
+        sticky_max_age_seconds,
+        prefer_earlier_reset,
+        prefer_earlier_reset_window,
+        routing_strategy,
+        model,
+        request_state,
+        api_key,
+        client_send_lock,
+        websocket,
+    ):
+        del (
+            self,
+            headers,
+            sticky_key,
+            sticky_kind,
+            reallocate_sticky,
+            sticky_max_age_seconds,
+            prefer_earlier_reset,
+            prefer_earlier_reset_window,
+            routing_strategy,
+            model,
+            request_state,
+            api_key,
+            client_send_lock,
+            websocket,
+        )
+        return SimpleNamespace(id="acct_incr_anchor"), upstreams.popleft()
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", fake_connect_proxy_websocket)
+
+    first_input = {"role": "user", "content": [{"type": "input_text", "text": "first"}]}
+    incremental_delta = [
+        {"type": "reasoning", "id": "rs_prev", "summary": []},
+        {"type": "custom_tool_call", "name": "exec", "call_id": "call_prev", "input": "{}"},
+        {"type": "custom_tool_call_output", "call_id": "call_prev", "output": "ok"},
+        {"role": "user", "content": [{"type": "input_text", "text": "next"}]},
+    ]
+    first_payload = {
+        "type": "response.create",
+        "model": "gpt-5.4",
+        "instructions": "",
+        "input": [first_input],
+        "stream": True,
+    }
+    followup_payload = {
+        "type": "response.create",
+        "model": "gpt-5.4",
+        "instructions": "",
+        "input": [first_input, *incremental_delta],
+        "stream": True,
+    }
+
+    with TestClient(app_instance) as client:
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={"Authorization": "Bearer external-token"},
+        ) as websocket:
+            raw_extra_headers = cast(list[tuple[bytes, bytes]], websocket.extra_headers)
+            extra_headers = {key.decode(): value.decode() for key, value in raw_extra_headers}
+            turn_state = extra_headers["x-codex-turn-state"]
+            websocket.send_text(json.dumps(first_payload))
+            assert json.loads(websocket.receive_text())["type"] == "response.created"
+            assert json.loads(websocket.receive_text())["type"] == "response.completed"
+
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={
+                "Authorization": "Bearer external-token",
+                "x-codex-turn-state": turn_state,
+            },
+        ) as websocket:
+            websocket.send_text(json.dumps(followup_payload))
+            assert json.loads(websocket.receive_text())["type"] == "response.created"
+            assert json.loads(websocket.receive_text())["type"] == "response.completed"
+
+    second_upstream_payload = json.loads(second_upstream.sent_text[0])
+    assert second_upstream_payload["previous_response_id"] == "resp_incr_anchor"
+    assert second_upstream_payload["input"] == incremental_delta
+
+
 def test_backend_responses_websocket_recovers_injected_anchor_orphaned_reasoning_400(
     app_instance,
     monkeypatch,

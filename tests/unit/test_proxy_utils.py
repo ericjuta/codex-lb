@@ -15909,16 +15909,44 @@ def test_websocket_anchor_delta_reasoning_consistency_rules():
     assert websocket_mixin._websocket_anchor_delta_is_reasoning_consistent(consistent_delta) is True
     assert websocket_mixin._websocket_anchor_delta_is_reasoning_consistent([]) is True
 
+    # The dominant incremental shape: the prior turn's outputs lead the delta.
+    incremental_delta: list[JsonValue] = [
+        {"type": "reasoning", "id": "rs_prev", "summary": []},
+        {"type": "custom_tool_call", "name": "exec", "call_id": "call_prev", "input": "{}"},
+        {"type": "custom_tool_call_output", "call_id": "call_prev", "output": "ok"},
+        {"role": "developer", "content": [{"type": "input_text", "text": "It is now"}]},
+    ]
+    assert websocket_mixin._websocket_anchor_delta_is_reasoning_consistent(incremental_delta) is True
+
+    # A complete reasoning -> assistant message group is consistent.
+    grouped_delta: list[JsonValue] = [
+        {"type": "reasoning", "id": "rs_prev", "summary": []},
+        {"type": "message", "role": "assistant", "id": "msg_prev", "content": []},
+        {"type": "custom_tool_call_output", "call_id": "call_1", "output": "ok"},
+    ]
+    assert websocket_mixin._websocket_anchor_delta_is_reasoning_consistent(grouped_delta) is True
+
+    # An assistant message with no reasoning item earlier in the delta is the
+    # orphan boundary upstream rejects.
     orphaned_message_delta: list[JsonValue] = [
         {"type": "message", "role": "assistant", "id": "msg_orphan", "content": []},
         {"type": "custom_tool_call_output", "call_id": "call_1", "output": "ok"},
     ]
     assert websocket_mixin._websocket_anchor_delta_is_reasoning_consistent(orphaned_message_delta) is False
 
+    # A message before the delta's first reasoning item is still orphaned even
+    # when reasoning appears later.
+    message_before_reasoning_delta: list[JsonValue] = [
+        {"type": "message", "role": "assistant", "id": "msg_orphan", "content": []},
+        {"type": "reasoning", "id": "rs_later", "summary": []},
+    ]
+    assert websocket_mixin._websocket_anchor_delta_is_reasoning_consistent(message_before_reasoning_delta) is False
+
+    # Re-sent reasoning without a message is accepted and deduped upstream.
     reasoning_tail_delta: list[JsonValue] = [
         {"type": "reasoning", "id": "rs_tail", "summary": []},
     ]
-    assert websocket_mixin._websocket_anchor_delta_is_reasoning_consistent(reasoning_tail_delta) is False
+    assert websocket_mixin._websocket_anchor_delta_is_reasoning_consistent(reasoning_tail_delta) is True
 
     user_message_delta: list[JsonValue] = [
         {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},

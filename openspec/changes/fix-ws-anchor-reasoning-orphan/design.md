@@ -35,21 +35,28 @@ Non-Goals
 
 ### D1: Guard shape — validate the delta, not the boundary
 Add `_websocket_anchor_delta_is_reasoning_consistent(delta_items)` in
-helpers.py and call it inside `_websocket_continuity_anchor_for_payload`
-(return `None`, i.e. no anchor, when it fails). Rule: walk the delta; any item
-of type `message` with `role == "assistant"` (or other reasoning-paired
-assistant output) whose `id` starts with `msg_` and which is not preceded
-*within the delta* by a `reasoning` item belonging to the same output group is
-an orphan. Conservative approximation chosen: reject the anchor if the delta
-contains ANY assistant `message` or `reasoning` item at all — deltas that
-codex clients produce for incremental turns are tool outputs + new user
-messages; assistant outputs in the delta only appear when the boundary is
-wrong or the client replayed prior turns, and in both cases the full replay is
-the safe, semantically identical request. This avoids fragile ID-pair matching
-against upstream's `msg_`/`rs_` sibling convention.
+helpers.py and call it inside the anchor-injection site (drop the anchor when
+it fails). Rule: an assistant `message` item that is not preceded by a
+`reasoning` item *within the delta* marks an unsafe boundary; everything else
+is consistent.
 
-Alternative rejected: precise `rs_`/`msg_` pair matching by shared hex stem —
-undocumented upstream contract, breaks silently if ID format changes.
+Post-deploy soak (2026-07-13) corrected the initial conservative rule, which
+rejected any delta containing assistant `message`/`reasoning` items. Live
+traffic showed incremental codex clients structurally lead every delta with
+the prior turn's outputs (`reasoning`, tool calls, sometimes a visible
+`message`), so the conservative rule skipped ~95% of anchor opportunities
+(64 skips vs 3 injects in the first 9 minutes) while weeks of pre-fix logs
+prove upstream accepts and dedupes re-sent reasoning/tool-call items on
+anchored turns. The rejected upstream shape is specifically an assistant
+`message` without a `reasoning` sibling in the same payload, so the precise
+rule keys on exactly that.
+
+Alternative rejected: precise `rs_`/`msg_` sibling matching by shared hex
+stem — undocumented upstream contract, breaks silently if ID format changes.
+The ordering rule ("some reasoning precedes the message in the delta") can in
+principle misjudge a cross-boundary pairing; D2 recovery transparently
+replays the retained full payload in that case, degrading to the conservative
+behavior rather than an error.
 
 ### D2: Recovery classifier — extend the existing stale-anchor path
 `mixin.py` already retains `fresh_upstream_request_text` +
