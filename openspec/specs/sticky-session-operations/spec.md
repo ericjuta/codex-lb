@@ -64,15 +64,24 @@ The system SHALL provide dashboard APIs for listing sticky-session mappings, del
 - **THEN** the system deletes only stale `prompt_cache` mappings and leaves durable mappings untouched
 
 ### Requirement: Prompt-cache mappings are cleaned up proactively
-The system SHALL run a background cleanup loop that deletes stale `prompt_cache` mappings using the current dashboard prompt-cache affinity TTL.
+The system SHALL run a background cleanup loop that deletes stale `prompt_cache` mappings using the current dashboard prompt-cache affinity TTL. The same loop SHALL delete `codex_session` mappings whose `updated_at` is older than a configurable retention window (default 30 days); a retention setting of `0` SHALL disable the `codex_session` purge. The purge step SHALL be guarded so its failure does not prevent the loop's other cleanup steps from running.
 
 #### Scenario: Cleanup loop removes stale prompt-cache mappings
 - **WHEN** the cleanup loop runs and finds `prompt_cache` mappings older than the configured TTL
 - **THEN** it deletes those mappings
 
-#### Scenario: Cleanup loop preserves durable mappings
+#### Scenario: Cleanup loop removes aged codex_session mappings
+- **WHEN** the cleanup loop runs and finds `codex_session` mappings with `updated_at` older than the configured retention window
+- **THEN** it deletes those mappings
+- **AND** `codex_session` mappings updated within the retention window survive
+
+#### Scenario: Retention setting of zero disables codex_session purge
+- **WHEN** the `codex_session` retention setting is `0`
+- **THEN** the cleanup loop does not delete any `codex_session` mappings regardless of age
+
+#### Scenario: Cleanup loop preserves sticky_thread mappings
 - **WHEN** the cleanup loop runs
-- **THEN** it does not delete `codex_session` or `sticky_thread` mappings regardless of age
+- **THEN** it does not delete `sticky_thread` mappings regardless of age
 
 ### Requirement: Soft bridge affinity can reroute under local pressure
 
@@ -132,3 +141,80 @@ prevent the loop's other cleanup steps from running.
 - **AND** the prompt-cache and bridge-session purges in the same loop still
   run
 
+### Requirement: Transient websocket open timeouts retry the same account before breaking stickiness
+
+When a websocket upstream connect attempt fails with a retryable open-handshake timeout (`websocket_open_timeout` with a same-contract retryable classification), the proxy MUST retry the same account once before excluding it and reallocating sticky affinity, provided the request budget allows another attempt. The retry MUST NOT mark the account excluded and MUST NOT reallocate the sticky mapping. At most one same-account retry SHALL be performed per account per request; a second open timeout on the same account MUST fall back to the existing failover ladder (exclude and reallocate). The failover decision log line MUST record the same-account retry with a distinct action value (`retry_same_account`) alongside the existing request id, transport, account id, attempt, and failure class fields.
+
+#### Scenario: Open timeout retries same account and preserves sticky affinity
+
+- **GIVEN** a websocket request selected its sticky prompt-cache account
+- **WHEN** the upstream open handshake times out once
+- **AND** the retry against the same account connects successfully
+- **THEN** the request proceeds on the original sticky account
+- **AND** the sticky mapping is not reallocated
+- **AND** a failover decision with action `retry_same_account` is logged
+
+#### Scenario: Repeated open timeout falls back to failover
+
+- **GIVEN** a websocket request already consumed its same-account retry for the selected account
+- **WHEN** the retry attempt also times out during the open handshake
+- **THEN** the proxy excludes the account and reallocates using the existing failover ladder
+
+#### Scenario: Non-timeout failures do not get a same-account retry
+
+- **WHEN** a websocket upstream connect attempt fails with a non-timeout retryable failure (for example an upstream 403 or close code)
+- **THEN** the proxy applies the existing failover ladder without a same-account retry
+
+#### Scenario: Exhausted budget skips the same-account retry
+
+- **WHEN** the open handshake times out and the remaining request budget cannot cover another connect attempt
+- **THEN** the proxy does not retry the same account and follows the existing failover/surface behavior
+
+### Requirement: Per-request account exclusion preserves sticky mappings
+
+When account selection resolves an existing sticky mapping whose pinned account is absent from the candidate pool solely because it was excluded for the current request (for example transport failover after a connect failure), the system MUST select a fallback account for that request without deleting or rewriting the sticky mapping, for every sticky-session kind. Sticky mappings SHALL only be deleted or rebound by pool-membership changes (account removed or out of scope), permanent account status, budget-pressure reallocation, TTL expiry, or explicit administrative action.
+
+#### Scenario: Transport failover keeps the prompt-cache mapping
+
+- **GIVEN** a `prompt_cache` mapping pinned to account A
+- **WHEN** a request excludes account A after a transient connect failure and selection reallocates
+- **THEN** a fallback account serves the request
+- **AND** the `prompt_cache` mapping still points at account A
+- **AND** a subsequent request without the exclusion returns to account A
+
+#### Scenario: Transport failover keeps the durable codex-session mapping
+
+- **GIVEN** a `codex_session` mapping pinned to account A
+- **WHEN** a request excludes account A after a transient connect failure and selection reallocates
+- **THEN** a fallback account serves the request
+- **AND** the `codex_session` mapping still points at account A
+
+#### Scenario: Pinned account removed from the pool still deletes the mapping
+
+- **GIVEN** a sticky mapping pinned to an account that has been deleted or moved out of the API-key scope
+- **WHEN** selection resolves the mapping and the account is not in the candidate pool for a non-exclusion reason
+- **THEN** the stale mapping is deleted and the fallback placement is persisted
+
+### Requirement: Sticky selection outcomes are observable
+
+The system MUST record a sticky-selection outcome metric (`codex_lb_sticky_selection_total`) labeled by sticky kind and outcome for every selection that carries a sticky key, with outcomes distinguishing at least: pinned account selected (`hit`), fallback without mapping mutation (`fallback`), fallback persisted over an existing mapping (`rebind`), and first placement (`new`). The metric MUST be a no-op when the metrics backend is unavailable.
+
+#### Scenario: Pinned selection increments hit
+
+- **WHEN** selection returns the account already stored in the sticky mapping
+- **THEN** the counter increments with outcome `hit` and the mapping's kind label
+
+#### Scenario: Preserved fallback increments fallback
+
+- **WHEN** selection returns a different account while preserving the existing mapping
+- **THEN** the counter increments with outcome `fallback`
+
+#### Scenario: Persisted rebind increments rebind
+
+- **WHEN** selection persists a fallback account over an existing mapping
+- **THEN** the counter increments with outcome `rebind`
+
+#### Scenario: First placement increments new
+
+- **WHEN** selection creates a sticky mapping where none existed
+- **THEN** the counter increments with outcome `new`
