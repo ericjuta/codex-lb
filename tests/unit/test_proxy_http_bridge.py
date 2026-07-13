@@ -15654,3 +15654,128 @@ async def test_cancel_api_key_reservation_heartbeat_task_does_not_wait_for_task_
     await asyncio.sleep(0)
 
     assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_maybe_prewarm_skipped_under_cache_pressure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prewarm is suppressed when the account already hosts the configured
+    limit of recently-active large prompt-cache families."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    session = proxy_service._HTTPBridgeSession(
+        key=proxy_service._HTTPBridgeSessionKey("session_header", "sid-pressure", None),
+        headers={"x-codex-session-id": "sid-pressure"},
+        affinity=proxy_service._AffinityPolicy(
+            key="sid-pressure",
+            kind=proxy_service.StickySessionKind.CODEX_SESSION,
+        ),
+        request_model="gpt-5.6-luna",
+        account=cast(Any, SimpleNamespace(id="acc-pressure", status=AccountStatus.ACTIVE)),
+        upstream=cast(UpstreamResponsesWebSocket, SimpleNamespace(send_text=AsyncMock(), close=AsyncMock())),
+        upstream_control=proxy_service._WebSocketUpstreamControl(),
+        pending_requests=deque(),
+        pending_lock=anyio.Lock(),
+        response_create_gate=asyncio.Semaphore(1),
+        queued_request_count=0,
+        last_used_at=1.0,
+        idle_ttl_seconds=120.0,
+        codex_session=True,
+        prewarm_lock=anyio.Lock(),
+    )
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-pressure",
+        model="gpt-5.6-luna",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=1.0,
+        transport="http",
+    )
+    settings_stub = SimpleNamespace(
+        http_responses_session_bridge_codex_prewarm_enabled=True,
+        http_responses_session_bridge_codex_prewarm_canary_percent=None,
+        http_responses_session_bridge_codex_prewarm_allow_api_key_ids=[],
+        http_responses_session_bridge_codex_prewarm_deny_api_key_ids=[],
+        sticky_prompt_cache_max_active_large_families_per_account=2,
+        sticky_prompt_cache_large_input_bytes=1,
+    )
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings_stub)
+    monkeypatch.setattr(
+        service._load_balancer,
+        "active_large_family_count",
+        lambda account_id, exclude_key=None: 2,
+    )
+    reconnect = AsyncMock()
+    monkeypatch.setattr(service, "_reconnect_http_bridge_session", reconnect)
+
+    await service._maybe_prewarm_http_bridge_session(
+        session,
+        request_state=request_state,
+        text_data='{"model":"gpt-5.6-luna","input":"hello there this is large enough"}',
+    )
+
+    assert request_state.prewarm_status == "skipped_cache_pressure"
+    assert session.prewarmed is False
+    reconnect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_maybe_prewarm_proceeds_on_idle_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prewarm eligibility is unchanged when the account is below the
+    concentration limit (existing prewarm flow still runs)."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    session = proxy_service._HTTPBridgeSession(
+        key=proxy_service._HTTPBridgeSessionKey("session_header", "sid-idle", None),
+        headers={"x-codex-session-id": "sid-idle"},
+        affinity=proxy_service._AffinityPolicy(
+            key="sid-idle",
+            kind=proxy_service.StickySessionKind.CODEX_SESSION,
+        ),
+        request_model="gpt-5.6-luna",
+        account=cast(Any, SimpleNamespace(id="acc-idle", status=AccountStatus.ACTIVE)),
+        upstream=cast(UpstreamResponsesWebSocket, SimpleNamespace(send_text=AsyncMock(), close=AsyncMock())),
+        upstream_control=proxy_service._WebSocketUpstreamControl(),
+        pending_requests=deque(),
+        pending_lock=anyio.Lock(),
+        response_create_gate=asyncio.Semaphore(1),
+        queued_request_count=0,
+        last_used_at=1.0,
+        idle_ttl_seconds=120.0,
+        codex_session=True,
+        prewarm_lock=None,  # forces the pre-existing "skipped" path after the pressure gate
+    )
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-idle",
+        model="gpt-5.6-luna",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=1.0,
+        transport="http",
+    )
+    settings_stub = SimpleNamespace(
+        http_responses_session_bridge_codex_prewarm_enabled=True,
+        http_responses_session_bridge_codex_prewarm_canary_percent=None,
+        http_responses_session_bridge_codex_prewarm_allow_api_key_ids=[],
+        http_responses_session_bridge_codex_prewarm_deny_api_key_ids=[],
+        sticky_prompt_cache_max_active_large_families_per_account=2,
+        sticky_prompt_cache_large_input_bytes=1,
+    )
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings_stub)
+    monkeypatch.setattr(
+        service._load_balancer,
+        "active_large_family_count",
+        lambda account_id, exclude_key=None: 0,
+    )
+
+    await service._maybe_prewarm_http_bridge_session(
+        session,
+        request_state=request_state,
+        text_data='{"model":"gpt-5.6-luna","input":"hello there this is large enough"}',
+    )
+
+    # Passed the cache-pressure gate; hit the existing prewarm_lock=None skip.
+    assert request_state.prewarm_status == "skipped"

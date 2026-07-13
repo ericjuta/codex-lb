@@ -69,6 +69,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_precreated_retry_failure_error,
     _http_bridge_prewarm_canary_bucket,
     _http_bridge_request_counts_against_queue,
+    _http_bridge_request_input_size_bytes,
     _log_http_bridge_event,
     _record_http_bridge_prewarm_outcome,
     _release_http_bridge_unanchored_handoff,
@@ -386,6 +387,7 @@ class _HTTPBridgeRequestSubmitMixin:
                     slim_summary["historical_images_slimmed"],
                 )
         request_state.request_text = text_data
+        request_state.sticky_request_input_bytes = _http_bridge_request_input_size_bytes(text_data)
         _enforce_response_create_size_limit(request_state)
         return request_state, text_data
 
@@ -809,6 +811,24 @@ class _HTTPBridgeRequestSubmitMixin:
         if bucket == "control":
             request_state.prewarm_status = "canary_miss"
             _record_http_bridge_prewarm_outcome(outcome="canary_miss", cohort=reason, bucket=bucket)
+            return
+        # Cache-pressure gate: when the session's account already hosts the
+        # configured limit of recently-active large prompt-cache families,
+        # another ~100k-token prewarm would evict warm contexts belonging to
+        # other sessions without meaningfully warming this one.
+        concentration_limit = getattr(settings, "sticky_prompt_cache_max_active_large_families_per_account", 0)
+        if (
+            concentration_limit > 0
+            and _http_bridge_request_input_size_bytes(text_data)
+            >= getattr(settings, "sticky_prompt_cache_large_input_bytes", 65536)
+            and self._load_balancer.active_large_family_count(
+                session.account.id,
+                exclude_key=session.key.affinity_key,
+            )
+            >= concentration_limit
+        ):
+            request_state.prewarm_status = "skipped_cache_pressure"
+            _record_http_bridge_prewarm_outcome(outcome="skipped_cache_pressure", cohort=reason, bucket=bucket)
             return
         prewarm_lock = session.prewarm_lock
         if prewarm_lock is None:
