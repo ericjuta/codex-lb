@@ -31,7 +31,7 @@
 - [x] 4.1 `uv run ruff check` + focused pytest suites pass
 - [x] 4.2 `openspec validate --specs` passes
 - [x] 4.3 Deploy via `./update.sh`; verify new counters at `:9090/metrics`
-- [ ] 4.4 Multi-hour live check: luna `cached/input` ratio trend vs spark
+- [x] 4.4 Multi-hour live check: luna `cached/input` ratio trend vs spark
       baseline; record findings in change notes
 
 ## 5. Fleet-accurate metrics (follow-up)
