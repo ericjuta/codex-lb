@@ -73,3 +73,46 @@ def test_context_guard_skips_opaque_context(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     request_policy.enforce_context_window(payload, registry=_registry())
+
+
+def _oversized_input_items() -> list[dict[str, object]]:
+    return [{"role": "user", "content": "x" * 500_000}]
+
+
+def test_context_guard_exempts_terminal_compaction_trigger(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(request_policy, "get_settings", _settings)
+    payload = ResponsesRequest(
+        model="gpt-5.3-codex-spark",
+        instructions="",
+        input=[*_oversized_input_items(), {"type": "compaction_trigger"}],
+    )
+
+    request_policy.enforce_context_window(payload, registry=_registry())
+
+
+def test_context_guard_rejects_non_terminal_compaction_trigger(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(request_policy, "get_settings", _settings)
+    payload = ResponsesRequest(
+        model="gpt-5.3-codex-spark",
+        instructions="",
+        input=[{"type": "compaction_trigger"}, *_oversized_input_items()],
+    )
+
+    with pytest.raises(ContextWindowExceededError, match="context window"):
+        request_policy.enforce_context_window(payload, registry=_registry())
+
+
+def test_context_guard_rejects_duplicated_compaction_trigger(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(request_policy, "get_settings", _settings)
+    payload = ResponsesRequest(
+        model="gpt-5.3-codex-spark",
+        instructions="",
+        input=[
+            {"type": "compaction_trigger"},
+            *_oversized_input_items(),
+            {"type": "compaction_trigger"},
+        ],
+    )
+
+    with pytest.raises(ContextWindowExceededError, match="context window"):
+        request_policy.enforce_context_window(payload, registry=_registry())

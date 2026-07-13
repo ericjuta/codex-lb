@@ -654,6 +654,73 @@ async def test_proxy_responses_rejects_malformed_compaction_trigger(async_client
 
 
 @pytest.mark.asyncio
+async def test_proxy_responses_compaction_trigger_bypasses_context_window_guard(async_client, monkeypatch):
+    email = "compact-trigger-guard@example.com"
+    raw_account_id = "acc_compact_trigger_guard"
+    auth_json = _make_auth_json(raw_account_id, email)
+    files = {"auth_json": ("auth.json", json.dumps(auth_json), "application/json")}
+    response = await async_client.post("/api/accounts/import", files=files)
+    assert response.status_code == 200
+
+    async with SessionLocal() as session:
+        owner_account = (
+            await session.execute(select(Account).where(Account.chatgpt_account_id == raw_account_id))
+        ).scalar_one()
+
+    async def fake_select_account(self, deadline: float, **kwargs):
+        del self, deadline, kwargs
+        return proxy_module.AccountSelection(account=owner_account, error_message=None, error_code=None)
+
+    async def fake_compact(payload, headers, access_token, account_id, **kwargs):
+        del payload, headers, access_token, account_id, kwargs
+        return CompactResponsePayload.model_validate(
+            {
+                "object": "response.compaction",
+                "output": [
+                    {
+                        "id": "cmp_guard_bypass",
+                        "type": "compaction",
+                        "encrypted_content": "ENCRYPTED_CONTEXT_COMPACTION_SUMMARY",
+                    }
+                ],
+                "usage": {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
+            }
+        )
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget_compatible", fake_select_account)
+    monkeypatch.setattr(proxy_module, "core_compact_responses", fake_compact)
+
+    # gpt-5.3-codex-spark has a 128k bootstrap context window, so this inline
+    # history estimates far past the 90% guard limit. The terminal
+    # compaction_trigger marks it as remote-compaction recovery, which must
+    # bypass the guard instead of receiving 400 context_length_exceeded.
+    oversized_history = [{"role": "assistant", "content": f"chunk {index} " + "y" * 20_000} for index in range(30)]
+    payload = {
+        "model": "gpt-5.3-codex-spark",
+        "instructions": "compact this turn",
+        "input": [
+            {"role": "user", "content": "initial instructions"},
+            *oversized_history,
+            {"role": "user", "content": "latest request"},
+            {"type": "compaction_trigger"},
+        ],
+        "stream": True,
+    }
+    async with async_client.stream(
+        "POST",
+        "/backend-api/codex/responses",
+        json=payload,
+        headers={"session_id": "sid_compact_trigger_guard"},
+    ) as resp:
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    events = list(_iter_sse_events(lines))
+    assert [event["type"] for event in events] == ["response.output_item.done", "response.completed"]
+    assert events[0]["item"]["type"] == "compaction"
+
+
+@pytest.mark.asyncio
 async def test_proxy_responses_stream_surfaces_additional_quota_data_unavailable(async_client):
     email = "gated-unavailable@example.com"
     raw_account_id = "acc_gated_unavailable"

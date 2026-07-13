@@ -8934,3 +8934,44 @@ def test_backend_responses_websocket_closes_before_replaying_exposed_sequence(
     assert log_calls[0]["request_id"] == "resp_ws_sequenced_first"
     assert log_calls[0]["status"] == "error"
     assert log_calls[0]["error_code"] == "stream_incomplete"
+
+
+@pytest.mark.asyncio
+async def test_websocket_prepare_exempts_compaction_trigger_from_context_guard(async_client):
+    """Regression: the websocket prepare path runs enforce_context_window and
+    has no compaction_trigger stripping, so an oversized remote-compaction
+    recovery payload must bypass the guard instead of failing with
+    400 context_length_exceeded (openspec: exempt-compaction-from-context-guard).
+    """
+    from app.dependencies import get_proxy_service_for_app
+
+    service = get_proxy_service_for_app(async_client._transport.app)
+
+    # gpt-5.3-codex-spark's 128k bootstrap window means this inline history
+    # estimates far past the 90% guard limit.
+    oversized_history = [
+        {"role": "assistant", "content": [{"type": "output_text", "text": f"chunk {index} " + "y" * 20_000}]}
+        for index in range(30)
+    ]
+    ws_payload = {
+        "type": "response.create",
+        "model": "gpt-5.3-codex-spark",
+        "instructions": "compact this turn",
+        "input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "initial instructions"}]},
+            *oversized_history,
+            {"type": "compaction_trigger"},
+        ],
+        "stream": True,
+    }
+
+    prepared = await service._prepare_websocket_response_create_request(
+        ws_payload,
+        headers={},
+        codex_session_affinity=True,
+        openai_cache_affinity=False,
+        sticky_threads_enabled=False,
+        openai_cache_affinity_max_age_seconds=300,
+        api_key=None,
+    )
+    assert prepared is not None

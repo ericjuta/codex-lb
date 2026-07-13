@@ -108,12 +108,34 @@ def validate_model_access(api_key: ApiKeyData | None, model: str | None) -> None
 _CONTEXT_WINDOW_GUARD_RATIO = 0.9
 
 
+def _is_compaction_lane_request(payload: ResponsesRequest | ResponsesCompactRequest) -> bool:
+    """True when the final top-level input item is a single terminal compaction_trigger.
+
+    Shape rule matches strip_terminal_compaction_trigger_input, but non-mutating and
+    non-raising: malformed placements return False and fall through to the guard.
+    """
+    input_value = payload.input
+    if not is_json_list(input_value) or not input_value:
+        return False
+    trigger_indices = [
+        index
+        for index, item in enumerate(input_value)
+        if is_json_mapping(item) and item.get("type") == "compaction_trigger"
+    ]
+    return trigger_indices == [len(input_value) - 1]
+
+
 def enforce_context_window(
     payload: ResponsesRequest | ResponsesCompactRequest,
     *,
     registry: ModelRegistry | None = None,
 ) -> None:
     """Reject locally estimable requests that leave too little context headroom."""
+    if _is_compaction_lane_request(payload):
+        # Remote-compaction recovery carries the full oversized history by design;
+        # guarding it would deadlock the client against the very error it is
+        # recovering from. See openspec/changes/exempt-compaction-from-context-guard.
+        return
     estimated_tokens = estimate_responses_input_tokens(payload)
     if estimated_tokens is None:
         return
