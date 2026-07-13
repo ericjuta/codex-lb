@@ -400,6 +400,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _serialize_websocket_error_event,
     _trim_websocket_previous_response_input_items,
     _upstream_websocket_disconnect_message,
+    _websocket_anchor_delta_is_reasoning_consistent,
     _websocket_auth_failure_requires_reauth,
     _websocket_client_previous_response_full_resend_is_retry_safe,
     _websocket_connect_deadline,
@@ -1725,6 +1726,19 @@ class _WebSocketMixin:
             responses_payload=responses_payload,
             codex_session_affinity=codex_session_affinity,
         )
+        if session_anchor is not None:
+            anchor_delta_items = cast(list[JsonValue], responses_payload.input)[
+                session_anchor.stored_input_item_count :
+            ]
+            if not _websocket_anchor_delta_is_reasoning_consistent(anchor_delta_items):
+                _facade().logger.info(
+                    "websocket_session_anchor_skipped reason=reasoning_orphan response_id=%s "
+                    "original_items=%s stored_count=%s",
+                    session_anchor.previous_response_id,
+                    len(cast(list[JsonValue], responses_payload.input)),
+                    session_anchor.stored_input_item_count,
+                )
+                session_anchor = None
         if session_anchor is not None:
             original_input_items = cast(list[JsonValue], responses_payload.input)
             original_input_item_count = len(original_input_items)
@@ -3750,7 +3764,25 @@ class _WebSocketMixin:
                 surface="websocket",
             )
 
-        retry_is_previous_response_not_found = is_previous_response_not_found_event
+        is_orphaned_reasoning_recovery_event = bool(
+            request_state.proxy_injected_previous_response_id
+            and _facade()._is_orphaned_reasoning_item_error(
+                code=normalized_upstream_error_code,
+                message=error_message,
+            )
+        )
+        if is_orphaned_reasoning_recovery_event:
+            _facade().logger.info(
+                "websocket_orphaned_reasoning_recovery request_id=%s previous_response_id=%s retry_safe=%s",
+                request_state.request_id,
+                request_state.previous_response_id,
+                bool(
+                    request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text
+                ),
+            )
+        retry_is_previous_response_not_found = is_previous_response_not_found_event or (
+            is_orphaned_reasoning_recovery_event
+        )
         retry_error_code = _websocket_precreated_retry_error_code(
             request_state,
             event_type=event_type,

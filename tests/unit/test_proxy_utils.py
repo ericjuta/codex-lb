@@ -15901,6 +15901,128 @@ async def test_prepare_websocket_response_create_request_injects_anchor_for_code
     assert fresh_payload["input"] == [*historical_input, new_input]
 
 
+def test_websocket_anchor_delta_reasoning_consistency_rules():
+    consistent_delta: list[JsonValue] = [
+        {"type": "custom_tool_call_output", "call_id": "call_1", "output": "ok"},
+        {"role": "user", "content": [{"type": "input_text", "text": "next"}]},
+    ]
+    assert websocket_mixin._websocket_anchor_delta_is_reasoning_consistent(consistent_delta) is True
+    assert websocket_mixin._websocket_anchor_delta_is_reasoning_consistent([]) is True
+
+    orphaned_message_delta: list[JsonValue] = [
+        {"type": "message", "role": "assistant", "id": "msg_orphan", "content": []},
+        {"type": "custom_tool_call_output", "call_id": "call_1", "output": "ok"},
+    ]
+    assert websocket_mixin._websocket_anchor_delta_is_reasoning_consistent(orphaned_message_delta) is False
+
+    reasoning_tail_delta: list[JsonValue] = [
+        {"type": "reasoning", "id": "rs_tail", "summary": []},
+    ]
+    assert websocket_mixin._websocket_anchor_delta_is_reasoning_consistent(reasoning_tail_delta) is False
+
+    user_message_delta: list[JsonValue] = [
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+    ]
+    assert websocket_mixin._websocket_anchor_delta_is_reasoning_consistent(user_message_delta) is True
+
+
+def test_is_orphaned_reasoning_item_error_classifier():
+    orphan_message = (
+        "Item 'msg_0d1f4d40' of type 'message' was provided without its required "
+        "'reasoning' item: 'rs_0d1f4d40'."
+    )
+    assert proxy_service._is_orphaned_reasoning_item_error(
+        code="invalid_request_error",
+        message=orphan_message,
+    )
+    assert not proxy_service._is_orphaned_reasoning_item_error(
+        code="server_error",
+        message=orphan_message,
+    )
+    assert not proxy_service._is_orphaned_reasoning_item_error(
+        code="invalid_request_error",
+        message="Previous response not found.",
+    )
+    assert not proxy_service._is_orphaned_reasoning_item_error(
+        code="invalid_request_error",
+        message=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepare_websocket_response_create_request_skips_anchor_when_delta_orphans_reasoning(
+    monkeypatch,
+):
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    reserve_usage = AsyncMock(return_value=None)
+    api_key = ApiKeyData(
+        id="key_ws_orphan_guard",
+        name="ws-orphan-guard",
+        key_prefix="sk-ws-orphan",
+        allowed_models=["gpt-5.1"],
+        enforced_model=None,
+        enforced_reasoning_effort=None,
+        enforced_service_tier=None,
+        expires_at=None,
+        is_active=True,
+        created_at=utcnow(),
+        last_used_at=None,
+    )
+
+    class Settings:
+        log_proxy_request_payload = False
+        log_proxy_request_shape = False
+        log_proxy_request_shape_raw_cache_key = False
+        log_proxy_service_tier_trace = False
+        openai_prompt_cache_key_derivation_enabled = True
+
+    historical_input: list[JsonValue] = [
+        {"role": "user", "content": [{"type": "input_text", "text": "old question"}]},
+        {"type": "function_call", "name": "shell_command", "call_id": "call_old", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "call_old", "output": "old output"},
+    ]
+    # The stored prefix boundary lands between the assistant message and the
+    # rest of the replay: the delta starts with an assistant message whose
+    # paired reasoning item is on the other side of the boundary.
+    orphan_delta: list[JsonValue] = [
+        {"type": "message", "role": "assistant", "id": "msg_orphan", "content": []},
+        {"role": "user", "content": [{"type": "input_text", "text": "next question"}]},
+    ]
+    continuity_state = proxy_service._WebSocketContinuityState(
+        last_completed_input_count=len(historical_input),
+        last_completed_response_id="resp_completed_anchor",
+        last_completed_input_prefix_fingerprint=proxy_service._fingerprint_input_items(historical_input),
+    )
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: Settings())
+    monkeypatch.setattr(service, "_reserve_websocket_api_key_usage", reserve_usage)
+    monkeypatch.setattr(service, "_refresh_websocket_api_key_policy", AsyncMock(return_value=api_key))
+
+    prepared = await service._prepare_websocket_response_create_request(
+        cast(
+            dict[str, JsonValue],
+            {
+                "type": "response.create",
+                "model": "gpt-5.1",
+                "input": [*historical_input, *orphan_delta],
+            },
+        ),
+        headers={"session_id": "turn_ws_orphan_guard"},
+        codex_session_affinity=True,
+        openai_cache_affinity=True,
+        sticky_threads_enabled=False,
+        openai_cache_affinity_max_age_seconds=300,
+        api_key=api_key,
+        continuity_state=continuity_state,
+    )
+
+    upstream_payload = json.loads(prepared.text_data)
+    assert "previous_response_id" not in upstream_payload
+    assert upstream_payload["input"] == [*historical_input, *orphan_delta]
+    assert prepared.request_state.proxy_injected_previous_response_id is False
+
+
 @pytest.mark.asyncio
 async def test_prepare_websocket_response_create_request_does_not_fresh_retry_injected_tool_output_delta(
     monkeypatch,

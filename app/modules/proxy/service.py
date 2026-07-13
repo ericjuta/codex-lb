@@ -2116,6 +2116,25 @@ def _is_previous_response_not_found_error(
     return is_previous_response_not_found_error(code=code, param=param, message=message)
 
 
+def _is_orphaned_reasoning_item_error(
+    *,
+    code: str | None,
+    message: str | None,
+) -> bool:
+    """Match the upstream 400 for an anchored delta that orphans a reasoning item.
+
+    Upstream rejects a ``previous_response_id`` turn whose input carries an
+    assistant output item without its paired ``reasoning`` item using
+    ``invalid_request_error`` and a message shaped like "Item 'msg_...' of type
+    'message' was provided without its required 'reasoning' item: 'rs_...'".
+    """
+    if code != "invalid_request_error":
+        return False
+    if not message:
+        return False
+    return "without its required 'reasoning' item" in message
+
+
 def _compact_previous_response_not_found_error(exc: ProxyResponseError) -> ProxyResponseError | None:
     error = _parse_openai_error(exc.payload)
     if error is None:
