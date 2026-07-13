@@ -250,6 +250,10 @@ class Settings(BaseSettings):
     prompt_cache_canary_model_uncached_tokens_thresholds: dict[str, int] = Field(default_factory=dict)
     # Display-only pagination total for the request-log listing; 0 disables.
     request_log_count_cache_ttl_seconds: float = Field(default=30.0, ge=0)
+    # Data retention (0 = disabled). Non-zero values have safety floors so
+    # every in-product consumer window stays inside retained data.
+    request_log_retention_days: int = Field(default=0, ge=0, le=3650)
+    usage_history_retention_days: int = Field(default=0, ge=0, le=3650)
     quota_planner_scheduler_enabled: bool = True
     quota_planner_tick_seconds: int = Field(default=300, gt=0)
     automations_scheduler_enabled: bool = True
@@ -367,6 +371,20 @@ class Settings(BaseSettings):
     # HTTP connector limits
     http_connector_limit: int = 200
     http_connector_limit_per_host: int = 100
+
+    @field_validator("request_log_retention_days")
+    @classmethod
+    def _validate_request_log_retention(cls, value: int) -> int:
+        if value != 0 and value < 30:
+            raise ValueError("request_log_retention_days must be 0 (disabled) or >= 30")
+        return value
+
+    @field_validator("usage_history_retention_days")
+    @classmethod
+    def _validate_usage_history_retention(cls, value: int) -> int:
+        if value != 0 and value < 45:
+            raise ValueError("usage_history_retention_days must be 0 (disabled) or >= 45")
+        return value
 
     @field_validator("data_dir", mode="before")
     @classmethod
