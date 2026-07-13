@@ -71,6 +71,7 @@ async def _invoke_stickiness(
     sticky_kind: StickySessionKind = StickySessionKind.PROMPT_CACHE,
     reallocate_sticky: bool = False,
     sticky_max_age_seconds: int | None = 600,
+    excluded_account_ids: set[str] | None = None,
     budget_threshold_pct: float = 95.0,
     secondary_budget_threshold_pct: float = 100.0,
     routing_strategy: RoutingStrategy = "usage_weighted",
@@ -98,6 +99,7 @@ async def _invoke_stickiness(
         sticky_kind=sticky_kind,
         reallocate_sticky=reallocate_sticky,
         sticky_max_age_seconds=sticky_max_age_seconds,
+        excluded_account_ids=excluded_account_ids,
         budget_threshold_pct=budget_threshold_pct,
         secondary_budget_threshold_pct=secondary_budget_threshold_pct,
         prefer_earlier_reset_accounts=False,
@@ -237,6 +239,72 @@ async def test_sticky_deleted_when_pinned_account_removed_from_pool():
     repo.upsert.assert_called_once_with("key1", "b", kind=StickySessionKind.PROMPT_CACHE)
 
 
+@pytest.mark.asyncio
+async def test_excluded_pinned_account_preserves_prompt_cache_mapping():
+    """When the pinned account is absent from the pool only because it is
+    excluded for this request (transport failover), the mapping is preserved:
+    no delete, no fallback persistence."""
+    acc_b = _active("b")
+    repo = _make_sticky_repo(existing_account_id="a")
+
+    result = await _invoke_stickiness(
+        [acc_b],
+        "key1",
+        repo,
+        reallocate_sticky=True,
+        excluded_account_ids={"a"},
+    )
+
+    assert result.account is not None
+    assert result.account.account_id == "b"
+    repo.delete.assert_not_called()
+    repo.upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_excluded_pinned_account_preserves_codex_session_mapping():
+    """Durable codex_session mappings also survive per-request exclusion so a
+    session re-homes to its original account once the transient failure
+    clears."""
+    acc_b = _active("b")
+    repo = _make_sticky_repo(existing_account_id="a")
+
+    result = await _invoke_stickiness(
+        [acc_b],
+        "session_123",
+        repo,
+        sticky_kind=StickySessionKind.CODEX_SESSION,
+        sticky_max_age_seconds=None,
+        reallocate_sticky=True,
+        excluded_account_ids={"a"},
+    )
+
+    assert result.account is not None
+    assert result.account.account_id == "b"
+    repo.delete.assert_not_called()
+    repo.upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_removed_pinned_account_still_deletes_despite_other_exclusions():
+    """Exclusion-preservation only applies when the pinned account itself is
+    excluded; a genuinely removed account still gets its mapping deleted."""
+    acc_b = _active("b")
+    repo = _make_sticky_repo(existing_account_id="a")
+
+    result = await _invoke_stickiness(
+        [acc_b],
+        "key1",
+        repo,
+        excluded_account_ids={"c"},
+    )
+
+    assert result.account is not None
+    assert result.account.account_id == "b"
+    repo.delete.assert_called_once_with("key1", kind=StickySessionKind.PROMPT_CACHE)
+    repo.upsert.assert_called_once_with("key1", "b", kind=StickySessionKind.PROMPT_CACHE)
+
+
 # ---------------------------------------------------------------------------
 # Pool exhaustion guard — prevent thrashing when all accounts are depleted
 # ---------------------------------------------------------------------------
@@ -260,6 +328,54 @@ async def test_all_accounts_exhausted_keeps_pinned_no_thrashing():
     assert result.account.account_id == "a"
     repo.delete.assert_not_called()
     repo.upsert.assert_called_once_with("key1", "a", kind=StickySessionKind.PROMPT_CACHE)
+
+
+# ---------------------------------------------------------------------------
+# Sticky selection outcome metric
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sticky_selection_outcomes_recorded(monkeypatch):
+    """Each selection path records its outcome: hit, fallback, rebind, new."""
+    from app.modules.proxy import load_balancer as lb_module
+
+    outcomes: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        lb_module,
+        "_record_sticky_selection",
+        lambda kind, outcome: outcomes.append((kind.value, outcome)),
+    )
+
+    # hit: pinned account healthy and selected
+    repo = _make_sticky_repo(existing_account_id="a")
+    await _invoke_stickiness([_active("a"), _active("b")], "key1", repo)
+    assert outcomes.pop() == ("prompt_cache", "hit")
+
+    # fallback: pinned excluded for this request, mapping preserved
+    repo = _make_sticky_repo(existing_account_id="a")
+    await _invoke_stickiness(
+        [_active("b")],
+        "key1",
+        repo,
+        reallocate_sticky=True,
+        excluded_account_ids={"a"},
+    )
+    assert outcomes.pop() == ("prompt_cache", "fallback")
+
+    # rebind: pinned account left the pool; fallback persisted over mapping
+    repo = _make_sticky_repo(existing_account_id="a")
+    await _invoke_stickiness(
+        [_active("b")],
+        "key1",
+        repo,
+    )
+    assert outcomes.pop()[1] == "rebind"
+
+    # new: no prior mapping
+    repo = _make_sticky_repo(existing_account_id=None)
+    await _invoke_stickiness([_active("a")], "key1", repo)
+    assert outcomes.pop() == ("prompt_cache", "new")
 
 
 @pytest.mark.asyncio

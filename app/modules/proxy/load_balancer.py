@@ -44,6 +44,7 @@ from app.core.metrics.prometheus import (
     account_lease_released_total,
     account_lease_stale_reclaimed_total,
     drain_transitions_total,
+    sticky_selection_total,
 )
 from app.core.openai.model_registry import get_model_registry
 from app.core.plan_types import account_plan_matches_allowed, normalize_account_plan_type
@@ -666,6 +667,7 @@ class LoadBalancer:
                             sticky_kind=sticky_kind,
                             reallocate_sticky=reallocate_sticky,
                             sticky_max_age_seconds=sticky_max_age_seconds,
+                            excluded_account_ids=excluded_ids,
                             budget_threshold_pct=budget_threshold_pct,
                             secondary_budget_threshold_pct=secondary_budget_threshold_pct,
                             prefer_earlier_reset_accounts=prefer_earlier_reset_accounts,
@@ -1242,6 +1244,7 @@ class LoadBalancer:
         sticky_kind: StickySessionKind | None,
         reallocate_sticky: bool,
         sticky_max_age_seconds: int | None,
+        excluded_account_ids: Collection[str] | None = None,
         budget_threshold_pct: float = 95.0,
         secondary_budget_threshold_pct: float = 100.0,
         prefer_earlier_reset_accounts: bool,
@@ -1354,6 +1357,7 @@ class LoadBalancer:
                     if pinned_result.account is not None:
                         if sticky_max_age_seconds is not None:
                             await sticky_repo.upsert(sticky_key, pinned.account_id, kind=sticky_kind)
+                        _record_sticky_selection(sticky_kind, "hit")
                         return pinned_result
                 else:
                     # Reallocate only when a burn-first target exists and can
@@ -1409,6 +1413,7 @@ class LoadBalancer:
                                         pinned.account_id,
                                         kind=sticky_kind,
                                     )
+                                _record_sticky_selection(sticky_kind, "hit")
                                 return pinned_result
                     reallocate_sticky = True
                 # Grace period: if the pinned account is rate-limited with a
@@ -1435,6 +1440,7 @@ class LoadBalancer:
                     if grace_result.account is not None:
                         if sticky_max_age_seconds is not None:
                             await sticky_repo.upsert(sticky_key, pinned.account_id, kind=sticky_kind)
+                        _record_sticky_selection(sticky_kind, "hit")
                         return grace_result
                 if reallocate_sticky:
                     await sticky_repo.delete(sticky_key, kind=sticky_kind)
@@ -1452,7 +1458,17 @@ class LoadBalancer:
                 # fallback so the session sticks to one account during
                 # the outage instead of bouncing across random fallbacks.
             else:
-                await sticky_repo.delete(sticky_key, kind=sticky_kind)
+                if excluded_account_ids and existing in excluded_account_ids:
+                    # The pinned account is still in the pool but excluded for
+                    # this request only (transport failover). Per-request
+                    # exclusion must not mutate sticky state: serve this
+                    # request from a fallback and keep the mapping so
+                    # subsequent requests return to the warm account.
+                    persist_fallback = False
+                else:
+                    # The pinned account left the pool (deleted or out of
+                    # scope): the mapping is stale.
+                    await sticky_repo.delete(sticky_key, kind=sticky_kind)
 
         chosen = _select_account_preferring_budget_safe(
             states,
@@ -1470,6 +1486,15 @@ class LoadBalancer:
         )
         if persist_fallback and chosen.account is not None and chosen.account.account_id in account_map:
             await sticky_repo.upsert(sticky_key, chosen.account.account_id, kind=sticky_kind)
+        if chosen.account is not None:
+            if existing and chosen.account.account_id == existing:
+                _record_sticky_selection(sticky_kind, "hit")
+            elif not persist_fallback:
+                _record_sticky_selection(sticky_kind, "fallback")
+            elif existing:
+                _record_sticky_selection(sticky_kind, "rebind")
+            else:
+                _record_sticky_selection(sticky_kind, "new")
         return chosen
 
     async def mark_rate_limit(self, account: Account, error: UpstreamError) -> None:
@@ -1824,6 +1849,11 @@ def _record_account_cap_rejection(kind: AccountLeaseKind | None) -> None:
         return
     if PROMETHEUS_AVAILABLE and account_cap_rejections_total is not None:
         account_cap_rejections_total.labels(kind=kind).inc()
+
+
+def _record_sticky_selection(kind: StickySessionKind, outcome: str) -> None:
+    if PROMETHEUS_AVAILABLE and sticky_selection_total is not None:
+        sticky_selection_total.labels(kind=kind.value, outcome=outcome).inc()
 
 
 def _normalize_account_routing_policy(value: str | None) -> str:

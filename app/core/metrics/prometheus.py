@@ -231,6 +231,12 @@ if PROMETHEUS_AVAILABLE:
         ["kind"],
         registry=REGISTRY,
     )
+    sticky_selection_total = Counter(
+        "codex_lb_sticky_selection_total",
+        "Total sticky-session selection outcomes by kind and outcome",
+        ["kind", "outcome"],
+        registry=REGISTRY,
+    )
     failover_total = Counter(
         "codex_lb_failover_total",
         "Total pre-commit failover decisions",
@@ -329,6 +335,7 @@ else:
     account_lease_released_total: CounterLike | None = None
     account_lease_stale_reclaimed_total: CounterLike | None = None
     account_cap_rejections_total: CounterLike | None = None
+    sticky_selection_total: CounterLike | None = None
     failover_total: CounterLike | None = None
     drain_transitions_total: CounterLike | None = None
     client_exposed_errors_total: CounterLike | None = None
@@ -387,6 +394,7 @@ __all__ = [
     "request_duration_seconds",
     "requests_total",
     "service_tier_mismatch_total",
+    "sticky_selection_total",
     "sqlite_lock_retries_total",
     "upstream_request_duration_seconds",
     "upstream_requests_total",
