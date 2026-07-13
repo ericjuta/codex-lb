@@ -302,6 +302,27 @@ if PROMETHEUS_AVAILABLE:
         ["reason", "affinity_kind", "model_class"],
         registry=REGISTRY,
     )
+    stream_first_event_seconds = Histogram(
+        "codex_lb_stream_first_event_seconds",
+        "Seconds from upstream stream initiation to first upstream SSE event",
+        ["transport", "model"],
+        buckets=(0.5, 1, 2, 4, 8, 15, 30, 60, 120),
+        registry=REGISTRY,
+    )
+    stream_first_token_seconds = Histogram(
+        "codex_lb_stream_first_token_seconds",
+        "Seconds from upstream stream initiation to first text-delta event",
+        ["transport", "model"],
+        buckets=(0.5, 1, 2, 4, 8, 15, 30, 60, 120),
+        registry=REGISTRY,
+    )
+    prompt_cache_ratio = Gauge(
+        "codex_lb_prompt_cache_ratio",
+        "Rolling prompt-cache hit ratio (cached input / input tokens) per model",
+        ["model"],
+        multiprocess_mode="mostrecent" if MULTIPROCESS_MODE else "all",
+        registry=REGISTRY,
+    )
 
     def make_scrape_registry() -> CollectorRegistryLike:
         if MULTIPROCESS_MODE:
@@ -363,6 +384,9 @@ else:
     proxy_phase_latency_seconds: HistogramLike | None = None
     http_bridge_prewarm_total: CounterLike | None = None
     http_bridge_stuck_retire_total: CounterLike | None = None
+    stream_first_event_seconds: HistogramLike | None = None
+    stream_first_token_seconds: HistogramLike | None = None
+    prompt_cache_ratio: GaugeLike | None = None
 
     def make_scrape_registry() -> None:
         return None
@@ -416,6 +440,9 @@ __all__ = [
     "requests_total",
     "service_tier_mismatch_total",
     "sticky_selection_total",
+    "stream_first_event_seconds",
+    "stream_first_token_seconds",
+    "prompt_cache_ratio",
     "sqlite_lock_retries_total",
     "upstream_request_duration_seconds",
     "upstream_requests_total",

@@ -46,6 +46,7 @@ class ActivityMetricsSummary:
     requests: int | None
     tokens: int | None
     cached_input_tokens: int | None = None
+    input_tokens: int | None = None
     error_rate: float | None = None
     error_count: int | None = None
     top_error: str | None = None
@@ -95,6 +96,7 @@ def build_trends_from_buckets(
     total_requests = 0
     total_errors = 0
     total_tokens = 0
+    total_input_tokens = 0
     total_cached_tokens = 0
     total_cost_usd = 0.0
 
@@ -111,6 +113,7 @@ def build_trends_from_buckets(
         total_requests += row.request_count
         total_errors += row.error_count
         total_tokens += row.input_tokens + row.output_tokens
+        total_input_tokens += row.input_tokens
         total_cached_tokens += row.cached_input_tokens
         total_cost_usd += float(row.cost_usd)
 
@@ -148,6 +151,7 @@ def build_trends_from_buckets(
         requests=total_requests,
         tokens=total_tokens,
         cached_input_tokens=total_cached_tokens,
+        input_tokens=total_input_tokens,
         error_rate=error_rate_total,
         error_count=total_errors,
         top_error=top_error,
@@ -180,6 +184,7 @@ def build_activity_summaries(
             requests=total_requests,
             tokens=total_tokens,
             cached_input_tokens=aggregate.cached_input_tokens,
+            input_tokens=aggregate.input_tokens,
             error_rate=error_rate,
             error_count=aggregate.error_count,
             top_error=top_error,

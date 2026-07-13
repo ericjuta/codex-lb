@@ -28,6 +28,7 @@ class DashboardUsageMetrics(DashboardModel):
     requests: int | None = None
     tokens: int | None = None
     cached_input_tokens: int | None = Field(default=None, alias="cachedInputTokens")
+    input_tokens: int | None = Field(default=None, alias="inputTokens")
     error_rate: float | None = Field(default=None, alias="errorRate")
     error_count: int | None = Field(default=None, alias="errorCount")
     top_error: str | None = None

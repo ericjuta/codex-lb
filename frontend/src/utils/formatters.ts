@@ -185,13 +185,19 @@ export function formatTokensWithCached(totalTokens: unknown, cachedInputTokens: 
   return `${formatCompactNumber(total)} (${formatCompactNumber(cached)} Cached)`;
 }
 
-export function formatCachedTokensMeta(totalTokens: unknown, cachedInputTokens: unknown): string {
+export function formatCachedTokensMeta(
+  totalTokens: unknown,
+  cachedInputTokens: unknown,
+  inputTokens?: unknown,
+): string {
   const total = toNumber(totalTokens);
   const cached = toNumber(cachedInputTokens);
   if (total === null || total <= 0 || cached === null || cached <= 0) {
     return "Cached: --";
   }
-  const percent = Math.min(100, Math.max(0, (cached / total) * 100));
+  const input = toNumber(inputTokens);
+  const denominator = input !== null && input > 0 ? input : total;
+  const percent = Math.min(100, Math.max(0, (cached / denominator) * 100));
   return `Cached: ${formatCompactNumber(cached)} (${Math.round(percent)}%)`;
 }
 

@@ -794,7 +794,7 @@ export function buildDashboardView(
     {
       label: `Tokens (${timeframeLabel})`,
       value: formatCompactNumber(metrics?.tokens ?? 0),
-      meta: formatCachedTokensMeta(metrics?.tokens, metrics?.cachedInputTokens),
+      meta: formatCachedTokensMeta(metrics?.tokens, metrics?.cachedInputTokens, metrics?.inputTokens),
       comparison: buildStatComparison(metrics?.tokens, comparison?.previous.tokens ?? 0, canCompare),
       icon: Coins,
       trend: trendPointsToValues(trends.tokens),

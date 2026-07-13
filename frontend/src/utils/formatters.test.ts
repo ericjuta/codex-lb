@@ -92,6 +92,9 @@ describe("formatters", () => {
     expect(formatTokensWithCached(1234, 0)).not.toContain("Cached");
     expect(formatCachedTokensMeta(1000, 250)).toBe("Cached: 250 (25%)");
     expect(formatCachedTokensMeta(0, 250)).toBe("Cached: --");
+    expect(formatCachedTokensMeta(1000, 250, 500)).toBe("Cached: 250 (50%)");
+    expect(formatCachedTokensMeta(1000, 250, null)).toBe("Cached: 250 (25%)");
+    expect(formatCachedTokensMeta(1000, 250, 0)).toBe("Cached: 250 (25%)");
   });
 
   it("formats model and datetime labels", () => {

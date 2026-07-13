@@ -515,6 +515,7 @@ class _StreamingMixin(_StreamingRetryMixin):
         saw_text_delta = False
         terminal_event_seen = False
         latency_first_token_ms: int | None = None
+        latency_first_upstream_event_ms: int | None = None
         if tool_call_dedupe is None:
             tool_call_dedupe = _WebSocketUpstreamControl()
         suppressed_duplicate_tool_call = False
@@ -620,6 +621,7 @@ class _StreamingMixin(_StreamingRetryMixin):
             response_create_lease.release()
             await proxy._load_balancer.release_account_lease(account_response_create_lease)
             account_response_create_lease = None
+            latency_first_upstream_event_ms = int((time.monotonic() - request_started_at) * 1000)
             first_payload = parse_sse_data_json(first)
             event = parse_sse_event(first)
             event_type = _event_type_from_payload(event, first_payload)
@@ -1075,6 +1077,7 @@ class _StreamingMixin(_StreamingRetryMixin):
                 requested_service_tier=requested_service_tier,
                 actual_service_tier=actual_service_tier,
                 latency_first_token_ms=latency_first_token_ms,
+                latency_first_upstream_event_ms=latency_first_upstream_event_ms,
                 session_id=session_id,
                 failure_phase=failure_metadata.failure_phase,
                 failure_detail=failure_metadata.failure_detail,

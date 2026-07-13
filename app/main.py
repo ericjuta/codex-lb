@@ -70,6 +70,7 @@ from app.modules.quota_planner.scheduler import build_quota_planner_scheduler
 from app.modules.rate_limit_reset_credits import api as rate_limit_reset_credits_api
 from app.modules.reports import api as reports_api
 from app.modules.request_logs import api as request_logs_api
+from app.modules.request_logs.prompt_cache_canary import build_prompt_cache_canary_scheduler
 from app.modules.runtime import api as runtime_api
 from app.modules.settings import api as settings_api
 from app.modules.sticky_sessions import api as sticky_sessions_api
@@ -158,6 +159,7 @@ async def lifespan(app: FastAPI):
     auth_guardian_scheduler = build_auth_guardian_scheduler()
     automations_scheduler = build_automations_scheduler()
     rate_limit_reset_credits_scheduler = build_rate_limit_reset_credits_scheduler()
+    prompt_cache_canary_scheduler = build_prompt_cache_canary_scheduler()
     await usage_scheduler.start()
     await api_key_limit_reset_scheduler.start()
     await model_scheduler.start()
@@ -166,6 +168,7 @@ async def lifespan(app: FastAPI):
     await auth_guardian_scheduler.start()
     await automations_scheduler.start()
     await rate_limit_reset_credits_scheduler.start()
+    await prompt_cache_canary_scheduler.start()
     if settings.metrics_enabled and PROMETHEUS_AVAILABLE:
         import uvicorn
 
@@ -328,6 +331,7 @@ async def lifespan(app: FastAPI):
         await api_key_limit_reset_scheduler.stop()
         await usage_scheduler.stop()
         await rate_limit_reset_credits_scheduler.stop()
+        await prompt_cache_canary_scheduler.stop()
         try:
             await close_http_client()
         finally:

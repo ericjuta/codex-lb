@@ -12,6 +12,8 @@ from app.core.metrics.prometheus import (
     prompt_cache_cached_tokens_total,
     prompt_cache_input_tokens_total,
     proxy_phase_latency_seconds,
+    stream_first_event_seconds,
+    stream_first_token_seconds,
 )
 from app.modules.api_keys.service import ApiKeyData
 from app.modules.proxy.affinity import _extract_model_class
@@ -42,6 +44,25 @@ def _record_proxy_phase_latency(
         upstream_transport=upstream_transport or "unknown",
         model_class=_extract_model_class(model) if model else "unknown",
     ).observe(latency_ms / 1000.0)
+
+
+def _record_stream_first_latency(
+    *,
+    kind: str,
+    elapsed_seconds: float,
+    transport: str | None,
+    model: str | None,
+) -> None:
+    """Record TTFT-split histograms; kind is "first_event" or "first_token"."""
+    if elapsed_seconds < 0:
+        return
+    metric = stream_first_event_seconds if kind == "first_event" else stream_first_token_seconds
+    if not PROMETHEUS_AVAILABLE or metric is None:
+        return
+    metric.labels(
+        transport=transport or "unknown",
+        model=model or "unknown",
+    ).observe(elapsed_seconds)
 
 
 def _record_prompt_cache_usage(
@@ -176,6 +197,20 @@ class _RequestLogMixin:
             input_tokens=input_tokens,
             cached_input_tokens=cached_input_tokens,
         )
+        if latency_first_upstream_event_ms is not None:
+            _record_stream_first_latency(
+                kind="first_event",
+                elapsed_seconds=latency_first_upstream_event_ms / 1000.0,
+                transport=upstream_transport or transport,
+                model=model,
+            )
+        if latency_first_token_ms is not None:
+            _record_stream_first_latency(
+                kind="first_token",
+                elapsed_seconds=latency_first_token_ms / 1000.0,
+                transport=upstream_transport or transport,
+                model=model,
+            )
         task = asyncio.create_task(
             self._persist_request_log(
                 account_id=account_id,

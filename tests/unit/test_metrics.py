@@ -29,11 +29,21 @@ class _MetricChild:
 
 
 class _MetricBase:
-    def __init__(self, name: str, documentation: str, labelnames: list[str] | None = None, registry=None) -> None:
+    def __init__(
+        self,
+        name: str,
+        documentation: str,
+        labelnames: list[str] | None = None,
+        registry=None,
+        buckets: tuple[float, ...] | None = None,
+        multiprocess_mode: str | None = None,
+    ) -> None:
         self.name = name
         self.documentation = documentation
         self.labelnames = tuple(labelnames or [])
         self.registry = registry
+        self.buckets = buckets
+        self.multiprocess_mode = multiprocess_mode
         self.samples: dict[tuple[tuple[str, str], ...], _MetricChild] = {}
         self.root = _MetricChild()
 
