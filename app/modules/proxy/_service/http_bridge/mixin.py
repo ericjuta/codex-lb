@@ -369,6 +369,7 @@ class _HTTPBridgeMixin(
         preferred_account_id: str | None = None,
         fallback_on_preferred_account_unavailable: bool = True,
         request_usage_budget: ApiKeyRequestUsageBudget | None = None,
+        sticky_request_input_bytes: int | None = None,
         request_deadline: float | None = None,
         session_header_fallback_key: "_HTTPBridgeSessionKey | None" = None,
     ) -> "_HTTPBridgeSession": ...
@@ -399,6 +400,7 @@ class _HTTPBridgeMixin(
         preferred_account_id: str | None = None,
         fallback_on_preferred_account_unavailable: bool = True,
         request_usage_budget: ApiKeyRequestUsageBudget | None = None,
+        sticky_request_input_bytes: int | None = None,
         request_deadline: float | None = None,
         session_header_fallback_key: "_HTTPBridgeSessionKey | None" = None,
     ) -> "_HTTPBridgeSession | _HTTPBridgeOwnerForward": ...
@@ -428,6 +430,7 @@ class _HTTPBridgeMixin(
         preferred_account_id: str | None = None,
         fallback_on_preferred_account_unavailable: bool = True,
         request_usage_budget: ApiKeyRequestUsageBudget | None = None,
+        sticky_request_input_bytes: int | None = None,
         request_deadline: float | None = None,
         session_header_fallback_key: "_HTTPBridgeSessionKey | None" = None,
     ) -> "_HTTPBridgeSession | _HTTPBridgeOwnerForward":
@@ -1386,6 +1389,7 @@ class _HTTPBridgeMixin(
                         fallback_on_preferred_account_unavailable and not require_preferred_account
                     ),
                     "request_usage_budget": request_usage_budget,
+                    "sticky_request_input_bytes": sticky_request_input_bytes,
                     "request_deadline": request_deadline,
                 }
                 try:
@@ -1397,7 +1401,12 @@ class _HTTPBridgeMixin(
                     for parameter in create_signature.parameters.values()
                 )
                 if create_signature is not None and not create_accepts_var_keyword:
-                    for optional_kwarg in ("request_service_tier", "request_usage_budget", "request_deadline"):
+                    for optional_kwarg in (
+                        "request_service_tier",
+                        "request_usage_budget",
+                        "sticky_request_input_bytes",
+                        "request_deadline",
+                    ):
                         if optional_kwarg not in create_signature.parameters:
                             create_kwargs.pop(optional_kwarg, None)
                 created_session = await create_session(key, **create_kwargs)
@@ -1846,6 +1855,7 @@ class _HTTPBridgeMixin(
         require_preferred_account: bool = False,
         fallback_on_preferred_account_unavailable: bool = True,
         request_usage_budget: ApiKeyRequestUsageBudget | None = None,
+        sticky_request_input_bytes: int | None = None,
         request_deadline: float | None = None,
     ) -> "_HTTPBridgeSession":
         request_state = _WebSocketRequestState(
@@ -1889,6 +1899,7 @@ class _HTTPBridgeMixin(
                 "preferred_account_id": preferred_candidate_id,
                 "lease_kind": "stream",
                 "estimated_lease_tokens": _estimated_lease_tokens_from_request_usage_budget(request_usage_budget),
+                "sticky_request_input_bytes": sticky_request_input_bytes,
                 "fallback_on_preferred_account_unavailable": fallback_on_preferred_account_unavailable,
             }
             selection = await self._select_account_with_budget_for_stream(deadline, **select_kwargs)
@@ -2227,6 +2238,7 @@ class _HTTPBridgeMixin(
                 estimated_lease_tokens=_estimated_lease_tokens_from_request_usage_budget(
                     request_state.request_usage_budget
                 ),
+                sticky_request_input_bytes=request_state.sticky_request_input_bytes,
                 fallback_on_preferred_account_unavailable=(
                     not reuse_current_account_lease
                     and not hard_close_account_bound

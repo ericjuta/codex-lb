@@ -237,6 +237,9 @@ class Settings(BaseSettings):
     sticky_session_cleanup_enabled: bool = True
     sticky_session_cleanup_interval_seconds: int = Field(default=300, gt=0)
     sticky_codex_session_retention_days: int = Field(default=30, ge=0)
+    sticky_prompt_cache_max_active_large_families_per_account: int = Field(default=2, ge=0)
+    sticky_prompt_cache_activity_window_seconds: int = Field(default=300, gt=0)
+    sticky_prompt_cache_large_input_bytes: int = Field(default=65536, gt=0)
     quota_planner_scheduler_enabled: bool = True
     quota_planner_tick_seconds: int = Field(default=300, gt=0)
     automations_scheduler_enabled: bool = True

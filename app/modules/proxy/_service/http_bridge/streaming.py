@@ -978,6 +978,7 @@ class _HTTPBridgeStreamingMixin:
                     preferred_account_id=request_state.preferred_account_id,
                     fallback_on_preferred_account_unavailable=not file_required_preferred_account,
                     request_usage_budget=request_state.request_usage_budget,
+                    sticky_request_input_bytes=request_state.sticky_request_input_bytes,
                     request_deadline=request_deadline,
                     session_header_fallback_key=session_header_fallback_key,
                 )
@@ -1149,6 +1150,7 @@ class _HTTPBridgeStreamingMixin:
                             ),
                             preferred_account_id=request_state.preferred_account_id,
                             request_usage_budget=request_state.request_usage_budget,
+                            sticky_request_input_bytes=request_state.sticky_request_input_bytes,
                             session_header_fallback_key=session_header_fallback_key,
                             request_deadline=request_deadline,
                         )
@@ -1513,6 +1515,7 @@ class _HTTPBridgeStreamingMixin:
                             request_stage=request_state.request_stage,
                             preferred_account_id=None,
                             request_usage_budget=request_state.request_usage_budget,
+                            sticky_request_input_bytes=request_state.sticky_request_input_bytes,
                             request_deadline=request_deadline,
                         )
                     except ProxyResponseError as capacity_exc:

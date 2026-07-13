@@ -182,6 +182,26 @@ class LoadBalancer:
         self._account_locks: dict[str, asyncio.Lock] = {}
         self._account_locks_registry_lock = asyncio.Lock()
         self._selection_inputs_cache = get_account_selection_cache()
+        # account_id -> {sticky_key: last_seen_monotonic-ish wall time}. Tracks
+        # recently-active large prompt-cache families for concentration-aware
+        # placement (cache-shard pressure), best-effort and in-memory only.
+        self._sticky_large_activity: dict[str, dict[str, float]] = {}
+
+    def _note_sticky_large_activity(self, account_id: str, sticky_key: str, input_bytes: int | None) -> None:
+        if input_bytes is None or input_bytes < get_settings().sticky_prompt_cache_large_input_bytes:
+            return
+        self._sticky_large_activity.setdefault(account_id, {})[sticky_key] = time.time()
+
+    def active_large_family_count(self, account_id: str, *, exclude_key: str | None = None) -> int:
+        """Count recently-active large prompt-cache families pinned to an account."""
+        families = self._sticky_large_activity.get(account_id)
+        if not families:
+            return 0
+        cutoff = time.time() - get_settings().sticky_prompt_cache_activity_window_seconds
+        stale = [key for key, seen in families.items() if seen < cutoff]
+        for key in stale:
+            del families[key]
+        return sum(1 for key in families if key != exclude_key)
 
     async def release_account_lease(self, lease: AccountLease | None) -> None:
         if lease is None:
@@ -328,6 +348,7 @@ class LoadBalancer:
         estimated_lease_tokens: float = 0.0,
         stream_reserve_slots: int = 0,
         traffic_class: TrafficClass = TRAFFIC_CLASS_FOREGROUND,
+        sticky_request_input_bytes: int | None = None,
     ) -> AccountSelection:
         excluded_ids = set(exclude_account_ids or ())
         scoped_account_ids = None if account_ids is None else set(account_ids)
@@ -680,6 +701,7 @@ class LoadBalancer:
                             traffic_class=traffic_class,
                             ignore_standard_quota=False,
                             routing_costs_by_account_id=effective_routing_costs,
+                            sticky_request_input_bytes=sticky_request_input_bytes,
                         )
                 selected_account_map = account_map
                 selected_states = []
@@ -1257,6 +1279,7 @@ class LoadBalancer:
         sticky_existing_account_id: str | None | object = _STICKY_EXISTING_UNSET,
         traffic_class: TrafficClass = TRAFFIC_CLASS_FOREGROUND,
         ignore_standard_quota: bool = False,
+        sticky_request_input_bytes: int | None = None,
     ) -> SelectionResult:
         if not sticky_key or not sticky_repo:
             return _select_account_preferring_budget_safe(
@@ -1282,6 +1305,10 @@ class LoadBalancer:
             )
         else:
             existing = sticky_existing_account_id if isinstance(sticky_existing_account_id, str) else None
+        if existing and sticky_kind == StickySessionKind.PROMPT_CACHE:
+            # Keep the activity tracker warm for pinned families so the
+            # concentration counter reflects hits, not just placements.
+            self._note_sticky_large_activity(existing, sticky_key, sticky_request_input_bytes)
         # When the pinned account is temporarily unavailable (rate-limited,
         # error backoff) but still in the pool, pick a fallback WITHOUT
         # overwriting the sticky mapping so the next request returns to the
@@ -1470,8 +1497,32 @@ class LoadBalancer:
                     # scope): the mapping is stale.
                     await sticky_repo.delete(sticky_key, kind=sticky_kind)
 
+        # Concentration-aware placement (prompt-cache only): when placing a NEW
+        # large family, prefer accounts whose recently-active large-family
+        # count is under the configured limit so concurrent big-context
+        # sessions do not evict each other from one account's upstream prompt
+        # cache. Existing mappings are never moved by this preference, and it
+        # never shrinks eligibility to zero (fallback to the full pool below).
+        placement_states = states
+        if (
+            existing is None
+            and sticky_kind == StickySessionKind.PROMPT_CACHE
+            and sticky_request_input_bytes is not None
+            and sticky_request_input_bytes >= get_settings().sticky_prompt_cache_large_input_bytes
+        ):
+            concentration_limit = get_settings().sticky_prompt_cache_max_active_large_families_per_account
+            if concentration_limit > 0:
+                unsaturated = [
+                    state
+                    for state in states
+                    if self.active_large_family_count(state.account_id, exclude_key=sticky_key)
+                    < concentration_limit
+                ]
+                if unsaturated and len(unsaturated) < len(states):
+                    placement_states = unsaturated
+
         chosen = _select_account_preferring_budget_safe(
-            states,
+            placement_states,
             prefer_earlier_reset=prefer_earlier_reset_accounts,
             prefer_earlier_reset_window=prefer_earlier_reset_window,
             routing_strategy=routing_strategy,
@@ -1484,9 +1535,30 @@ class LoadBalancer:
             ignore_standard_quota=ignore_standard_quota,
             routing_costs_by_account_id=routing_costs_by_account_id,
         )
+        if chosen.account is None and placement_states is not states:
+            # All unsaturated candidates were ineligible; concentration must
+            # not fail a request the full pool could serve.
+            chosen = _select_account_preferring_budget_safe(
+                states,
+                prefer_earlier_reset=prefer_earlier_reset_accounts,
+                prefer_earlier_reset_window=prefer_earlier_reset_window,
+                routing_strategy=routing_strategy,
+                relative_availability_power=relative_availability_power,
+                relative_availability_top_k=relative_availability_top_k,
+                budget_threshold_pct=budget_threshold_pct,
+                secondary_budget_threshold_pct=secondary_budget_threshold_pct,
+                apply_secondary_budget_threshold=apply_sticky_secondary_budget_threshold,
+                traffic_class=traffic_class,
+                ignore_standard_quota=ignore_standard_quota,
+                routing_costs_by_account_id=routing_costs_by_account_id,
+            )
         if persist_fallback and chosen.account is not None and chosen.account.account_id in account_map:
             await sticky_repo.upsert(sticky_key, chosen.account.account_id, kind=sticky_kind)
         if chosen.account is not None:
+            if sticky_kind == StickySessionKind.PROMPT_CACHE:
+                self._note_sticky_large_activity(
+                    chosen.account.account_id, sticky_key, sticky_request_input_bytes
+                )
             if existing and chosen.account.account_id == existing:
                 _record_sticky_selection(sticky_kind, "hit")
             elif not persist_fallback:

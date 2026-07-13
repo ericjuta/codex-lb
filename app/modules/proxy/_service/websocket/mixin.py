@@ -186,6 +186,9 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_request_counts_against_queue as _http_bridge_request_counts_against_queue,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
+    _http_bridge_request_input_size_bytes as _http_bridge_request_input_size_bytes,
+)
+from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_request_stage as _http_bridge_request_stage,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
@@ -2199,6 +2202,7 @@ class _WebSocketMixin:
                         request_state.request_usage_budget
                     ),
                     fallback_on_preferred_account_unavailable=not require_preferred_account,
+                    sticky_request_input_bytes=request_state.sticky_request_input_bytes,
                 )
             except ProxyResponseError as exc:
                 if _facade()._is_proxy_budget_exhausted_error(exc):

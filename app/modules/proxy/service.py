@@ -1700,6 +1700,7 @@ class ProxyService(
         estimated_lease_tokens: float = 0.0,
         fallback_on_preferred_account_unavailable: bool = True,
         traffic_class: TrafficClass = TRAFFIC_CLASS_FOREGROUND,
+        sticky_request_input_bytes: int | None = None,
     ) -> AccountSelection:
         remaining_budget = _remaining_budget_seconds(deadline)
         if remaining_budget <= 0:
@@ -1861,6 +1862,7 @@ class ProxyService(
                     estimated_lease_tokens=estimated_lease_tokens,
                     stream_reserve_slots=stream_reserve_slots,
                     traffic_class=effective_traffic_class,
+                    sticky_request_input_bytes=sticky_request_input_bytes,
                 )
                 if selection.account is not None and selection.account.id in excluded_account_ids_set:
                     logger.warning(

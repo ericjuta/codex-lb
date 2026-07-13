@@ -390,6 +390,7 @@ class _WebSocketRequestState:
     request_kind: str = "normal"
     api_key: ApiKeyData | None = None
     request_usage_budget: ApiKeyRequestUsageBudget | None = None
+    sticky_request_input_bytes: int | None = None
     request_text: str | None = None
     replay_count: int = 0
     auth_replay_count: int = 0

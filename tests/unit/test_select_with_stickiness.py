@@ -78,6 +78,8 @@ async def _invoke_stickiness(
     relative_availability_power: float = 2.0,
     relative_availability_top_k: int = 5,
     routing_costs_by_account_id: RoutingCostsByAccount | None = None,
+    sticky_request_input_bytes: int | None = None,
+    lb: LoadBalancer | None = None,
 ):
     """Wrapper that calls production LoadBalancer._select_with_stickiness.
 
@@ -89,7 +91,8 @@ async def _invoke_stickiness(
     async def mock_repo_factory():
         yield AsyncMock()
 
-    lb = LoadBalancer(mock_repo_factory)
+    if lb is None:
+        lb = LoadBalancer(mock_repo_factory)
     account_map = {s.account_id: cast(Account, AsyncMock()) for s in states}
 
     return await lb._select_with_stickiness(
@@ -109,6 +112,7 @@ async def _invoke_stickiness(
         relative_availability_top_k=relative_availability_top_k,
         sticky_repo=sticky_repo,
         routing_costs_by_account_id=routing_costs_by_account_id,
+        sticky_request_input_bytes=sticky_request_input_bytes,
     )
 
 
@@ -1164,3 +1168,114 @@ async def test_burn_first_reallocation_only_when_burn_first_is_selectable():
     assert result.account.account_id == "a"
     repo.delete.assert_not_called()
     repo.upsert.assert_called_once_with("key1", "a", kind=StickySessionKind.PROMPT_CACHE)
+
+
+# ---------------------------------------------------------------------------
+# Concentration-aware placement for new large prompt-cache families
+# ---------------------------------------------------------------------------
+
+
+def _make_lb() -> LoadBalancer:
+    @asynccontextmanager
+    async def mock_repo_factory():
+        yield AsyncMock()
+
+    return LoadBalancer(mock_repo_factory)
+
+
+_LARGE = 200_000  # > default sticky_prompt_cache_large_input_bytes (65536)
+_SMALL = 1_000
+
+
+@pytest.mark.asyncio
+async def test_new_large_family_prefers_unsaturated_account():
+    """A new large prompt-cache family lands on the account with fewer
+    recently-active large families."""
+    lb = _make_lb()
+    # Saturate account "a" with 2 active large families (default limit).
+    lb._note_sticky_large_activity("a", "fam1", _LARGE)
+    lb._note_sticky_large_activity("a", "fam2", _LARGE)
+
+    repo = _make_sticky_repo(existing_account_id=None)
+    result = await _invoke_stickiness(
+        [_active("a", used_percent=5.0), _active("b", used_percent=50.0)],
+        "new-family",
+        repo,
+        sticky_request_input_bytes=_LARGE,
+        lb=lb,
+    )
+    assert result.account is not None
+    assert result.account.account_id == "b"
+    repo.upsert.assert_called_once_with("new-family", "b", kind=StickySessionKind.PROMPT_CACHE)
+
+
+@pytest.mark.asyncio
+async def test_small_request_ignores_concentration():
+    """Small payloads are not subject to concentration placement."""
+    lb = _make_lb()
+    lb._note_sticky_large_activity("a", "fam1", _LARGE)
+    lb._note_sticky_large_activity("a", "fam2", _LARGE)
+
+    repo = _make_sticky_repo(existing_account_id=None)
+    result = await _invoke_stickiness(
+        [_active("a", used_percent=5.0), _active("b", used_percent=50.0)],
+        "small-family",
+        repo,
+        sticky_request_input_bytes=_SMALL,
+        lb=lb,
+    )
+    assert result.account is not None
+    # usage-weighted selection prefers the lower-used account regardless.
+    assert result.account.account_id == "a"
+
+
+@pytest.mark.asyncio
+async def test_all_saturated_falls_back_to_full_pool():
+    """Concentration must never fail a request the full pool could serve."""
+    lb = _make_lb()
+    for account_id in ("a", "b"):
+        lb._note_sticky_large_activity(account_id, f"{account_id}-fam1", _LARGE)
+        lb._note_sticky_large_activity(account_id, f"{account_id}-fam2", _LARGE)
+
+    repo = _make_sticky_repo(existing_account_id=None)
+    result = await _invoke_stickiness(
+        [_active("a"), _active("b")],
+        "new-family",
+        repo,
+        sticky_request_input_bytes=_LARGE,
+        lb=lb,
+    )
+    assert result.account is not None
+
+
+@pytest.mark.asyncio
+async def test_existing_mapping_not_moved_by_concentration():
+    """Warm pins stay put even when the pinned account is saturated."""
+    lb = _make_lb()
+    lb._note_sticky_large_activity("a", "fam1", _LARGE)
+    lb._note_sticky_large_activity("a", "fam2", _LARGE)
+
+    repo = _make_sticky_repo(existing_account_id="a")
+    result = await _invoke_stickiness(
+        [_active("a"), _active("b")],
+        "fam1",
+        repo,
+        sticky_request_input_bytes=_LARGE,
+        lb=lb,
+    )
+    assert result.account is not None
+    assert result.account.account_id == "a"
+    repo.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_activity_window_expiry_unsaturates_account(monkeypatch):
+    """Families outside the activity window stop counting toward saturation."""
+    lb = _make_lb()
+    lb._note_sticky_large_activity("a", "fam1", _LARGE)
+    lb._note_sticky_large_activity("a", "fam2", _LARGE)
+    # Age both families beyond the window.
+    for key in lb._sticky_large_activity["a"]:
+        lb._sticky_large_activity["a"][key] -= 10_000.0
+
+    assert lb.active_large_family_count("a") == 0
