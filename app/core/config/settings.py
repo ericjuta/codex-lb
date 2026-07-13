@@ -249,6 +249,8 @@ class Settings(BaseSettings):
     prompt_cache_canary_model_ratio_thresholds: dict[str, float] = Field(default_factory=dict)
     prompt_cache_canary_uncached_tokens_threshold: int = Field(default=0, ge=0)
     prompt_cache_canary_model_uncached_tokens_thresholds: dict[str, int] = Field(default_factory=dict)
+    # Display-only pagination total for the request-log listing; 0 disables.
+    request_log_count_cache_ttl_seconds: float = Field(default=30.0, ge=0)
     quota_planner_scheduler_enabled: bool = True
     quota_planner_tick_seconds: int = Field(default=300, gt=0)
     automations_scheduler_enabled: bool = True
