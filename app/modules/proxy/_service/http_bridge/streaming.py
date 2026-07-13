@@ -140,8 +140,8 @@ from app.modules.proxy._service.observability import (
 )
 from app.modules.proxy._service.support import (
     _ACCOUNT_SELECTION_RECOVERY_HEARTBEAT_SECONDS,
-    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
-    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
+    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401,
+    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401,
     _account_capacity_wait_payload,
     _account_selection_recovery_sleep_seconds_from_message,
     _event_type_from_payload,
@@ -216,6 +216,28 @@ _SECURITY_WORK_NO_AUTHORIZED_ACCOUNTS_MESSAGE = (
     "security work. codex-lb is continuing with normal account selection; the upstream request may still fail until "
     "an account with Trusted Access for Cyber is marked as security-work-authorized."
 )
+_HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS = 5.0
+_HTTP_BRIDGE_BACKGROUND_CLEANUP_WARN_THRESHOLD = 100
+_RESPONSE_CREATE_GATE_RETRY_SLEEP_SECONDS = 10.0
+
+
+    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
+    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
+logger = logging.getLogger("app.modules.proxy.service")
+T = TypeVar("T")
+_TEXT_DELTA_EVENT_TYPES = frozenset({"response.output_text.delta", "response.refusal.delta"})
+_REQUEST_TRANSPORT_HTTP = "http"
+_UPSTREAM_CLOSE_CODES_SKIP_SAME_ACCOUNT_RETRY = frozenset({1011})
+_WEBSOCKET_AUTH_INVALIDATED_FAILURE_CODE = "account_auth_invalidated"
+_SECURITY_WORK_AUTHORIZATION_REQUIRED_CODE = "security_work_authorization_required"
+_NO_SECURITY_WORK_AUTHORIZED_ACCOUNTS_CODE = "no_security_work_authorized_accounts"
+_SECURITY_WORK_RETRY_MESSAGE = (
+    "Upstream flagged this request as possible cybersecurity work. "
+    "codex-lb is retrying on an account marked as authorized for security work."
+_SECURITY_WORK_NO_AUTHORIZED_ACCOUNTS_MESSAGE = (
+    "Upstream flagged this request as possible cybersecurity work, but no account is marked as authorized for "
+    "security work. codex-lb is continuing with normal account selection; the upstream request may still fail until "
+    "an account with Trusted Access for Cyber is marked as security-work-authorized."
 _HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS = 5.0
 _HTTP_BRIDGE_BACKGROUND_CLEANUP_WARN_THRESHOLD = 100
 _RESPONSE_CREATE_GATE_RETRY_SLEEP_SECONDS = 10.0
