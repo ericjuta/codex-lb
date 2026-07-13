@@ -33,3 +33,9 @@
 - [x] 4.3 Deploy via `./update.sh`; verify new counters at `:9090/metrics`
 - [ ] 4.4 Multi-hour live check: luna `cached/input` ratio trend vs spark
       baseline; record findings in change notes
+
+## 5. Fleet-accurate metrics (follow-up)
+
+- [x] 5.1 Auto-create `PROMETHEUS_MULTIPROC_DIR` at import when set, so
+      multi-worker deployments expose fleet-wide counters on `:9090`
+- [x] 5.2 Set `PROMETHEUS_MULTIPROC_DIR` in deployment env (`.env.local`)

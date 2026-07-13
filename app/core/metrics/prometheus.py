@@ -35,6 +35,11 @@ except ImportError:
 PROMETHEUS_AVAILABLE = prometheus_client is not None
 MULTIPROCESS_MODE = bool(os.environ.get("PROMETHEUS_MULTIPROC_DIR"))
 
+if MULTIPROCESS_MODE:
+    # prometheus_client requires the multiprocess dir to exist before the
+    # first metric write; create it so operators only need to set the env var.
+    os.makedirs(os.environ["PROMETHEUS_MULTIPROC_DIR"], exist_ok=True)
+
 
 if PROMETHEUS_AVAILABLE:
     CollectorRegistry = getattr(prometheus_client, "CollectorRegistry")
