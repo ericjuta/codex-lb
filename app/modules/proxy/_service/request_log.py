@@ -7,7 +7,12 @@ from typing import Protocol, cast
 
 import anyio
 
-from app.core.metrics.prometheus import PROMETHEUS_AVAILABLE, proxy_phase_latency_seconds
+from app.core.metrics.prometheus import (
+    PROMETHEUS_AVAILABLE,
+    prompt_cache_cached_tokens_total,
+    prompt_cache_input_tokens_total,
+    proxy_phase_latency_seconds,
+)
 from app.modules.api_keys.service import ApiKeyData
 from app.modules.proxy.affinity import _extract_model_class
 from app.modules.proxy.repo_bundle import ProxyRepoFactory
@@ -37,6 +42,25 @@ def _record_proxy_phase_latency(
         upstream_transport=upstream_transport or "unknown",
         model_class=_extract_model_class(model) if model else "unknown",
     ).observe(latency_ms / 1000.0)
+
+
+def _record_prompt_cache_usage(
+    *,
+    model: str | None,
+    request_kind: str,
+    input_tokens: int | None,
+    cached_input_tokens: int | None,
+) -> None:
+    """Track per-model cache efficiency; skip when usage is absent."""
+    if input_tokens is None or input_tokens <= 0:
+        return
+    if not PROMETHEUS_AVAILABLE or prompt_cache_input_tokens_total is None or prompt_cache_cached_tokens_total is None:
+        return
+    model_label = model or "unknown"
+    prompt_cache_input_tokens_total.labels(model=model_label, request_kind=request_kind).inc(input_tokens)
+    cached = cached_input_tokens or 0
+    if cached > 0:
+        prompt_cache_cached_tokens_total.labels(model=model_label, request_kind=request_kind).inc(cached)
 
 
 class _RequestLogServiceProtocol(Protocol):
@@ -146,6 +170,12 @@ class _RequestLogMixin:
         client_ip: str | None = None,
         archive_request_id: str | None = None,
     ) -> None:
+        _record_prompt_cache_usage(
+            model=model,
+            request_kind=request_kind,
+            input_tokens=input_tokens,
+            cached_input_tokens=cached_input_tokens,
+        )
         task = asyncio.create_task(
             self._persist_request_log(
                 account_id=account_id,

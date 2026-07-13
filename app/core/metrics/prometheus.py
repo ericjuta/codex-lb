@@ -237,6 +237,18 @@ if PROMETHEUS_AVAILABLE:
         ["kind", "outcome"],
         registry=REGISTRY,
     )
+    prompt_cache_input_tokens_total = Counter(
+        "codex_lb_prompt_cache_input_tokens_total",
+        "Total input tokens by model and request kind for cache-efficiency tracking",
+        ["model", "request_kind"],
+        registry=REGISTRY,
+    )
+    prompt_cache_cached_tokens_total = Counter(
+        "codex_lb_prompt_cache_cached_tokens_total",
+        "Total cached input tokens by model and request kind for cache-efficiency tracking",
+        ["model", "request_kind"],
+        registry=REGISTRY,
+    )
     failover_total = Counter(
         "codex_lb_failover_total",
         "Total pre-commit failover decisions",
@@ -336,6 +348,8 @@ else:
     account_lease_stale_reclaimed_total: CounterLike | None = None
     account_cap_rejections_total: CounterLike | None = None
     sticky_selection_total: CounterLike | None = None
+    prompt_cache_input_tokens_total: CounterLike | None = None
+    prompt_cache_cached_tokens_total: CounterLike | None = None
     failover_total: CounterLike | None = None
     drain_transitions_total: CounterLike | None = None
     client_exposed_errors_total: CounterLike | None = None
@@ -390,6 +404,8 @@ __all__ = [
     "mark_process_dead",
     "prometheus_client",
     "proxy_phase_latency_seconds",
+    "prompt_cache_cached_tokens_total",
+    "prompt_cache_input_tokens_total",
     "rate_limit_hits_total",
     "request_duration_seconds",
     "requests_total",
