@@ -245,6 +245,9 @@ class Settings(BaseSettings):
     prompt_cache_canary_window_seconds: int = Field(default=3600, gt=0)
     prompt_cache_canary_min_input_tokens: int = Field(default=1_000_000, ge=0)
     prompt_cache_canary_ratio_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    prompt_cache_canary_model_ratio_thresholds: dict[str, float] = Field(default_factory=dict)
+    prompt_cache_canary_uncached_tokens_threshold: int = Field(default=0, ge=0)
+    prompt_cache_canary_model_uncached_tokens_thresholds: dict[str, int] = Field(default_factory=dict)
     quota_planner_scheduler_enabled: bool = True
     quota_planner_tick_seconds: int = Field(default=300, gt=0)
     automations_scheduler_enabled: bool = True

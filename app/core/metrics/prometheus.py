@@ -323,6 +323,13 @@ if PROMETHEUS_AVAILABLE:
         multiprocess_mode="mostrecent" if MULTIPROCESS_MODE else "all",
         registry=REGISTRY,
     )
+    prompt_cache_uncached_tokens_per_request = Gauge(
+        "codex_lb_prompt_cache_uncached_tokens_per_request",
+        "Rolling average uncached input tokens per request per model",
+        ["model"],
+        multiprocess_mode="mostrecent" if MULTIPROCESS_MODE else "all",
+        registry=REGISTRY,
+    )
 
     def make_scrape_registry() -> CollectorRegistryLike:
         if MULTIPROCESS_MODE:
@@ -387,6 +394,7 @@ else:
     stream_first_event_seconds: HistogramLike | None = None
     stream_first_token_seconds: HistogramLike | None = None
     prompt_cache_ratio: GaugeLike | None = None
+    prompt_cache_uncached_tokens_per_request: GaugeLike | None = None
 
     def make_scrape_registry() -> None:
         return None
@@ -443,6 +451,7 @@ __all__ = [
     "stream_first_event_seconds",
     "stream_first_token_seconds",
     "prompt_cache_ratio",
+    "prompt_cache_uncached_tokens_per_request",
     "sqlite_lock_retries_total",
     "upstream_request_duration_seconds",
     "upstream_requests_total",

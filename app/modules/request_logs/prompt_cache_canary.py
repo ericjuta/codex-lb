@@ -11,7 +11,11 @@ from typing import Protocol, cast
 from sqlalchemy import func, select
 
 from app.core.config.settings import get_settings
-from app.core.metrics.prometheus import PROMETHEUS_AVAILABLE, prompt_cache_ratio
+from app.core.metrics.prometheus import (
+    PROMETHEUS_AVAILABLE,
+    prompt_cache_ratio,
+    prompt_cache_uncached_tokens_per_request,
+)
 from app.core.utils.time import utcnow
 from app.db.models import RequestLog
 from app.db.session import get_background_session
@@ -36,6 +40,9 @@ class PromptCacheCanaryScheduler:
     window_seconds: int
     min_input_tokens: int
     ratio_threshold: float
+    model_ratio_thresholds: dict[str, float]
+    uncached_tokens_threshold: int
+    model_uncached_tokens_thresholds: dict[str, int]
     enabled: bool
     _task: asyncio.Task[None] | None = None
     _stop: asyncio.Event = field(default_factory=asyncio.Event)
@@ -79,6 +86,7 @@ class PromptCacheCanaryScheduler:
                         RequestLog.model,
                         func.coalesce(func.sum(RequestLog.input_tokens), 0).label("input_tokens"),
                         func.coalesce(func.sum(RequestLog.cached_input_tokens), 0).label("cached_input_tokens"),
+                        func.count().label("request_count"),
                     )
                     .where(
                         RequestLog.requested_at >= cutoff,
@@ -89,19 +97,39 @@ class PromptCacheCanaryScheduler:
                     .group_by(RequestLog.model)
                 )
             ).all()
-        for model, input_tokens, cached_input_tokens in rows:
-            if not model or input_tokens <= 0:
+        for model, input_tokens, cached_input_tokens, request_count in rows:
+            if not model or input_tokens <= 0 or request_count <= 0:
                 continue
             ratio = cached_input_tokens / input_tokens
+            uncached_tokens_per_request = (input_tokens - cached_input_tokens) / request_count
             if PROMETHEUS_AVAILABLE and prompt_cache_ratio is not None:
                 prompt_cache_ratio.labels(model=model).set(ratio)
-            if input_tokens >= self.min_input_tokens and ratio < self.ratio_threshold:
+            if PROMETHEUS_AVAILABLE and prompt_cache_uncached_tokens_per_request is not None:
+                prompt_cache_uncached_tokens_per_request.labels(model=model).set(
+                    uncached_tokens_per_request
+                )
+            if input_tokens < self.min_input_tokens:
+                continue
+            ratio_threshold = self.model_ratio_thresholds.get(model, self.ratio_threshold)
+            if ratio < ratio_threshold:
                 logger.warning(
                     "Prompt-cache ratio collapsed model=%s ratio=%.3f input_tokens=%s threshold=%.2f window_seconds=%s",
                     model,
                     ratio,
                     input_tokens,
-                    self.ratio_threshold,
+                    ratio_threshold,
+                    self.window_seconds,
+                )
+            uncached_threshold = self.model_uncached_tokens_thresholds.get(
+                model, self.uncached_tokens_threshold
+            )
+            if uncached_threshold > 0 and uncached_tokens_per_request > uncached_threshold:
+                logger.warning(
+                    "Prompt-cache uncached tokens regressed model=%s"
+                    " uncached_tokens_per_request=%.0f threshold=%s window_seconds=%s",
+                    model,
+                    uncached_tokens_per_request,
+                    uncached_threshold,
                     self.window_seconds,
                 )
 
@@ -113,5 +141,8 @@ def build_prompt_cache_canary_scheduler() -> PromptCacheCanaryScheduler:
         window_seconds=settings.prompt_cache_canary_window_seconds,
         min_input_tokens=settings.prompt_cache_canary_min_input_tokens,
         ratio_threshold=settings.prompt_cache_canary_ratio_threshold,
+        model_ratio_thresholds=settings.prompt_cache_canary_model_ratio_thresholds,
+        uncached_tokens_threshold=settings.prompt_cache_canary_uncached_tokens_threshold,
+        model_uncached_tokens_thresholds=settings.prompt_cache_canary_model_uncached_tokens_thresholds,
         enabled=settings.prompt_cache_canary_enabled,
     )
