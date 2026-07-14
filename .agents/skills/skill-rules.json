@@ -67,6 +67,35 @@
         "envOverride": "SKIP_CONVENTION_GUARD"
       },
       "blockMessage": "BLOCKED: Run /project-conventions first.\nYou must review project conventions before editing code.\n\n→ Skill tool: 'project-conventions'\n→ Bypass: SKIP_CONVENTION_GUARD=1"
+    },
+    "codex-lb-burn-audit": {
+      "type": "domain",
+      "enforcement": "suggest",
+      "priority": "medium",
+      "description": "Live codex-lb quota burn-rate audit, runway-to-reset projection, and prompt-cache hit-rate measurement",
+      "promptTriggers": {
+        "keywords": [
+          "burn rate",
+          "quota left",
+          "credits left",
+          "cache hit rate",
+          "usage per hour",
+          "runway",
+          "weekly limit",
+          "by reset",
+          "burn audit"
+        ],
+        "intentPatterns": [
+          "(burn|usage|quota|credits).*(rate|left|remaining|hour|reset)",
+          "(cache).*(hit|rate|fix|effect)",
+          "how much.*(left|burning|remaining)"
+        ]
+      },
+      "fileTriggers": {
+        "pathPatterns": [],
+        "pathExclusions": [],
+        "contentPatterns": []
+      }
     }
   }
 }
