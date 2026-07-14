@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, Query
 
 from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
 from app.core.openai.model_registry import get_model_registry, is_public_model
-from app.db.session import detach_session_objects, get_background_session
 from app.dependencies import DashboardContext, get_dashboard_context
 from app.modules.dashboard.schemas import (
     DashboardOverviewResponse,
