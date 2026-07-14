@@ -64,7 +64,7 @@ async def test_settings_api_get_and_update(async_client):
     assert payload["stickyReallocationBudgetThresholdPct"] == 95.0
     assert payload["stickyReallocationPrimaryBudgetThresholdPct"] == 95.0
     assert payload["stickyReallocationSecondaryBudgetThresholdPct"] == 100.0
-    assert payload["warmupModel"] == "gpt-5.4-mini"
+    assert payload["warmupModel"] == "gpt-5.6-luna"
     assert payload["importWithoutOverwrite"] is True
     assert payload["totpRequiredOnLogin"] is False
     assert payload["totpConfigured"] is False

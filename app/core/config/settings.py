@@ -208,7 +208,7 @@ class Settings(BaseSettings):
     usage_refresh_interval_seconds: int = Field(default=60, gt=0)
     rate_limit_reset_credits_refresh_interval_seconds: int = Field(default=60, gt=0)
     openai_cache_affinity_max_age_seconds: int = Field(default=1800, gt=0)
-    warmup_model: str = "gpt-5.4-mini"
+    warmup_model: str = "gpt-5.6-luna"
     openai_prompt_cache_key_derivation_enabled: bool = True
     http_responses_session_bridge_enabled: bool = True
     http_responses_session_bridge_request_budget_seconds: float = Field(default=7200.0, gt=0)

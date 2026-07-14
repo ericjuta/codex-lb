@@ -523,7 +523,7 @@ async def test_quota_planner_cancel_decision_does_not_cancel_executing(async_cli
 
 
 @pytest.mark.asyncio
-async def test_quota_planner_warm_now_executes_when_explicitly_gated(monkeypatch, async_client, db_setup):
+async def test_quota_planner_warm_now_uses_shared_default_when_model_omitted(monkeypatch, async_client, db_setup):
     del db_setup
     encryptor = TokenEncryptor()
     async with SessionLocal() as session:
@@ -553,19 +553,21 @@ async def test_quota_planner_warm_now_executes_when_explicitly_gated(monkeypatch
                 min_expected_gain=1.0,
                 forecast_quantile="p75",
                 allow_synthetic_traffic=True,
-                warmup_model_preference="gpt-5.4-mini",
+                warmup_model_preference=None,
                 dry_run=False,
             )
         )
         await repo.add_window_observation(
             account_id="acc-warm",
-            model="gpt-5.4-mini",
+            model="gpt-5.6-luna",
             source="warmup_probe",
             confidence="observed",
         )
 
+    captured_models: list[str] = []
     async def fake_send(self, *, account, model, request_id):
-        del self, account, model, request_id
+        del self, account, request_id
+        captured_models.append(model)
         return WarmupUsage(input_tokens=3, output_tokens=1, cached_input_tokens=0, reasoning_tokens=None)
 
     async def failing_record_effect(self, account, model, *, source, confidence):
@@ -577,12 +579,13 @@ async def test_quota_planner_warm_now_executes_when_explicitly_gated(monkeypatch
 
     response = await async_client.post(
         "/api/quota-planner/warm-now",
-        json={"accountId": "acc-warm", "model": "gpt-5.4-mini"},
+        json={"accountId": "acc-warm"},
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "executed"
+    assert captured_models == ["gpt-5.6-luna"]
     async with SessionLocal() as session:
         logs = await session.execute(select(RequestLog).where(RequestLog.request_kind == "warmup"))
         assert logs.scalar_one().request_id == payload["requestId"]

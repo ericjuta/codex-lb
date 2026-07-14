@@ -624,8 +624,8 @@ class DashboardSettings(Base):
     )
     warmup_model: Mapped[str] = mapped_column(
         String,
-        default="gpt-5.4-mini",
-        server_default=text("'gpt-5.4-mini'"),
+        default="gpt-5.6-luna",
+        server_default=text("'gpt-5.6-luna'"),
         nullable=False,
     )
     additional_quota_routing_policies_json: Mapped[str] = mapped_column(

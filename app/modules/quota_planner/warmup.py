@@ -10,6 +10,7 @@ from uuid import uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clients.proxy import stream_responses
+from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import ResponsesRequest
@@ -76,7 +77,7 @@ class QuotaWarmupService:
     ) -> WarmupExecutionResult:
         settings = await self._planner.get_settings()
         account = await self._accounts.get_by_id(account_id)
-        resolved_model = (model or settings.warmup_model_preference or "gpt-5.4-mini").strip()
+        resolved_model = (model or settings.warmup_model_preference or get_settings().warmup_model).strip()
         scheduled_at = utcnow()
         decision = await self._planner.get_decision(decision_id) if decision_id is not None else None
         if decision is None:
