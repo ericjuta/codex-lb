@@ -22,4 +22,4 @@
 ## 5. Validation
 
 - [x] 5.1 `openspec validate --specs` clean
-- [ ] 5.2 Deploy via ./update.sh and verify new gauge appears in /metrics with live values
+- [x] 5.2 Deploy via ./update.sh and verify new gauge appears in /metrics with live values
