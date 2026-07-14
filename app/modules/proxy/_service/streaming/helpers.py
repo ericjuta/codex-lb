@@ -48,6 +48,7 @@ from app.core.errors import (
     PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
     response_failed_event,
 )
+from app.core.metrics.prometheus import PROMETHEUS_AVAILABLE, account_transient_errors_total
 from app.core.openai.models import OpenAIEvent
 from app.core.openai.parsing import parse_sse_event
 from app.core.types import JsonValue
@@ -396,6 +397,12 @@ from app.modules.proxy.load_balancer import AccountSelection
 
 def _facade() -> Any:
     return sys.modules["app.modules.proxy.service"]
+
+
+def _record_transient_error_metric(code: str | None) -> None:
+    if not PROMETHEUS_AVAILABLE or account_transient_errors_total is None:
+        return
+    account_transient_errors_total.labels(code=code or "unknown").inc()
 
 
 def _stream_iterator_after_capacity_admission(
@@ -799,6 +806,7 @@ async def _handle_stream_error(
         )
     else:
         await proxy._load_balancer.record_error(account)
+        _record_transient_error_metric(code)
         _facade().logger.info(
             "Recorded transient account error account_id=%s request_id=%s code=%s",
             account.id,

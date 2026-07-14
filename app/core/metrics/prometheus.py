@@ -330,6 +330,26 @@ if PROMETHEUS_AVAILABLE:
         multiprocess_mode="mostrecent" if MULTIPROCESS_MODE else "all",
         registry=REGISTRY,
     )
+    account_usage_percent = Gauge(
+        "codex_lb_account_usage_percent",
+        "Latest known account usage percentage per usage window",
+        ["account_id", "window"],
+        multiprocess_mode="mostrecent" if MULTIPROCESS_MODE else "all",
+        registry=REGISTRY,
+    )
+    account_usage_reset_seconds = Gauge(
+        "codex_lb_account_usage_reset_seconds",
+        "Seconds until the usage window resets per account",
+        ["account_id", "window"],
+        multiprocess_mode="mostrecent" if MULTIPROCESS_MODE else "all",
+        registry=REGISTRY,
+    )
+    account_transient_errors_total = Counter(
+        "codex_lb_account_transient_errors_total",
+        "Total transient account errors by normalized error code",
+        ["code"],
+        registry=REGISTRY,
+    )
 
     def make_scrape_registry() -> CollectorRegistryLike:
         if MULTIPROCESS_MODE:
@@ -395,6 +415,9 @@ else:
     stream_first_token_seconds: HistogramLike | None = None
     prompt_cache_ratio: GaugeLike | None = None
     prompt_cache_uncached_tokens_per_request: GaugeLike | None = None
+    account_usage_percent: GaugeLike | None = None
+    account_usage_reset_seconds: GaugeLike | None = None
+    account_transient_errors_total: CounterLike | None = None
 
     def make_scrape_registry() -> None:
         return None
@@ -409,6 +432,9 @@ __all__ = [
     "REGISTRY",
     "active_connections",
     "account_cap_rejections_total",
+    "account_transient_errors_total",
+    "account_usage_percent",
+    "account_usage_reset_seconds",
     "account_lease_acquired_total",
     "account_lease_released_total",
     "account_lease_stale_reclaimed_total",

@@ -10,6 +10,11 @@ from datetime import datetime
 from typing import Any, AsyncIterator, Protocol, cast
 
 from app.core.config.settings import get_settings
+from app.core.metrics.prometheus import (
+    PROMETHEUS_AVAILABLE,
+    account_usage_percent,
+    account_usage_reset_seconds,
+)
 from app.core.usage import capacity_for_plan
 from app.db.models import Account, AccountLimitWarmup, AccountStatus, UsageHistory
 from app.db.session import detach_session_objects, get_background_session
@@ -212,6 +217,10 @@ class UsageRefreshScheduler:
                             usage_repo=usage_repo,
                             accounts=refreshed_accounts,
                         )
+                if usage_written:
+                    publish_usage_gauges({"primary": after_primary, "secondary": after_secondary})
+                else:
+                    publish_usage_gauges({"primary": before_primary, "secondary": before_secondary})
                 if cycle_complete:
                     await _invalidate_usage_refresh_caches()
             except Exception:
@@ -227,6 +236,22 @@ class UsageRefreshScheduler:
         next_index = (index + 1) % len(accounts)
         self._next_account_index = next_index
         return accounts[index], next_index == 0
+
+
+def publish_usage_gauges(rows_by_window: dict[str, dict[str, UsageHistory]]) -> None:
+    """Publish latest per-account usage rows as Prometheus gauges."""
+    if not PROMETHEUS_AVAILABLE or account_usage_percent is None or account_usage_reset_seconds is None:
+        return
+    now = time.time()
+    for window, rows in rows_by_window.items():
+        for account_id, row in rows.items():
+            if row is None or row.used_percent is None:
+                continue
+            account_usage_percent.labels(account_id=account_id, window=window).set(float(row.used_percent))
+            if row.reset_at is not None:
+                account_usage_reset_seconds.labels(account_id=account_id, window=window).set(
+                    max(0.0, float(row.reset_at) - now)
+                )
 
 
 def build_usage_refresh_scheduler() -> UsageRefreshScheduler:
