@@ -891,3 +891,49 @@ async def test_free_account_monthly_migration_renames_only_free_usage_windows(tm
 
     assert free_windows == ["old-primary", "old-secondary", "old-primary"]
     assert paid_windows == ["primary", "secondary", None]
+
+
+@pytest.mark.asyncio
+async def test_oauth_replica_state_migration_upgrade_and_downgrade(tmp_path):
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oauth-replica-state.sqlite'}"
+    parent_revision = "20260712_020000_add_api_key_usage_rollups"
+    oauth_revision = "20260715_130000_add_oauth_replica_state"
+
+    async def _coordination_tables(engine) -> set[str]:
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'table' AND name IN "
+                    "('oauth_flow_states', 'oauth_device_flow_slots')"
+                )
+            )
+            return {str(row[0]) for row in result.all()}
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=False))
+    engine = create_async_engine(db_url, future=True)
+    try:
+        assert await _coordination_tables(engine) == set()
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, oauth_revision, bootstrap_legacy=False))
+        assert await _coordination_tables(engine) == {
+            "oauth_flow_states",
+            "oauth_device_flow_slots",
+        }
+
+        config = _build_alembic_config(db_url)
+        await to_thread.run_sync(lambda: command.downgrade(config, parent_revision))
+        assert await _coordination_tables(engine) == set()
+
+        result = await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=False))
+        assert result.current_revision == _HEAD_REVISION
+        assert await _coordination_tables(engine) == {
+            "oauth_flow_states",
+            "oauth_device_flow_slots",
+        }
+    finally:
+        await engine.dispose()

@@ -454,6 +454,36 @@ class SchedulerLeader(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
 
+class OAuthFlowState(Base):
+    """Durable metadata for a dashboard OAuth flow shared across replicas."""
+
+    __tablename__ = "oauth_flow_states"
+
+    flow_id: Mapped[str] = mapped_column(String, primary_key=True)
+    state_token: Mapped[str | None] = mapped_column(String, nullable=True, unique=True, index=True)
+    method: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    code_verifier_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    device_auth_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    user_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class OAuthDeviceFlowSlot(Base):
+    """Single shared device-flow ownership slot."""
+
+    __tablename__ = "oauth_device_flow_slots"
+
+    slot_key: Mapped[str] = mapped_column(String, primary_key=True)
+    flow_id: Mapped[str] = mapped_column(String, nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class StickySession(Base):
     __tablename__ = "sticky_sessions"
 

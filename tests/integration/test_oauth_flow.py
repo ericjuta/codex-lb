@@ -23,9 +23,15 @@ from app.db.models import Account, AccountStatus
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.oauth import api as oauth_api_module
+from app.modules.oauth.repository import OAuthFlowRepository
 from app.modules.oauth.schemas import ManualCallbackRequest
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _oauth_flow_schema(db_setup):
+    del db_setup
 
 
 def _encode_jwt(payload: dict) -> str:
@@ -91,6 +97,16 @@ async def test_manual_callback_api_preserves_oauth_error():
 async def test_manual_callback_service_sanitizes_unexpected_exception(monkeypatch, caplog):
     await oauth_module._OAUTH_STORE.reset()
     caplog.set_level(logging.ERROR, logger=oauth_module.logger.name)
+    async with SessionLocal() as session:
+        await OAuthFlowRepository(session, TokenEncryptor()).create(
+            oauth_module.OAuthFlowRecord(
+                flow_id="flow-1",
+                method="browser",
+                status="pending",
+                state_token="state-1",
+                code_verifier="verifier-1",
+            )
+        )
     async with oauth_module._OAUTH_STORE.lock:
         oauth_module._OAUTH_STORE.remember_flow_locked(
             oauth_module.OAuthState(

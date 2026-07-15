@@ -39,10 +39,11 @@ from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.plan_types import coerce_account_plan_type
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
-from app.core.utils.time import utcnow
+from app.core.utils.time import naive_utc_to_epoch, utcnow
 from app.db.models import Account, AccountProxyBinding, AccountStatus
-from app.db.session import get_background_session
+from app.db.session import get_background_session, sqlite_writer_section
 from app.modules.accounts.repository import AccountIdentityConflictError, AccountsRepository
+from app.modules.oauth.repository import OAuthFlowRecord, OAuthFlowRepository, epoch_to_naive_utc
 from app.modules.oauth.schemas import (
     ManualCallbackResponse,
     OauthCompleteRequest,
@@ -288,11 +289,103 @@ class OauthService:
         self,
         accounts_repo: AccountsRepository,
         repo_factory: Callable[[], AbstractAsyncContextManager[AccountsRepository]] | None = None,
+        store: OAuthStateStore | None = None,
     ) -> None:
         self._accounts_repo = accounts_repo
         self._encryptor = TokenEncryptor()
-        self._store = _OAUTH_STORE
+        self._store = store if store is not None else _OAUTH_STORE
         self._repo_factory = repo_factory
+
+    async def _persist_flow_record(self, record: OAuthFlowRecord) -> None:
+        async with get_background_session() as session:
+            repo = OAuthFlowRepository(session, self._encryptor)
+            await repo.purge_expired(terminal_keep=_MAX_RETAINED_TERMINAL_OAUTH_FLOWS)
+            await repo.create(record)
+
+    async def _claim_device_slot(self, flow_id: str) -> None:
+        async with sqlite_writer_section():
+            async with get_background_session() as session:
+                await OAuthFlowRepository(session, self._encryptor).claim_device_slot(flow_id)
+
+    async def _consume_device_slot(self, flow_id: str | None) -> bool:
+        if flow_id is None:
+            return False
+        async with sqlite_writer_section():
+            async with get_background_session() as session:
+                return await OAuthFlowRepository(session, self._encryptor).consume_device_slot(flow_id)
+
+    async def _persist_flow_status(
+        self,
+        flow_id: str,
+        *,
+        status: str,
+        error_message: str | None,
+    ) -> bool:
+        async with get_background_session() as session:
+            return await OAuthFlowRepository(session, self._encryptor).set_status(
+                flow_id,
+                status=status,
+                error_message=error_message,
+            )
+
+    async def _load_flow_record(
+        self,
+        *,
+        flow_id: str | None = None,
+        state_token: str | None = None,
+    ) -> OAuthFlowRecord | None:
+        async with get_background_session() as session:
+            repo = OAuthFlowRepository(session, self._encryptor)
+            if flow_id is not None:
+                return await repo.get_by_flow_id(flow_id)
+            if state_token is not None:
+                return await repo.get_by_state_token(state_token)
+        return None
+
+    @staticmethod
+    def _record_to_state(record: OAuthFlowRecord) -> OAuthState:
+        return OAuthState(
+            flow_id=record.flow_id,
+            status=record.status,
+            method=record.method,
+            error_message=record.error_message,
+            state_token=record.state_token,
+            code_verifier=record.code_verifier,
+            device_auth_id=record.device_auth_id,
+            user_code=record.user_code,
+            interval_seconds=record.interval_seconds,
+            expires_at=(naive_utc_to_epoch(record.expires_at) if record.expires_at is not None else None),
+            finished_at=(naive_utc_to_epoch(record.finished_at) if record.finished_at is not None else None),
+        )
+
+    async def _reconcile_flow_from_durable(
+        self,
+        *,
+        flow_id: str | None = None,
+        state_token: str | None = None,
+    ) -> OAuthFlowRecord | None:
+        record = await self._load_flow_record(flow_id=flow_id, state_token=state_token)
+        async with self._store.lock:
+            local = self._store.get_flow_locked(flow_id) if flow_id is not None else None
+            if local is None and state_token is not None:
+                local = self._store.get_flow_by_state_token_locked(state_token)
+            if record is None:
+                if local is not None and local.status not in _TERMINAL_OAUTH_STATUSES:
+                    self._store.remove_flow_locked(local)
+                return None
+            if record.status in _TERMINAL_OAUTH_STATUSES:
+                if local is None:
+                    self._store.remember_flow_locked(self._record_to_state(record))
+                elif local.status != record.status or local.error_message != record.error_message:
+                    self._store.set_flow_status_locked(
+                        local,
+                        status=record.status,
+                        error_message=record.error_message,
+                    )
+                return record
+            if local is None:
+                self._store.remember_flow_locked(self._record_to_state(record))
+        return record
 
     async def start_oauth(self, request: OauthStartRequest) -> OauthStartResponse:
         force_method = (request.force_method or "").lower()
@@ -319,6 +412,13 @@ class OauthService:
             return await self._start_device_flow()
 
     async def oauth_status(self, flow_id: str | None = None) -> OauthStatusResponse:
+        if flow_id is not None:
+            record = await self._reconcile_flow_from_durable(flow_id=flow_id)
+            if record is not None:
+                return OauthStatusResponse(
+                    status=record.status if record.status != "idle" else "pending",
+                    error_message=record.error_message,
+                )
         async with self._store.lock:
             state = self._store.get_flow_locked(flow_id)
             if state is None:
@@ -328,6 +428,10 @@ class OauthService:
 
     async def complete_oauth(self, request: OauthCompleteRequest | None = None) -> OauthCompleteResponse:
         payload = request or OauthCompleteRequest()
+        if payload.flow_id is not None:
+            record = await self._reconcile_flow_from_durable(flow_id=payload.flow_id)
+            if record is not None and record.status in _TERMINAL_OAUTH_STATUSES:
+                return OauthCompleteResponse(status=record.status)
         async with self._store.lock:
             flow = self._store.get_flow_locked(payload.flow_id)
             state = flow
@@ -339,21 +443,12 @@ class OauthService:
                 flow.user_code = payload.user_code
             if flow is not None:
                 self._store.set_latest_flow_locked(flow)
+            if state.method == "device":
+                if state.status in _TERMINAL_OAUTH_STATUSES and payload.flow_id is not None:
+                    return OauthCompleteResponse(status=state.status)
+                return OauthCompleteResponse(status="pending")
             if state.status == "success":
                 return OauthCompleteResponse(status="success")
-            if state.method != "device":
-                return OauthCompleteResponse(status="pending")
-            if not self._ensure_device_poll_task_locked(state):
-                if flow is not None:
-                    self._store.set_flow_status_locked(
-                        flow,
-                        status="error",
-                        error_message="Device code flow is not initialized.",
-                    )
-                else:
-                    state.status = "error"
-                    state.error_message = "Device code flow is not initialized."
-                return OauthCompleteResponse(status="error")
             return OauthCompleteResponse(status="pending")
 
     async def _start_browser_flow(self) -> OauthStartResponse:
@@ -366,6 +461,7 @@ class OauthService:
         settings = get_settings()
         callback_server: OAuthCallbackServer | None = None
 
+        expires_at = time.time() + _PENDING_BROWSER_OAUTH_FLOW_TTL_SECONDS
         async with self._store.lock:
             self._store.remember_flow_locked(
                 OAuthState(
@@ -374,7 +470,7 @@ class OauthService:
                     method="browser",
                     state_token=state_token,
                     code_verifier=code_verifier,
-                    expires_at=time.time() + _PENDING_BROWSER_OAUTH_FLOW_TTL_SECONDS,
+                    expires_at=expires_at,
                 )
             )
             if self._store._callback_server is None:
@@ -384,6 +480,17 @@ class OauthService:
                     port=settings.oauth_callback_port,
                 )
                 self._store._callback_server = callback_server
+
+        await self._persist_flow_record(
+            OAuthFlowRecord(
+                flow_id=flow_id,
+                method="browser",
+                status="pending",
+                state_token=state_token,
+                code_verifier=code_verifier,
+                expires_at=epoch_to_naive_utc(expires_at),
+            )
+        )
 
         if callback_server is not None:
             try:
@@ -416,6 +523,9 @@ class OauthService:
         code = params.get("code", [None])[0]
         state = params.get("state", [None])[0]
 
+        if state is not None:
+            await self._reconcile_flow_from_durable(state_token=state)
+
         async with self._store.lock:
             flow = self._store.get_flow_by_state_token_locked(state)
             verifier = flow.code_verifier if flow is not None else None
@@ -426,19 +536,24 @@ class OauthService:
                 verifier = None
                 target_flow_id = None
                 can_update_error = False
-            if flow is not None and flow.status == "success" and state == flow.state_token:
-                return ManualCallbackResponse(status="success")
+            terminal_status = flow.status if flow is not None and flow.status in _TERMINAL_OAUTH_STATUSES else None
+            terminal_error = flow.error_message if flow is not None else None
+
+        if terminal_status == "success":
+            return ManualCallbackResponse(status="success")
+        if terminal_status == "error":
+            return ManualCallbackResponse(status="error", error_message=terminal_error)
 
         if error:
             message = f"OAuth error: {error}"
-            if can_update_error:
-                await self._set_error(message, flow_id=target_flow_id)
+            if can_update_error and await self._finalize_callback_error(message, flow_id=target_flow_id) == "success":
+                return ManualCallbackResponse(status="success")
             return ManualCallbackResponse(status="error", error_message=message)
 
         if not code or not state or flow is None or not verifier:
             message = "Invalid OAuth callback: state mismatch or missing code."
-            if can_update_error:
-                await self._set_error(message, flow_id=target_flow_id)
+            if can_update_error and await self._finalize_callback_error(message, flow_id=target_flow_id) == "success":
+                return ManualCallbackResponse(status="success")
             return ManualCallbackResponse(status="error", error_message=message)
 
         try:
@@ -454,15 +569,24 @@ class OauthService:
             asyncio.create_task(self._stop_callback_server_if_idle())
             return ManualCallbackResponse(status="success")
         except OAuthError as exc:
-            await self._set_error(exc.message, flow_id=flow.flow_id)
+            if await self._finalize_callback_error(exc.message, flow_id=flow.flow_id) == "success":
+                return ManualCallbackResponse(status="success")
             return ManualCallbackResponse(status="error", error_message=exc.message)
         except AccountIdentityConflictError:
-            await self._set_error(_ACCOUNT_IDENTITY_CONFLICT_MESSAGE, flow_id=flow.flow_id)
+            if (
+                await self._finalize_callback_error(
+                    _ACCOUNT_IDENTITY_CONFLICT_MESSAGE,
+                    flow_id=flow.flow_id,
+                )
+                == "success"
+            ):
+                return ManualCallbackResponse(status="success")
             return ManualCallbackResponse(status="error", error_message=_ACCOUNT_IDENTITY_CONFLICT_MESSAGE)
         except Exception as exc:
             logger.error("manual OAuth callback failed exception_type=%s", type(exc).__name__)
             message = "An internal error occurred."
-            await self._set_error(message, flow_id=flow.flow_id)
+            if await self._finalize_callback_error(message, flow_id=flow.flow_id) == "success":
+                return ManualCallbackResponse(status="success")
             return ManualCallbackResponse(status="error", error_message=message)
 
     async def _start_device_flow(self) -> OauthStartResponse:
@@ -474,19 +598,36 @@ class OauthService:
             await self._set_error(exc.message)
             raise
 
+        expires_at = time.time() + device.expires_in_seconds
+        flow = OAuthState(
+            flow_id=flow_id,
+            status="pending",
+            method="device",
+            device_auth_id=device.device_auth_id,
+            user_code=device.user_code,
+            interval_seconds=device.interval_seconds,
+            expires_at=expires_at,
+        )
         async with self._store.lock:
-            flow = OAuthState(
+            self._store.remove_pending_device_flows_locked()
+            self._store.remember_flow_locked(flow)
+
+        await self._persist_flow_record(
+            OAuthFlowRecord(
                 flow_id=flow_id,
-                status="pending",
                 method="device",
+                status="pending",
                 device_auth_id=device.device_auth_id,
                 user_code=device.user_code,
                 interval_seconds=device.interval_seconds,
-                expires_at=time.time() + device.expires_in_seconds,
+                expires_at=epoch_to_naive_utc(expires_at),
             )
-            self._store.remove_pending_device_flows_locked()
-            self._store.remember_flow_locked(flow)
-            self._ensure_device_poll_task_locked(flow)
+        )
+
+        async with self._store.lock:
+            if self._store.get_flow_locked(flow_id) is flow:
+                await self._claim_device_slot(flow_id)
+                self._ensure_device_poll_task_locked(flow)
 
         return OauthStartResponse(
             flow_id=flow_id,
@@ -504,16 +645,36 @@ class OauthService:
         code = params.get("code")
         state = params.get("state")
 
+        if state is not None:
+            await self._reconcile_flow_from_durable(state_token=state)
+
         async with self._store.lock:
             flow = self._store.get_flow_by_state_token_locked(state)
             verifier = flow.code_verifier if flow is not None else None
+            terminal_status = flow.status if flow is not None and flow.status in _TERMINAL_OAUTH_STATUSES else None
+            terminal_error = flow.error_message if flow is not None else None
+
+        if terminal_status == "success":
+            return self._html_response(_success_html())
+        if terminal_status == "error":
+            return self._html_response(_error_html(terminal_error or "Authorization failed."))
 
         if error:
-            await self._set_error(f"OAuth error: {error}", flow_id=flow.flow_id if flow is not None else None)
+            outcome = await self._finalize_callback_error(
+                f"OAuth error: {error}",
+                flow_id=flow.flow_id if flow is not None else None,
+            )
+            if outcome == "success":
+                return self._html_response(_success_html())
             return self._html_response(_error_html("Authorization failed."))
 
         if not code or not state or flow is None or not verifier:
-            await self._set_error("Invalid OAuth callback state.", flow_id=flow.flow_id if flow is not None else None)
+            outcome = await self._finalize_callback_error(
+                "Invalid OAuth callback state.",
+                flow_id=flow.flow_id if flow is not None else None,
+            )
+            if outcome == "success":
+                return self._html_response(_success_html())
             return self._html_response(_error_html("Invalid OAuth callback."))
 
         try:
@@ -528,16 +689,27 @@ class OauthService:
             await self._set_success(flow.flow_id)
             html = _success_html()
         except OAuthError as exc:
-            await self._set_error(exc.message, flow_id=flow.flow_id)
-            html = _error_html(exc.message)
+            html = (
+                _success_html()
+                if await self._finalize_callback_error(exc.message, flow_id=flow.flow_id) == "success"
+                else _error_html(exc.message)
+            )
         except AccountIdentityConflictError:
-            await self._set_error(_ACCOUNT_IDENTITY_CONFLICT_MESSAGE, flow_id=flow.flow_id)
-            html = _error_html(_ACCOUNT_IDENTITY_CONFLICT_MESSAGE)
+            html = (
+                _success_html()
+                if await self._finalize_callback_error(
+                    _ACCOUNT_IDENTITY_CONFLICT_MESSAGE,
+                    flow_id=flow.flow_id,
+                )
+                == "success"
+                else _error_html(_ACCOUNT_IDENTITY_CONFLICT_MESSAGE)
+            )
 
         asyncio.create_task(self._stop_callback_server_if_idle())
         return self._html_response(html)
 
     async def _poll_device_tokens(self, flow_id: str | None, context: "DevicePollContext") -> None:
+        consumed = False
         try:
             while time.time() < context.expires_at:
                 route = await _oauth_route()
@@ -548,15 +720,21 @@ class OauthService:
                     allow_direct_egress=route is None,
                 )
                 if tokens:
+                    consumed = await self._consume_device_slot(flow_id)
+                    if not consumed:
+                        return
                     await self._persist_tokens(tokens)
                     await self._set_success(flow_id)
                     return
                 await _async_sleep(context.interval_seconds)
-            await self._set_error("Device code expired.", flow_id=flow_id)
+            if consumed or await self._consume_device_slot(flow_id):
+                await self._set_error("Device code expired.", flow_id=flow_id)
         except OAuthError as exc:
-            await self._set_error(exc.message, flow_id=flow_id)
+            if consumed or await self._consume_device_slot(flow_id):
+                await self._set_error(exc.message, flow_id=flow_id)
         except AccountIdentityConflictError:
-            await self._set_error(_ACCOUNT_IDENTITY_CONFLICT_MESSAGE, flow_id=flow_id)
+            if consumed or await self._consume_device_slot(flow_id):
+                await self._set_error(_ACCOUNT_IDENTITY_CONFLICT_MESSAGE, flow_id=flow_id)
         finally:
             async with self._store.lock:
                 flow = self._store.get_flow_locked(flow_id)
@@ -639,26 +817,42 @@ class OauthService:
     async def _set_success(self, flow_id: str | None = None) -> None:
         async with self._store.lock:
             flow = self._store.get_flow_locked(flow_id)
-            if flow_id is not None and flow is None:
-                return
-            if flow is None:
+            if flow is not None:
+                self._store.set_flow_status_locked(flow, status="success", error_message=None)
+            elif flow_id is None:
                 self._store.state.status = "success"
                 self._store.state.error_message = None
-                return
-            self._store.set_flow_status_locked(flow, status="success", error_message=None)
+        if flow_id is not None:
+            await self._persist_flow_status(flow_id, status="success", error_message=None)
 
-    async def _set_error(self, message: str, flow_id: str | None = None) -> None:
+    async def _set_error(self, message: str, flow_id: str | None = None) -> bool:
+        if flow_id is None:
+            async with self._store.lock:
+                if self._store.state.flow_id is None:
+                    self._store.state.status = "error"
+                    self._store.state.error_message = message
+            return True
+
+        applied = await self._persist_flow_status(
+            flow_id,
+            status="error",
+            error_message=message,
+        )
+        if not applied:
+            return False
         async with self._store.lock:
-            if flow_id is None and self._store.state.flow_id is not None:
-                return
             flow = self._store.get_flow_locked(flow_id)
-            if flow_id is not None and flow is None:
-                return
-            if flow is None:
-                self._store.state.status = "error"
-                self._store.state.error_message = message
-                return
-            self._store.set_flow_status_locked(flow, status="error", error_message=message)
+            if flow is not None:
+                self._store.set_flow_status_locked(flow, status="error", error_message=message)
+        return True
+
+    async def _finalize_callback_error(self, message: str, *, flow_id: str | None) -> str:
+        if await self._set_error(message, flow_id=flow_id):
+            return "error"
+        record = await self._reconcile_flow_from_durable(flow_id=flow_id) if flow_id is not None else None
+        if record is not None and record.status == "success":
+            return "success"
+        return "error"
 
     def _start_callback_server_stop_locked(self, server: OAuthCallbackServer) -> asyncio.Task[None]:
         stop_task = self._store._callback_server_stop_task
