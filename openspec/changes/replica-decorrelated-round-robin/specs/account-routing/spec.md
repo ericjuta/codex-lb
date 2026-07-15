@@ -8,12 +8,14 @@ The `round_robin` routing strategy SHALL order candidate accounts primarily by
 planner cost and then by least-recently-selected time, and SHALL break any
 remaining exact tie using a per-replica salt mixed into the account identifier
 through a keyed hash. The salt SHALL be stable for the lifetime of a replica
-process (not randomized per selection), SHALL default to the replica's HTTP
-responses-session bridge instance identity, and SHALL fall back to the host
-identity when no bridge instance identity is configured. Mixing the salt SHALL
-change only the final tie-break: the planner-cost and least-recently-selected
-ordering SHALL remain identical to selection without a salt, so only genuinely
-tied candidates are reordered.
+process (not randomized per selection). A bridge-enabled runtime SHALL use its
+configured HTTP responses-session bridge instance identity unchanged. When no
+unique bridge worker identity is available, including bridge-disabled
+multi-worker Uvicorn, the fallback SHALL combine host identity with a stable
+process-specific component and SHALL recompute after a process fork. Mixing the
+salt SHALL change only the final tie-break: the planner-cost and
+least-recently-selected ordering SHALL remain identical to selection without a
+salt, so only genuinely tied candidates are reordered.
 
 #### Scenario: Replicas with distinct salts spread an exact tie
 
@@ -37,3 +39,17 @@ tied candidates are reordered.
 - **GIVEN** a fixed set of candidate accounts and a fixed per-replica salt
 - **WHEN** the `round_robin` strategy selects repeatedly with unchanged state
 - **THEN** the same account is selected every time
+
+#### Scenario: Bridge worker identity is preserved
+
+- **GIVEN** bridge-enabled workers with distinct configured instance identities
+- **WHEN** each worker initializes its round-robin replica salt
+- **THEN** each configured bridge instance identity is used unchanged
+
+#### Scenario: Bridge-disabled sibling workers are decorrelated
+
+- **GIVEN** two bridge-disabled Uvicorn workers on the same host
+- **WHEN** each process initializes its fallback replica salt
+- **THEN** each salt is stable within its worker
+- **AND** the salts differ by a process-specific component
+- **AND** a value cached before a process fork is recomputed in the child

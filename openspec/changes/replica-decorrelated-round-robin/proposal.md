@@ -15,12 +15,13 @@ propagate-balancer-health-signals design.
 
 ## What Changes
 
-- Add a per-replica salt (defaulting to the HTTP responses-session bridge
-  instance id, else the host identity) mixed into the **final** round-robin
-  tie-break via a keyed hash.
+- Add a per-replica salt mixed into the **final** round-robin tie-break via a
+  keyed hash. Bridge-enabled workers preserve their configured bridge instance
+  identity; runtimes without a unique bridge identity use a fork-safe
+  `hostname:PID` fallback.
 - Primary ordering (planner cost, then least-recently-selected) is unchanged;
   only genuine ties are decorrelated so peers spread across equally-good
   accounts.
-- The salt is process-stable (not random per call), so single-replica selection
-  stays deterministic and unchanged in aggregate.
+- The salt is process-stable (not random per call), while sibling
+  bridge-disabled Uvicorn workers on one host receive distinct salts.
 - No schema/migration change: the salt is in-memory routing state only.

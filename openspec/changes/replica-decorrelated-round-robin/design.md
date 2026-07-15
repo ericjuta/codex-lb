@@ -57,15 +57,16 @@ Precedence in `_effective_replica_salt`:
 1. An explicit `replica_salt` argument to `select_account` (used by tests and
    any caller that wants to be explicit).
 2. A process-wide value set once at proxy start-up via
-   `configure_replica_salt(...)`, wired from
-   `settings.http_responses_session_bridge_instance_id` — the canonical
-   per-replica identity already used for bridge ownership.
-3. A lazily-resolved, cached default of the host identity
-   (`socket.gethostname()`), matching the bridge instance-id default so an
-   unconfigured process still decorrelates by pod/host.
+   `configure_replica_salt(...)`. When the HTTP responses-session bridge is
+   enabled, `app.main` passes its canonical worker-specific instance identity
+   through unchanged.
+3. When no unique bridge identity is available (including bridge-disabled
+   multi-worker Uvicorn), a lazily-resolved `hostname:PID` fallback. The cache
+   is keyed by PID so a salt resolved in a pre-fork parent is recomputed in each
+   worker after fork.
 
-No new configuration surface is added; the salt reuses the existing
-per-replica identity.
+No new configuration surface is added. Bridge-enabled deployments reuse their
+existing identity; other runtimes derive stable process-local identity.
 
 ## Rejected alternatives
 

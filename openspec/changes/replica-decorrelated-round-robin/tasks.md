@@ -13,7 +13,10 @@
 - [x] 2.2 Add a `replica_salt` parameter to `select_account` and mix the
   effective salt into the final `round_robin` tie-break only.
 - [x] 2.3 Export `configure_replica_salt` from `app.core.balancer` and wire it
-  from the HTTP bridge instance id in `LoadBalancer.__init__`.
+  from the bridge instance id only when bridge ownership guarantees a unique
+  worker identity.
+- [x] 2.4 Use a PID-qualified, fork-safe host fallback when no unique bridge
+  worker identity is available.
 
 ## 3. Tests
 
@@ -21,7 +24,9 @@
   different accounts.
 - [x] 3.2 Primary ordering (least-recently-selected / usage) is unchanged.
 - [x] 3.3 Single-replica selection is deterministic across repeated calls.
-- [x] 3.4 Salt precedence (explicit > configured > host default) is exercised.
+- [x] 3.4 Salt precedence (explicit > configured > process fallback) is exercised.
+- [x] 3.5 Bridge-enabled identities and bridge-disabled sibling-worker fallback
+  semantics have deterministic regression coverage.
 
 ## 4. Verification
 
@@ -29,3 +34,5 @@
 - [x] 4.2 `uv run ty check`.
 - [x] 4.3 `scripts/check_proxy_architecture.py` (load_balancer.py touched).
 - [x] 4.4 Load-balancer test suites green.
+- [x] 4.5 Follow-up focused tests, Ruff, changed-file ty, strict OpenSpec
+  validation, and final diff audit pass.

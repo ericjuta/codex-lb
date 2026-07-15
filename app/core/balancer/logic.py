@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import os
 import random
 import socket
 import time
@@ -901,17 +902,16 @@ def _stable_tie_breaker(account_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 _configured_replica_salt: str | None = None
-_process_replica_salt: str | None = None
+_process_replica_salt: tuple[int, str] | None = None
 
 
 def configure_replica_salt(salt: str | None) -> None:
     """Set the process-wide replica salt used to decorrelate round-robin ties.
 
-    Called once during proxy start-up with the replica's stable identity (the
-    HTTP responses-session bridge instance id). An empty or ``None`` value
-    clears the override and restores the lazily-resolved host default. The salt
-    is process-stable by design: it must not change between selections so a
-    replica breaks a given tie the same way every time.
+    Called once during proxy start-up with a stable bridge worker identity when
+    one is available. An empty or ``None`` value clears the override and
+    restores the lazily-resolved process fallback. The salt is process-stable
+    by design: it must not change between selections within one worker.
     """
     global _configured_replica_salt
     normalized = salt.strip() if salt else ""
@@ -919,18 +919,18 @@ def configure_replica_salt(salt: str | None) -> None:
 
 
 def _default_replica_salt() -> str:
-    """Return the cached host-identity fallback salt.
+    """Return the cached fork-safe process fallback salt.
 
-    Resolved once per process so the salt never varies between calls within a
-    replica, keeping single-replica selection deterministic. Matches the HTTP
-    bridge instance-id default (the host name) so an unconfigured process still
-    decorrelates by pod/host.
+    The host name alone is not unique when bridge-disabled Uvicorn workers share
+    one host. Include the PID, and key the cache by PID so a value resolved in a
+    pre-fork parent is recomputed after the worker fork.
     """
     global _process_replica_salt
-    if _process_replica_salt is None:
-        hostname = socket.gethostname().strip()
-        _process_replica_salt = hostname or "codex-lb"
-    return _process_replica_salt
+    process_id = os.getpid()
+    if _process_replica_salt is None or _process_replica_salt[0] != process_id:
+        hostname = socket.gethostname().strip() or "codex-lb"
+        _process_replica_salt = (process_id, f"{hostname}:{process_id}")
+    return _process_replica_salt[1]
 
 
 def _effective_replica_salt(explicit: str | None) -> str:

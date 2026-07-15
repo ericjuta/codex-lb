@@ -24,7 +24,11 @@ from app.core.auth.guardian import build_auth_guardian_scheduler
 from app.core.balancer import configure_replica_salt
 from app.core.bootstrap import ensure_auto_bootstrap_token, log_bootstrap_token
 from app.core.clients.http import close_http_client, init_http_client
-from app.core.config.settings import _bridge_advertise_hostname_is_replica_specific, get_settings
+from app.core.config.settings import (
+    Settings,
+    _bridge_advertise_hostname_is_replica_specific,
+    get_settings,
+)
 from app.core.config.settings_cache import get_settings_cache
 from app.core.handlers import add_exception_handlers
 from app.core.metrics.middleware import MetricsMiddleware
@@ -129,6 +133,13 @@ def _is_benign_metrics_bind_failure(exc: BaseException) -> bool:
     return False
 
 
+def _bridge_replica_salt(settings: Settings) -> str | None:
+    """Use bridge identity only when the runtime guarantees it is worker-unique."""
+    if not settings.http_responses_session_bridge_enabled:
+        return None
+    return settings.http_responses_session_bridge_instance_id
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import app.core.startup as startup_module
@@ -147,10 +158,10 @@ async def lifespan(app: FastAPI):
     await get_rate_limit_headers_cache().invalidate()
     reload_additional_quota_registry()
     settings = get_settings()
-    # Anchor round-robin tie-break decorrelation to this replica's stable bridge
-    # instance identity so peer replicas spread exact ties across equally-good
-    # accounts instead of all herding onto the lexicographically-first account.
-    configure_replica_salt(settings.http_responses_session_bridge_instance_id)
+    # Bridge worker pools already assign stable, unique instance identities.
+    # Bridge-disabled Uvicorn workers have no such identity, so clearing the
+    # configured salt selects the fork-safe process fallback instead.
+    configure_replica_salt(_bridge_replica_salt(settings))
     bridge_endpoint_base_url = settings.http_responses_session_bridge_advertise_base_url
     if settings.otel_enabled:
         from app.core.tracing.otel import init_tracing
