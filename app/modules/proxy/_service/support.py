@@ -9,7 +9,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import anyio
 
@@ -758,9 +758,9 @@ class _WebSocketContinuityState:
         self.last_completed_input_count = input_count
         self.last_completed_response_id = response_id
         self.last_completed_input_prefix_fingerprint = fingerprint
-        self.last_pending_function_call_ids = list(pending_call_ids)
+        self.last_pending_function_call_ids = list(cast(list[str], pending_call_ids))
         self.folded_response_id_aliases = {}
-        for visible_id, upstream_id in aliases.items():
+        for visible_id, upstream_id in cast(dict[str, str], aliases).items():
             self.record_folded_response_id_alias(visible_id, upstream_id)
         return True
     last_pending_tool_call_types: dict[str, str] = field(default_factory=dict)
