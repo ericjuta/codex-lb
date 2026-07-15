@@ -5,7 +5,7 @@
 
 ## 2. Dashboard response delivery
 
-- [ ] 2.1 Port the dashboard-only gzip dispatcher, ranged-response bypass, static resolver cache, and immutable hashed-asset policy from `c01abcaf`.
+- [x] 2.1 Port the dashboard-only gzip dispatcher, ranged-response bypass, static resolver cache, and immutable hashed-asset policy from `c01abcaf`.
 - [ ] 2.2 Add and pass focused integration coverage for dashboard compression, cache headers, ranged assets, and proxy-route exclusion.
 
 ## 3. Frontend load boundaries
