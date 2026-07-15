@@ -19,6 +19,8 @@ The precise runtime marker is the only available value that preserves ordering w
 
 If a usage row is written at `1700000000.7`, a rate limit occurs at `1700000000.8`, and `blocked_at` is persisted as `1700000000`, comparison with only the persisted value incorrectly treats the usage row as post-block evidence. After the short local backoff, the account can become active and receive another upstream attempt.
 
+The precise marker must also survive selection-state synchronization. Otherwise the first pass remains safe but writes `1700000000` back into runtime state, and the next pass incorrectly accepts the `.7` usage sample.
+
 ## Concrete example
 
 For the sequence above, early recovery must compare `1700000000.7` with the exact runtime boundary `1700000000.8`. Because the sample is older, the account remains rate-limited and retains its reset deadline.

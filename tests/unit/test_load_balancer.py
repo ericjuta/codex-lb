@@ -23,6 +23,7 @@ from app.core.balancer import (
 from app.core.usage.quota import apply_usage_quota
 from app.db.models import Account, AccountStatus, UsageHistory
 from app.modules.proxy.load_balancer import (
+    LoadBalancer,
     RuntimeState,
     _additional_quota_applies_to_plan,
     _AdditionalLimitFilterResult,
@@ -2810,22 +2811,25 @@ def test_state_from_account_rate_limited_rejects_same_second_pre_block_usage(mon
         reset_at=int(now + 3600),
         recorded_at=_epoch_to_naive_utc(1_700_000_000.7),
     )
-    runtime = RuntimeState()
+    balancer = LoadBalancer(repo_factory=lambda: MagicMock())
+    runtime = balancer._runtime.setdefault(account.id, RuntimeState())
     runtime.reset_at = float(future_reset)
     runtime.cooldown_until = now - 0.1
     runtime.blocked_at = runtime_blocked
 
-    state = _state_from_account(
-        account=account,
-        primary_entry=pre_block_primary,
-        secondary_entry=None,
-        runtime=runtime,
-    )
-
     assert pre_block_primary.recorded_at.timestamp() > persisted_blocked
     assert pre_block_primary.recorded_at.timestamp() < runtime_blocked
-    assert state.status == AccountStatus.RATE_LIMITED
-    assert state.reset_at == future_reset
+    for _ in range(2):
+        state = _state_from_account(
+            account=account,
+            primary_entry=pre_block_primary,
+            secondary_entry=None,
+            runtime=runtime,
+        )
+        assert state.status == AccountStatus.RATE_LIMITED
+        assert state.reset_at == future_reset
+        balancer._sync_runtime_state(account, state)
+        assert runtime.blocked_at == runtime_blocked
 
 
 def test_background_recovery_state_preserves_rate_limit_cooldown_when_reset_is_in_future(monkeypatch):

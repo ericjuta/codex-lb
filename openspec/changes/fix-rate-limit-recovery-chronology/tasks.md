@@ -13,6 +13,7 @@
 - [x] 3.1 Publish direct Responses WebSocket rate-limit frames through the existing live-usage hub.
 - [x] 3.2 Gate account-summary rate-limit recovery on routing-equivalent post-block usage evidence.
 - [x] 3.3 Add direct relay and `/api/accounts` product-path regressions.
+- [x] 3.4 Preserve the precise runtime block marker across repeated selection-state synchronization.
 
 ## 4. Expanded validation
 

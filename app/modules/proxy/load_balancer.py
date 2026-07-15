@@ -1707,8 +1707,19 @@ class LoadBalancer:
         if runtime.cooldown_until != state.cooldown_until:
             runtime.cooldown_until = state.cooldown_until
             dirty = True
-        if runtime.blocked_at != state.blocked_at:
-            runtime.blocked_at = state.blocked_at
+        synced_blocked_at = state.blocked_at
+        if (
+            state.status == AccountStatus.RATE_LIMITED
+            and runtime.blocked_at is not None
+            and synced_blocked_at is not None
+            and runtime.blocked_at >= synced_blocked_at
+        ):
+            # State derivation exposes the persisted whole-second marker, but
+            # the worker that observed the 429 may retain a more precise marker.
+            # Keep that chronology boundary across repeated selection passes.
+            synced_blocked_at = runtime.blocked_at
+        if runtime.blocked_at != synced_blocked_at:
+            runtime.blocked_at = synced_blocked_at
             dirty = True
         if runtime.last_error_at != state.last_error_at:
             runtime.last_error_at = state.last_error_at

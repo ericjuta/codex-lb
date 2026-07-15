@@ -26,9 +26,11 @@ Within the existing early-recovery branch, compare the candidate usage timestamp
 
 Using the persisted value was rejected because integer truncation loses event order. Increasing the cooldown was rejected because it only changes how often the race appears. Persisting fractional timestamps was rejected because it expands this focused correction into a schema and compatibility change.
 
+When derived state is synchronized after selection, preserve an existing runtime marker whenever the account remains rate-limited and that marker is at least as recent as the derived marker. This prevents a safe first pass from downgrading the boundary before the next cached or repeated selection pass. A newer derived marker still replaces stale runtime state, and non-rate-limited state can still clear the marker.
+
 ### Cover the edge at the state-derivation boundary
 
-Add a unit case with a persisted block at `T`, a precise runtime block at `T + 0.8`, and a usage sample at `T + 0.7`. The local cooldown is expired to enter early recovery. The account must remain rate-limited because the usage sample predates the exact event even though it is newer than the persisted whole second.
+Add a unit case with a persisted block at `T`, a precise runtime block at `T + 0.8`, and a usage sample at `T + 0.7`. The local cooldown is expired to enter early recovery. The account must remain rate-limited because the usage sample predates the exact event even though it is newer than the persisted whole second. Synchronize that result and derive it again to prove the precise boundary survives repeated selection.
 
 The existing sticky-session integration expectation remains the product-path regression guard; no sleeps or weaker attempt assertions are introduced.
 
