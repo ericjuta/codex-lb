@@ -6,7 +6,7 @@
 
 - Add opt-in retention settings (env): `CODEX_LB_REQUEST_LOG_RETENTION_DAYS` and `CODEX_LB_USAGE_HISTORY_RETENTION_DAYS` (the latter covers both usage-history tables). `0` (default) disables retention entirely — no behavior change unless an operator opts in. Non-zero values are validated against safe minimums (request logs ≥ 30 days; usage history ≥ 45 days, exceeding the monthly window).
 - Add a leader-gated background retention job that hard-deletes, in bounded batches:
-  - `request_logs` rows older than the cutoff **and** at or below the account-usage-rollup watermark — unfolded rows are never pruned, so lifetime account totals survive pruning by construction. If the rollup watermark does not exist yet, request-log pruning is skipped.
+  - `request_logs` rows older than the cutoff, only while the fold watermark is current, and at least one fold lag below that watermark; unfolded or reader-reachable rows are never pruned, so lifetime totals survive pruning by construction. If the rollup watermark does not exist yet or is stale, request-log pruning is skipped.
   - `usage_history` / `additional_usage_history` rows older than the cutoff, **always retaining the latest row per (account, window[, quota_key])** so paused/idle accounts keep their last-known usage on the dashboard.
 - Fold per-API-key lifetime sums into a new `api_key_usage_rollups` table in the same fold pass (adversarial-review finding: the dashboard's per-key lifetime totals aggregate `request_logs` unbounded, so pruning would silently erode them). API-key summaries read rollup + live tail, preserving their exact semantics; key deletion drops the rollup row. This also removes another unbounded dashboard scan.
 - Invalidate the SQLite bulk-history cache after usage-history pruning.
@@ -25,6 +25,6 @@
 ## Impact
 
 - **Code**: new `app/core/retention/` job + scheduler, `app/core/config/settings.py` fields, `app/main.py` lifespan wiring, repositories' delete helpers.
-- **Schema**: none (no migration).
+- **Schema**: new `api_key_usage_rollups` table; its Alembic migration follows the account-rollup revision and resets both rollup sums and the shared watermark for a safe full re-backfill.
 - **Ops**: one new periodic job (hourly), leader-only; disabled by default.
 - **Compatibility**: default-off; enabling changes only how far back historical data reaches, which is the feature's purpose.

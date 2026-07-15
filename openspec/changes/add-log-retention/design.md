@@ -20,13 +20,13 @@ Consumers that constrain retention floors:
 
 `request_log_retention_days` (0 = off, else ≥ 30) and `usage_history_retention_days` (0 = off, else ≥ 45; one knob for both usage tables — they serve the same feature and diverge only in key shape). Floors keep every in-product consumer (7-day windows, monthly windows ~31 days, default report ranges) inside retained data; a pydantic validator rejects unsafe values at startup (fail fast). Env-only follows the precedent of the other background schedulers.
 
-### D2. Request-log cutoff is `min(now − retention, rollup watermark)`
+### D2. Request-log pruning requires a current fold and a full-lag safety margin
 
-Pruning must never delete an unfolded row: its tokens would silently vanish from lifetime summaries (the live tail could no longer see it, and the rollup never received it). The rollup's 24 h lag plus a ≥ 30-day retention floor means the watermark virtually always leads the cutoff; the `min()` is the correctness guard for cold starts (fold not yet run → no state row → skip request-log pruning entirely) and stalled folds.
+Pruning must never delete an unfolded row or a row still reachable by a concurrent summary reader. The job therefore runs only when the watermark is within two fold lags of database time, applies the retention cutoff, and caps deletion at least one full fold lag below the watermark. With the 24-hour fold lag and a >=30-day retention floor, the watermark normally leads the cutoff; missing or stale fold state suspends request-log pruning.
 
 ### D3. Preserve the latest usage row per identity key
 
-`usage_history` deletion excludes each `(account_id, coalesce(window,'primary'))` group's max-id row; `additional_usage_history` likewise per `(account_id, quota_key, window)`. This keeps `latest_by_account` answers stable for idle/paused accounts whose newest row predates the cutoff. Implemented as `DELETE ... WHERE id IN (SELECT id ... WHERE recorded_at < cutoff AND id NOT IN (latest ids) LIMIT batch)` loops.
+`usage_history` deletion protects every row tied at the newest `recorded_at` for each `(account_id, coalesce(window,'primary'))`; `additional_usage_history` does the same per `(account_id, quota_key, window)`. This follows reader ordering and keeps last-known state for idle accounts even when rows were inserted out of chronology. The protected ids are materialized once per pass before bounded deletes.
 
 ### D4. Batched deletes on an hourly, leader-gated scheduler
 
@@ -49,7 +49,7 @@ Installs that ran the account-rollup change first have an advanced shared waterm
 
 - Protected latest-row id sets are materialized once per pass and passed as literals into the batch deletes; embedding the GROUP BY subquery in every batch statement rescanned the whole table per 10k batch (under the SQLite writer lock). New identities appearing mid-pass are safe: their rows are newer than the cutoff.
 - Retention settings gained a ceiling (`le=3650`); absurd values previously validated at startup then overflowed `timedelta` every pass, silently disabling retention.
-- The `min(cutoff, watermark)` guard and the coalesce/multi-identity latest-row semantics are pinned by mutation-hardened regression tests (lagging-watermark case, NULL-window identity merge, multi-batch drains).
+- The current-fold/full-lag guard and the coalesce/multi-identity latest-row semantics are pinned by mutation-hardened regression tests (lagging-watermark case, NULL-window identity merge, multi-batch drains).
 
 ### D8. New `data-retention` capability spec
 
@@ -64,7 +64,7 @@ Retention is an operator contract (what data is kept, what the floors are, what 
 
 ## Migration Plan
 
-Code-only. Enable by setting the env vars; disable by unsetting (no data returns, but nothing else changes). Rollback = revert.
+The Alembic migration creates `api_key_usage_rollups` after the account-rollup revision and resets account rollup rows plus the shared watermark together so both account and API-key totals re-backfill safely. Retention remains disabled until the env settings are enabled. Rollback requires disabling retention, reverting code, and downgrading the API-key rollup revision.
 
 ## Open Questions
 
