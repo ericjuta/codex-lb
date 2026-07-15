@@ -305,10 +305,6 @@ from app.modules.proxy._service.observability import (
 from app.modules.proxy._service.observability import (
     _truncate_identifier as _truncate_identifier,
 )
-from app.modules.proxy._service.streaming.usage import (
-    _proxy_billed_usage_from_event_payload,
-    _stream_usage_accounting,
-)
 from app.modules.proxy._service.support import (
     _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
     _REQUEST_TRANSPORT_HTTP,
@@ -319,11 +315,13 @@ from app.modules.proxy._service.support import (
     _DownstreamWebSocketActivity,
     _event_type_from_payload,
     _PreparedWebSocketRequest,
+    _proxy_billed_usage_from_event_payload,
     _record_response_event,
     _record_websocket_route_metadata,
     _request_log_useragent_fields,
     _sleep_for_account_selection_recovery,
     _stream_settlement_error_payload,
+    _stream_usage_accounting,
     _StreamSettlement,
     _wait_for_websocket_continuity_gap,
     _websocket_full_replay_should_wait_for_continuity,

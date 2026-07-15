@@ -244,9 +244,6 @@ from app.modules.proxy._service.observability import (
     _interesting_header_keys as _interesting_header_keys,
 )
 from app.modules.proxy._service.observability import (
-    _maybe_log_proxy_request_payload as _maybe_log_proxy_request_payload,
-)
-from app.modules.proxy._service.observability import (
     _maybe_log_proxy_request_shape as _maybe_log_proxy_request_shape,
 )
 from app.modules.proxy._service.observability import (
@@ -267,6 +264,7 @@ from app.modules.proxy._service.observability import (
 from app.modules.proxy._service.observability import (
     _truncate_identifier as _truncate_identifier,
 )
+from app.modules.proxy._service.streaming.entrypoint import _StreamingEntrypointMixin
 from app.modules.proxy._service.streaming.helpers import (
     _handle_stream_error as _handle_stream_error_helper,
 )
@@ -286,10 +284,6 @@ from app.modules.proxy._service.streaming.helpers import (
 )
 from app.modules.proxy._service.streaming.protocol import _StreamingServiceProtocol
 from app.modules.proxy._service.streaming.retry import _StreamingRetryMixin
-from app.modules.proxy._service.streaming.usage import (
-    _proxy_billed_usage_from_event_payload,
-    _stream_usage_accounting,
-)
 from app.modules.proxy._service.support import (
     _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
     _REQUEST_TRANSPORT_WEBSOCKET,  # noqa: F401
@@ -297,8 +291,10 @@ from app.modules.proxy._service.support import (
     _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
     _ApiKeyReservationTouchState,
     _event_type_from_payload,
+    _proxy_billed_usage_from_event_payload,
     _RequestLogFailureMetadata,
     _RetryableStreamError,
+    _stream_usage_accounting,
     _StreamSettlement,
     _TerminalStreamError,
     _TransientStreamError,
@@ -428,45 +424,10 @@ def _facade() -> Any:
     return sys.modules["app.modules.proxy.service"]
 
 
-_REQUEST_TRANSPORT_HTTP = "http"
-
-
-class _StreamingMixin(_StreamingRetryMixin):
+class _StreamingMixin(_StreamingEntrypointMixin, _StreamingRetryMixin):
     _handle_stream_error = _handle_stream_error_helper
     _resolve_upstream_route_for_account = _resolve_upstream_route_for_account_helper
     _select_account_with_budget_for_stream = _select_account_with_budget_for_stream_helper
-
-    def stream_responses(
-        self,
-        payload: ResponsesRequest,
-        headers: Mapping[str, str],
-        *,
-        codex_session_affinity: bool = False,
-        propagate_http_errors: bool = False,
-        openai_cache_affinity: bool = False,
-        api_key: ApiKeyData | None = None,
-        api_key_reservation: ApiKeyUsageReservationData | None = None,
-        suppress_text_done_events: bool = False,
-        request_transport: str = _REQUEST_TRANSPORT_HTTP,
-        client_ip: str | None = None,
-        enforce_openai_sdk_contract: bool = True,
-    ) -> AsyncIterator[str]:
-        proxy = cast(_StreamingServiceProtocol, self)
-        _maybe_log_proxy_request_payload("stream", payload, headers)
-        filtered = _facade().filter_inbound_headers(headers)
-        return proxy._stream_with_retry(
-            payload,
-            filtered,
-            codex_session_affinity=codex_session_affinity,
-            propagate_http_errors=propagate_http_errors,
-            openai_cache_affinity=openai_cache_affinity,
-            api_key=api_key,
-            api_key_reservation=api_key_reservation,
-            suppress_text_done_events=suppress_text_done_events,
-            request_transport=request_transport,
-            client_ip=client_ip,
-            enforce_openai_sdk_contract=enforce_openai_sdk_contract,
-        )
 
     async def _stream_once(
         self,
