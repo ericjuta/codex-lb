@@ -1,11 +1,16 @@
 ## ADDED Requirements
 
 ### Requirement: Dashboard responses use path-safe compression and caching
-The service MUST apply gzip compression only to eligible dashboard API responses and SPA assets under `/api/` and `/assets/`. It MUST NOT apply dashboard compression to proxy HTTP streams, websocket routes, or ranged asset responses. Content-hashed SPA assets under `/assets/` MUST be served with a one-year immutable cache policy, while the SPA entry document MUST require revalidation.
+The service MUST apply gzip compression only to eligible dashboard API responses under `/api/`. It MUST NOT apply dashboard compression to SPA assets under `/assets/`, proxy HTTP streams, websocket routes, or ranged responses. Content-hashed SPA assets under `/assets/` MUST retain their original content length and be served with a one-year immutable cache policy, while the SPA entry document MUST require revalidation.
 
 #### Scenario: Dashboard API response is compressible
 - **WHEN** a client that accepts gzip requests a dashboard API response large enough to compress
 - **THEN** the response is gzip encoded
+
+#### Scenario: Static asset remains proxy compatible
+- **WHEN** a browser requests a content-hashed SPA asset and advertises gzip support
+- **THEN** the service returns the identity-encoded asset with its complete content length
+- **AND** an intermediary can forward the response without handling a streaming gzip body
 
 #### Scenario: Proxy stream bypasses dashboard compression
 - **WHEN** a client requests a proxy streaming route such as `/backend-api/codex/responses`

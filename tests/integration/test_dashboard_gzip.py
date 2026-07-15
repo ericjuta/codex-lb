@@ -3,6 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from httpx import ASGITransport, AsyncClient
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import Response
+from starlette.routing import Route
+
+from app.core.middleware.dashboard_gzip import DashboardGZipMiddleware
 
 pytestmark = pytest.mark.integration
 
@@ -18,14 +25,43 @@ def _built_asset_name() -> str | None:
 
 
 @pytest.mark.asyncio
-async def test_asset_gzip_and_immutable_cache(async_client):
-    asset = _built_asset_name()
-    if asset is None:
-        pytest.skip("frontend build output not present")
-    response = await async_client.get(f"/assets/{asset}", headers={"Accept-Encoding": "gzip"})
+async def test_asset_identity_encoding_and_immutable_cache():
+    content = b"const dashboard = true;" * 256
+
+    async def asset(_request: Request) -> Response:
+        return Response(
+            content,
+            media_type="text/javascript",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    app = Starlette(routes=[Route("/assets/index-test.js", asset)])
+    app.add_middleware(DashboardGZipMiddleware)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/assets/index-test.js", headers={"Accept-Encoding": "gzip"})
+
+    assert response.status_code == 200
+    assert "content-encoding" not in response.headers
+    assert response.headers.get("content-length") == str(len(content))
+    assert response.content == content
+    assert response.headers.get("cache-control") == "public, max-age=31536000, immutable"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_api_remains_gzip_compressed():
+    content = b'{"status":"ok"}' * 256
+
+    async def dashboard_api(_request: Request) -> Response:
+        return Response(content, media_type="application/json")
+
+    app = Starlette(routes=[Route("/api/test", dashboard_api)])
+    app.add_middleware(DashboardGZipMiddleware)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/test", headers={"Accept-Encoding": "gzip"})
+
     assert response.status_code == 200
     assert response.headers.get("content-encoding") == "gzip"
-    assert response.headers.get("cache-control") == "public, max-age=31536000, immutable"
+    assert response.content == content
 
 
 @pytest.mark.asyncio

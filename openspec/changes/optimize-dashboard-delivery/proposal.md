@@ -4,7 +4,7 @@ The fork still sends avoidable dashboard bytes on first load, depends on an exte
 
 ## What Changes
 
-- Compress dashboard JSON and static assets while explicitly excluding proxy streaming routes and ranged asset responses.
+- Compress dashboard JSON while serving static assets without streaming gzip so reverse proxies can deliver complete browser bundles; continue excluding proxy streaming routes and ranged responses.
 - Cache Vite content-hashed assets immutably while keeping the SPA entry document revalidated.
 - Keep charting code and dashboard routes out of the initial JavaScript graph until the user visits the corresponding surface.
 - Self-host JetBrains Mono and remove the dashboard's Google Fonts dependency.

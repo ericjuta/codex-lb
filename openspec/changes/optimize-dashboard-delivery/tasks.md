@@ -23,3 +23,8 @@
 - [x] 5.1 Run frontend lint, typecheck, full tests, and production build; compare optimized bundle evidence with the baseline.
 - [x] 5.2 Run focused backend tests, Python lint/format checks for changed files, and strict OpenSpec validation.
 - [x] 5.3 Inspect the final diff, commit history, and worktree status; document remaining risks without pushing.
+
+## 6. Reverse-proxy compatibility hotfix
+
+- [x] 6.1 Add regression coverage proving normal SPA asset requests remain identity encoded with a complete content length while immutable caching is preserved.
+- [ ] 6.2 Restrict gzip to dashboard API responses, run focused backend and strict OpenSpec validation, deploy, and verify the real Tailscale asset path.

@@ -6,7 +6,7 @@ This change ports three reviewed upstream optimizations into the fork while pres
 
 ## Decisions and rationale
 
-- Compression is restricted to `/api/` and `/assets/`. Proxy endpoints stream SSE or websocket traffic and must remain outside a buffering compression wrapper.
+- Compression is restricted to bounded `/api/` responses. Static `FileResponse` bodies under `/assets/` stay identity encoded because their streaming gzip framing is not reliably forwarded by every reverse proxy. Proxy endpoints stream SSE or websocket traffic and must also remain outside a buffering compression wrapper.
 - Requests carrying `Range` bypass compression because a static-file `206 Content-Range` describes offsets in the original representation.
 - Only Vite content-hashed `/assets/` files receive a one-year immutable cache policy. `index.html` remains `no-cache` so a deployment can point browsers at new hashes.
 - Route modules and Recharts stay dynamically imported. This reduces initial parsing without removing routes or changing deep-link behavior.
@@ -14,7 +14,7 @@ This change ports three reviewed upstream optimizations into the fork while pres
 
 ## Constraints and failure modes
 
-- Middleware ordering must not add `Content-Encoding` to `/backend-api/*`, `/v1/*`, websocket handshakes, or ranged assets.
+- Middleware ordering must not add `Content-Encoding` to `/assets/*`, `/backend-api/*`, `/v1/*`, websocket handshakes, or ranged responses.
 - Lazy loading must preserve all existing fork routes and named exports. A blank Suspense fallback is acceptable because the existing layout remains rendered while the route chunk loads.
 - Immutable caching is safe only for content-hashed assets; applying it to `index.html` would strand clients on stale entry metadata.
 - The bundled font files are binary source assets and must be included in the port and release artifact.
@@ -42,7 +42,7 @@ Build the frontend from the branch base and again after the port using the same 
 
 ## Concrete example
 
-An operator opening `/dashboard` receives a revalidated `index.html`, cacheable content-hashed assets, and only the dashboard route's JavaScript. Visiting `/reports` then fetches the reports chunk on demand. A request to `/backend-api/codex/responses` remains uncompressed and streaming, while a normal `/api/dashboard/overview` JSON response may be gzip encoded when it exceeds the minimum size.
+An operator opening `/dashboard` receives a revalidated `index.html`, identity-encoded cacheable content-hashed assets with complete content lengths, and only the dashboard route's JavaScript. Visiting `/reports` then fetches the reports chunk on demand. A request to `/backend-api/codex/responses` remains uncompressed and streaming, while a normal `/api/dashboard/overview` JSON response may be gzip encoded when it exceeds the minimum size.
 
 ## Related contract
 

@@ -3,15 +3,15 @@ from __future__ import annotations
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-# Only dashboard-facing paths are compressed. Proxy paths (/backend-api,
-# /v1, websockets) stream SSE and must never pass through a compressing
-# wrapper; dashboard API responses are JSON and the built SPA assets are
-# text-heavy (the uncompressed JS bundle alone is ~1.7 MB).
-_COMPRESSED_PATH_PREFIXES = ("/api/", "/assets/")
+# Only bounded dashboard API responses are compressed. Static FileResponse
+# bodies stream gzip without a content length, which some reverse proxies
+# terminate before forwarding the body. Proxy paths (/backend-api, /v1,
+# websockets) also stream and must never pass through this wrapper.
+_COMPRESSED_PATH_PREFIXES = ("/api/",)
 
 
 class DashboardGZipMiddleware:
-    """Apply gzip to dashboard API and static-asset responses only."""
+    """Apply gzip to bounded dashboard API responses only."""
 
     def __init__(self, app: ASGIApp, minimum_size: int = 1024) -> None:
         self._plain = app

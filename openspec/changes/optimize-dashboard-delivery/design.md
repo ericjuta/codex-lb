@@ -20,7 +20,7 @@ The fork and upstream have diverged substantially, but the three selected upstre
 
 ## Decisions
 
-1. Add a narrow ASGI dispatcher that wraps only `/api/` and `/assets/` requests in Starlette `GZipMiddleware`. This avoids global compression around proxy SSE streams and websocket traffic. A `Range` request uses the original app so static `206` offsets remain valid.
+1. Add a narrow ASGI dispatcher that wraps only `/api/` requests in Starlette `GZipMiddleware`. Static `FileResponse` bodies under `/assets/` remain identity encoded because Starlette streams their gzip representation without a content length, which some reverse proxies terminate before forwarding the body. This also avoids global compression around proxy SSE streams and websocket traffic. A `Range` request uses the original app so byte offsets remain valid.
 2. Cache the `StaticFiles` resolver per static root and assign immutable caching only to Vite's content-hashed `assets/` namespace. The SPA document remains `no-cache`.
 3. Convert each existing page import in the fork's `App.tsx` to an equivalent `React.lazy` import without changing the route table. Wrap the `Outlet` once at the layout boundary.
 4. Keep every Recharts export behind the existing lazy wrapper and remove the manual Recharts chunk. Let Rollup construct a dynamic charts graph instead of hoisting shared chart helpers into the entry graph.
@@ -29,7 +29,7 @@ The fork and upstream have diverged substantially, but the three selected upstre
 
 ## Risks / Trade-offs
 
-- **[Compression changes response headers]** → Scope middleware by path and cover dashboard, proxy, and ranged-asset behavior in integration tests.
+- **[Compression changes response framing]** → Compress only bounded dashboard API responses; serve static assets with their original content length and cover dashboard, proxy, and ranged-asset behavior in integration tests.
 - **[Lazy routes briefly render no page body]** → Keep the persistent layout visible and use the upstream blank fallback; route failures still surface through existing application error handling.
 - **[Immutable caching could retain stale content]** → Apply it only below Vite's content-hashed `assets/` path and keep `index.html` revalidated.
 - **[Binary font provenance or packaging is missed]** → Port exact upstream assets, verify build output contains them, and verify generated HTML/CSS has no Google Fonts references.
