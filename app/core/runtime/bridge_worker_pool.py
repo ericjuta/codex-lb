@@ -214,6 +214,11 @@ class _BridgeFrontProxy:
         self._client = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=None, sock_connect=30.0),
             trust_env=False,
+            # Pass worker response bodies through verbatim. aiohttp's default
+            # auto_decompress would gunzip compressed bodies while the
+            # forwarded Content-Encoding header still said gzip, corrupting
+            # dashboard asset responses for the browser.
+            auto_decompress=False,
         )
         app = web.Application(
             client_max_size=128 * 1024 * 1024,
