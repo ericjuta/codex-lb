@@ -27,4 +27,4 @@
 ## 6. Reverse-proxy compatibility hotfix
 
 - [x] 6.1 Add regression coverage proving normal SPA asset requests remain identity encoded with a complete content length while immutable caching is preserved.
-- [ ] 6.2 Restrict gzip to dashboard API responses, run focused backend and strict OpenSpec validation, deploy, and verify the real Tailscale asset path.
+- [x] 6.2 Restrict gzip to dashboard API responses, run focused backend and strict OpenSpec validation, deploy, and verify the real Tailscale asset path.
