@@ -41,7 +41,7 @@ Live usage ingestion MUST be fire-and-forget: parsing failures, storage failures
 
 #### Scenario: Oversized numeric signal does not affect the stream
 
-- **WHEN** a rate-limit field contains a numeric value too large for a finite float
+- **WHEN** a rate-limit field contains a numeric value too large for a finite float, including a raw JSON integer that exceeds the decoder's conversion limit
 - **THEN** the field is treated as unparseable without raising on the serving path
 
 #### Scenario: Queue overflow drops oldest

@@ -74,6 +74,17 @@ def test_parse_rate_limit_headers_rejects_numeric_overflow() -> None:
     assert parse_rate_limit_headers({"x-codex-primary-used-percent": 10**10000}) is None
 
 
+def test_parse_rate_limit_event_text_rejects_json_integer_overflow() -> None:
+    oversized_integer = "9" * 5000
+    block = (
+        'data: {"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":'
+        f"{oversized_integer}"  # Deliberately unquoted so json.loads performs integer conversion.
+        "}}}\n\n"
+    )
+
+    assert parse_rate_limit_event_text(block) is None
+
+
 def test_parse_rate_limit_headers_without_windows_returns_none() -> None:
     assert parse_rate_limit_headers({"content-type": "text/event-stream"}) is None
     assert parse_rate_limit_headers({"x-codex-credits-balance": "5"}) is None

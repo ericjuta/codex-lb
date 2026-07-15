@@ -21,7 +21,7 @@
 ## 5. Review hardening
 
 - [x] 5.1 Preserve persisted rate limits across restart until a post-block usage row proves recovery.
-- [x] 5.2 Treat successful empty per-model discovery as a completed refresh for the configured in-process cadence.
+- [x] 5.2 Track successful empty per-model discovery separately for the configured in-process cadence, without letting refresh paths that lack per-model persistence suppress discovery.
 
 ## 6. Validation
 

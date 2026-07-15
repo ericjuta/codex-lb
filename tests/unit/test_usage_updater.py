@@ -848,7 +848,7 @@ async def test_force_refresh_bypasses_fresh_usage_cache(monkeypatch: pytest.Monk
     usage_repo = StubUsageRepository()
     updater = UsageUpdater(usage_repo)
     account = _make_account("acc_force_probe", "workspace_force_probe")
-    usage_updater_module._last_successful_refresh[account.id] = datetime.now(tz=timezone.utc)
+    usage_updater_module._last_successful_additional_usage_refresh[account.id] = datetime.now(tz=timezone.utc)
 
     refresh_account = AsyncMock(
         return_value=usage_updater_module.AccountRefreshResult(usage_written=True),
@@ -3599,6 +3599,50 @@ async def test_refresh_accounts_fetches_when_no_additional_rows_were_ever_synced
     await updater.refresh_accounts([acc], latest_usage={"acc_undiscovered": latest})
 
     assert fetch_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_refresh_without_additional_repo_does_not_suppress_discovery(monkeypatch) -> None:
+    monkeypatch.setenv("CODEX_LB_USAGE_REFRESH_ENABLED", "true")
+    from app.core.config.settings import get_settings
+    from app.core.utils.time import utcnow
+
+    get_settings.cache_clear()
+    now = utcnow()
+    now_epoch = int(now.replace(tzinfo=timezone.utc).timestamp())
+    fetch_calls = 0
+
+    async def stub_fetch_usage(**_: Any) -> UsagePayload:
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return UsagePayload.model_validate({"rate_limit": {}})
+
+    monkeypatch.setattr("app.modules.usage.updater.fetch_usage", stub_fetch_usage)
+
+    usage_repo = StubUsageRepository()
+    account = _make_account("acc_discovery_scope", "workspace_discovery_scope")
+
+    await UsageUpdater(usage_repo, accounts_repo=None).force_refresh(account)
+
+    await usage_repo.add_entry(
+        account.id,
+        30.0,
+        recorded_at=now - timedelta(seconds=5),
+        window="primary",
+        reset_at=now_epoch + 300,
+        window_minutes=300,
+    )
+    latest = await usage_repo.latest_entry_for_account(account.id, window="primary")
+    assert latest is not None
+
+    updater = UsageUpdater(
+        usage_repo,
+        accounts_repo=None,
+        additional_usage_repo=StubAdditionalUsageRepository(),
+    )
+    await updater.refresh_accounts([account], latest_usage={account.id: latest})
+
+    assert fetch_calls == 2
 
 
 @pytest.mark.asyncio

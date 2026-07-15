@@ -165,7 +165,7 @@ def parse_rate_limit_event_text(text: str) -> LiveRateLimitSnapshot | None:
             continue
         try:
             payload = json.loads(candidate)
-        except json.JSONDecodeError:
+        except ValueError:
             continue
         if isinstance(payload, dict):
             snapshot = parse_rate_limit_event(payload)

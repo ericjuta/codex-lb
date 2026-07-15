@@ -80,8 +80,14 @@ Background usage refresh SHALL reconcile persisted `rate_limited` and `quota_exc
 
 #### Scenario: Successful empty additional-usage discovery respects refresh cadence
 - **GIVEN** live main-window rows are fresh and no per-model usage rows exist
+- **AND** the refresh path has per-model usage persistence available
 - **WHEN** an upstream usage refresh succeeds without returning per-model limits
 - **THEN** subsequent scheduler visits within the configured refresh interval do not repeat that discovery fetch
+
+#### Scenario: Non-discovery refresh does not suppress per-model discovery
+- **GIVEN** no per-model usage rows exist for an account
+- **WHEN** an upstream usage refresh succeeds through a path without per-model usage persistence
+- **THEN** the next normal scheduler visit still attempts per-model usage discovery
 
 #### Scenario: Restart does not trust pre-block recovery evidence
 - **GIVEN** an account is persisted as `rate_limited` with a block marker and an elapsed reset deadline

@@ -15,6 +15,6 @@
 
 ## 4. Validation
 
-- [x] 4.1 Unit: parser edge cases including numeric overflow; throttle fingerprint/interval; queue overflow drop-oldest; hub no-op; snapshots capture observation time before enqueue and sibling rows share it.
+- [x] 4.1 Unit: parser edge cases including header and raw event-text numeric overflow; throttle fingerprint/interval; queue overflow drop-oldest; hub no-op; snapshots capture observation time before enqueue and sibling rows share it.
 - [x] 4.2 Integration: SSE stream with rate-limit event writes rows for the serving account; kill switch produces no writes.
 - [x] 4.3 `openspec validate live-rate-limit-ingestion --strict`; targeted proxy/usage suites.

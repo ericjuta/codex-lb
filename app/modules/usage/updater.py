@@ -135,6 +135,7 @@ class AccountsRepositoryWithStatusComparePort(AccountsRepositoryPort, Protocol):
 class AccountRefreshResult:
     usage_written: bool
     fetch_succeeded: bool = True
+    additional_usage_synced: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,10 +147,11 @@ class _MergedAdditionalWindow:
     window_minutes: int | None
 
 
-# Module-level freshness cache for additional-only accounts (no main UsageHistory
-# entry). Used as a fast path to avoid DB queries on every pass within the same
-# process. Updated only after a successful refresh that wrote data.
-_last_successful_refresh: dict[str, datetime] = {}
+# Module-level freshness cache for successful additional-usage discovery. Used
+# when a successful upstream response contains no per-model rows, leaving no DB
+# timestamp to preserve the configured cadence. Refresh paths without an
+# additional-usage repository must never update this marker.
+_last_successful_additional_usage_refresh: dict[str, datetime] = {}
 _usage_refresh_auth_cooldowns: dict[str, float] = {}
 
 
@@ -291,10 +293,10 @@ class UsageUpdater:
             # Cross-worker may re-fetch; process-local cache (line ~138)
             # prevents redundant calls within the same worker.
             if latest is None:
-                last_ok = _last_successful_refresh.get(account.id)
-                if not bypass_freshness and last_ok and (now - last_ok).total_seconds() < interval:
-                    continue
                 if self._additional_usage_repo is not None:
+                    last_ok = _last_successful_additional_usage_refresh.get(account.id)
+                    if not bypass_freshness and last_ok and (now - last_ok).total_seconds() < interval:
+                        continue
                     additional_fresh_at = await self._additional_usage_repo.latest_recorded_at_for_account(
                         account.id,
                     )
@@ -303,7 +305,7 @@ class UsageUpdater:
                         and additional_fresh_at
                         and (now - additional_fresh_at).total_seconds() < interval
                     ):
-                        _last_successful_refresh[account.id] = additional_fresh_at
+                        _last_successful_additional_usage_refresh[account.id] = additional_fresh_at
                         continue
             # NOTE: AsyncSession is not safe for concurrent use. Run sequentially
             # within the request-scoped session to avoid PK collisions and
@@ -340,8 +342,9 @@ class UsageUpdater:
                 # Only cache when the upstream fetch actually succeeded.
                 # Transient errors (401 retry failure, 5xx, etc.) must not
                 # suppress retries within the interval.
+                if result.additional_usage_synced:
+                    _last_successful_additional_usage_refresh[account.id] = now
                 if result.fetch_succeeded:
-                    _last_successful_refresh[account.id] = now
                     _clear_usage_refresh_auth_cooldown(account.id)
             except Exception as exc:
                 logger.warning(
@@ -379,8 +382,9 @@ class UsageUpdater:
                 join_existing=False,
             )
             await self._sync_account_from_repo(account)
+            if result.additional_usage_synced:
+                _last_successful_additional_usage_refresh[account.id] = utcnow()
             if result.fetch_succeeded:
-                _last_successful_refresh[account.id] = utcnow()
                 _clear_usage_refresh_auth_cooldown(account.id)
             return result.usage_written
         except Exception as exc:
@@ -427,7 +431,7 @@ class UsageUpdater:
             # A successful empty response is still a completed discovery poll.
             # Use the process-local success marker to preserve the configured
             # cadence instead of refetching on every scheduler visit.
-            last_successful_refresh = _last_successful_refresh.get(account_id)
+            last_successful_refresh = _last_successful_additional_usage_refresh.get(account_id)
             if last_successful_refresh is None:
                 return True
             return (now - last_successful_refresh).total_seconds() >= interval_seconds
@@ -655,7 +659,10 @@ class UsageUpdater:
         rate_limit = payload.rate_limit
         if rate_limit is None:
             additional_synced = self._additional_usage_repo is not None and payload.additional_rate_limits is not None
-            return AccountRefreshResult(usage_written=additional_synced)
+            return AccountRefreshResult(
+                usage_written=additional_synced,
+                additional_usage_synced=self._additional_usage_repo is not None,
+            )
         # Treat both None and empty rate_limit (both windows absent) as
         # additional-only to avoid falling through to window processing.
         normalized_windows = usage_core.normalize_rate_limit_windows(
@@ -670,10 +677,16 @@ class UsageUpdater:
                 additional_synced = (
                     self._additional_usage_repo is not None and payload.additional_rate_limits is not None
                 )
-                return AccountRefreshResult(usage_written=additional_synced)
+                return AccountRefreshResult(
+                    usage_written=additional_synced,
+                    additional_usage_synced=self._additional_usage_repo is not None,
+                )
         if primary is None and secondary is None and monthly is None:
             additional_synced = self._additional_usage_repo is not None and payload.additional_rate_limits is not None
-            return AccountRefreshResult(usage_written=additional_synced)
+            return AccountRefreshResult(
+                usage_written=additional_synced,
+                additional_usage_synced=self._additional_usage_repo is not None,
+            )
         credits_has, credits_unlimited, credits_balance = _credits_snapshot(payload)
         usage_written = False
 
@@ -719,7 +732,10 @@ class UsageUpdater:
             )
             usage_written = usage_written or _usage_entry_written(entry)
         await self._recover_quota_status_from_usage(account, primary=primary, secondary=secondary, monthly=monthly)
-        return AccountRefreshResult(usage_written=usage_written)
+        return AccountRefreshResult(
+            usage_written=usage_written,
+            additional_usage_synced=self._additional_usage_repo is not None,
+        )
 
     async def _deactivate_for_client_error(self, account: Account, exc: UsageFetchError) -> None:
         if not self._auth_manager:
@@ -1274,5 +1290,5 @@ def _prune_usage_refresh_auth_cooldowns() -> None:
 
 def _clear_usage_refresh_state() -> None:
     _usage_refresh_auth_cooldowns.clear()
-    _last_successful_refresh.clear()
+    _last_successful_additional_usage_refresh.clear()
     _USAGE_REFRESH_SINGLEFLIGHT.clear()
