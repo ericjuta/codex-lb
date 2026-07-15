@@ -260,6 +260,10 @@ class _LockedSessionState:
 class _LockedOnceAsyncSession:
     def __init__(self, state: _LockedSessionState) -> None:
         self._state = state
+        self._in_transaction = True
+
+    def in_transaction(self) -> bool:
+        return self._in_transaction
 
     def get_bind(self) -> Any:
         return SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
@@ -271,9 +275,11 @@ class _LockedOnceAsyncSession:
 
     async def commit(self) -> None:
         self._state.commit_calls += 1
+        self._in_transaction = False
 
     async def rollback(self) -> None:
         self._state.rollback_calls += 1
+        self._in_transaction = False
 
     async def close(self) -> None:
         self._state.close_calls += 1
