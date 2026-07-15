@@ -27,8 +27,18 @@ Build the frontend from the branch base and again after the port using the same 
 
 - Production build: 26 JavaScript files, 1,833,783 raw bytes and 506,844 gzip bytes in total.
 - Initial entry chunk: 774,559 raw bytes and 205,553 gzip bytes.
+- Initial entry graph: 7 JavaScript files, 1,663,068 raw bytes and 456,126 gzip bytes.
 - The entry document modulepreloads `vendor-charts-DazlBwCt.js` (580,350 raw bytes in Vite's report).
 - The entry document contains Google Fonts preconnects plus a render-blocking JetBrains Mono stylesheet.
+
+### Optimized build
+
+- Production build: 63 JavaScript files, 1,852,605 raw bytes and 530,756 gzip bytes in total.
+- Initial entry chunk: 354,822 raw bytes and 109,580 gzip bytes, reductions of 419,737 raw bytes (54.2%) and 95,973 gzip bytes (46.7%).
+- Initial entry graph: 9 JavaScript files, 706,488 raw bytes and 218,204 gzip bytes, reductions of 956,580 raw bytes (57.5%) and 237,922 gzip bytes (52.2%).
+- Neither the entry document nor the entry chunk statically references Recharts or `vendor-charts`; chart and route code remain in on-demand chunks.
+- The build contains the bundled Geist Sans and JetBrains Mono WOFF2 assets and no Google Fonts origin references.
+- The split build increases all-route JavaScript by 18,822 raw bytes (1.0%) and 23,912 gzip bytes (4.7%) because more chunk boundaries add wrapper and compression overhead. The delivery benefit is the smaller initial graph, not a smaller sum of every route artifact.
 
 ## Concrete example
 
