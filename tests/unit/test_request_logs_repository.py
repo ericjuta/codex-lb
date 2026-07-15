@@ -169,7 +169,8 @@ async def test_add_log_retries_sqlite_lock_with_rollback(monkeypatch: pytest.Mon
     assert session.commits == 2
     assert session.rollbacks == 1
     assert len(session.added) == 2
-    assert session.refreshed is log
+    assert session.added[-1] is log
+    assert session.refreshed is None
 
 
 @pytest.mark.asyncio

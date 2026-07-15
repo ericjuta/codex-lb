@@ -42,10 +42,12 @@ from app.core.openai.model_refresh_scheduler import build_model_refresh_schedule
 from app.core.resilience.backpressure import BackpressureMiddleware
 from app.core.resilience.bulkhead import BulkheadMiddleware, get_bulkhead
 from app.core.resilience.memory_monitor import configure as configure_memory_monitor
+from app.core.retention.scheduler import build_data_retention_scheduler
 from app.core.usage.refresh_scheduler import build_usage_refresh_scheduler
 from app.core.usage.reset_credits_refresh_scheduler import build_rate_limit_reset_credits_scheduler
 from app.db.session import SessionLocal, close_db, close_session, init_background_db, init_db
 from app.modules.accounts import api as accounts_api
+from app.modules.accounts.usage_rollup_scheduler import build_account_usage_rollup_scheduler
 from app.modules.api_keys import api as api_keys_api
 from app.modules.api_keys.reset_scheduler import build_api_key_limit_reset_scheduler
 from app.modules.audit import api as audit_api
@@ -168,6 +170,8 @@ async def lifespan(app: FastAPI):
     automations_scheduler = build_automations_scheduler()
     rate_limit_reset_credits_scheduler = build_rate_limit_reset_credits_scheduler()
     prompt_cache_canary_scheduler = build_prompt_cache_canary_scheduler()
+    account_usage_rollup_scheduler = build_account_usage_rollup_scheduler()
+    data_retention_scheduler = build_data_retention_scheduler()
     start_live_usage_ingestor()
     await usage_scheduler.start()
     await api_key_limit_reset_scheduler.start()
@@ -178,6 +182,8 @@ async def lifespan(app: FastAPI):
     await automations_scheduler.start()
     await rate_limit_reset_credits_scheduler.start()
     await prompt_cache_canary_scheduler.start()
+    await account_usage_rollup_scheduler.start()
+    await data_retention_scheduler.start()
     if settings.metrics_enabled and PROMETHEUS_AVAILABLE:
         import uvicorn
 
@@ -342,6 +348,8 @@ async def lifespan(app: FastAPI):
         await stop_live_usage_ingestor()
         await rate_limit_reset_credits_scheduler.stop()
         await prompt_cache_canary_scheduler.stop()
+        await account_usage_rollup_scheduler.stop()
+        await data_retention_scheduler.stop()
         try:
             await close_http_client()
         finally:
