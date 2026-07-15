@@ -43,7 +43,13 @@ meter. Don't mix lanes in one runway number.
 - `docker logs --since Nh` + grep pipelines: balancer "gated routing"/"winner" lines interleave
   across concurrent requests; pairing them with awk mis-attributes lanes. Don't.
 - `upstream_websocket_open_timeout` storms are typically transient upstream capacity; classed
-  retryable and absorbed by failover, not an outage. Count them, don't panic.
+  retryable and absorbed by failover, not an outage. Count them, don't panic. They hit all
+  accounts uniformly and follow a diurnal shape (quiet ~03-05 UTC); direct socket probes show
+  chatgpt.com edge stalls while other Cloudflare-fronted hosts connect instantly. Local knobs
+  live in `.env.local`: `CODEX_LB_UPSTREAM_CONNECT_TIMEOUT_SECONDS` (2026-07-15: 12; keep >8s
+  to absorb the 3-8s SYN-stall band) and `CODEX_LB_PROXY_UPSTREAM_WEBSOCKET_CONNECT_LIMIT`
+  (2026-07-15: 16; at 4 the admission gate serialized handshakes during storms). If continuity
+  fail-closed events rise after lowering the timeout, split the difference (e.g. 15s).
 - `eligible_accounts=N-1/N` on gated-quota routing = one account exhausted that lane; expected.
 - Dashboard "Credits 0.00" = no paid overflow balance, NOT zero weekly quota remaining.
 - Client-side model/reasoning config (e.g. `~/.codex/config.toml`) only affects that client's
