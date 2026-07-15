@@ -96,6 +96,15 @@ from app.modules.usage.live_ingest import start_live_usage_ingestor, stop_live_u
 logger = logging.getLogger(__name__)
 
 
+from app.core.balancer import configure_replica_salt
+from app.core.config.key_fingerprint import verify_encryption_key_fingerprint
+from app.core.scheduling.leader_election import get_leader_election
+from app.modules.model_sources import api as model_sources_api
+from app.modules.proxy.cap_partitioning import refresh_cap_partition
+
+logger = logging.getLogger(__name__)
+
+
 class _MetricsServer(Protocol):
     should_exit: bool
 
@@ -157,6 +166,10 @@ async def lifespan(app: FastAPI):
     await get_rate_limit_headers_cache().invalidate()
     reload_additional_quota_registry()
     settings = get_settings()
+    # Anchor round-robin tie-break decorrelation to this replica's stable bridge
+    # instance identity so peer replicas spread exact ties across equally-good
+    # accounts instead of all herding onto the lexicographically-first account.
+    configure_replica_salt(settings.http_responses_session_bridge_instance_id)
     bridge_endpoint_base_url = settings.http_responses_session_bridge_advertise_base_url
     if settings.otel_enabled:
         from app.core.tracing.otel import init_tracing
