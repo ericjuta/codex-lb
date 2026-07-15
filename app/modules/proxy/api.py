@@ -726,7 +726,7 @@ async def internal_bridge_responses(
                 original_affinity_kind=forwarded_request_context.context.original_affinity_kind,
                 original_affinity_key=forwarded_request_context.context.original_affinity_key,
                 downstream_turn_state=forwarded_request_context.context.downstream_turn_state,
-                previous_response_id=payload.previous_response_id,
+                previous_response_id=responses_payload.previous_response_id,
                 api_key=api_key,
             )
         except ProxyResponseError as exc:

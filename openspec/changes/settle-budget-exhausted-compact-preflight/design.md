@@ -64,3 +64,7 @@ behavior is unchanged — only the reservation is now finalized instead of leake
 - The regression asserts the settle call site is reached (mirroring the existing
   #1254 transport/permanent tests), which pins the invariant at the externally
   failing product path (the `/backend-api/codex/responses/compact` route).
+- The fork accepts raw dictionaries at the internal bridge boundary before
+  `_validate_backend_responses_payload` produces a typed `ResponsesRequest`.
+  Legacy-anchor validation must read `previous_response_id` from that validated
+  payload; reading it from the raw union raises before the settlement path runs.
