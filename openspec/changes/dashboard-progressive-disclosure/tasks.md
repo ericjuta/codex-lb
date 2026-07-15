@@ -13,4 +13,4 @@
 
 - [x] 3.1 Verify fork-specific routes/settings, Accounts reset-credit badge, route splitting, lazy Recharts, and unchanged dependency/build surfaces.
 - [x] 3.2 Run focused and full frontend lint, typecheck, tests, build, bundle/deep-link checks, and strict OpenSpec/main-spec validation.
-- [ ] 3.3 Inspect final diff/status and record scoped local commits without pushing.
+- [x] 3.3 Inspect final diff/status and record scoped local commits without pushing.
