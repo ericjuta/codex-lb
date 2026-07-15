@@ -12,15 +12,24 @@ export type AdvancedSettingsGroupProps = {
 /**
  * Collapsed-by-default container for power-user settings sections.
  *
- * Children are unmounted while the group is closed, so section-owned data
- * queries only fire once the operator expands the group.
+ * Children are unmounted until first expansion, so section-owned data queries
+ * stay deferred. After that, they remain mounted while hidden so in-flight
+ * mutation observers and local form state survive collapse/reopen cycles.
  */
 export function AdvancedSettingsGroup({ children }: AdvancedSettingsGroupProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const [hasOpened, setHasOpened] = useState(false);
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (nextOpen) {
+      setHasOpened(true);
+    }
+  };
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="rounded-xl border bg-card">
+    <Collapsible open={open} onOpenChange={handleOpenChange} className="rounded-xl border bg-card">
       <CollapsibleTrigger
         aria-label={open ? t("settings.advanced.hide") : t("settings.advanced.show")}
         className="flex w-full items-center gap-3 rounded-xl p-5 text-left transition-colors hover:bg-muted/40"
@@ -41,7 +50,15 @@ export function AdvancedSettingsGroup({ children }: AdvancedSettingsGroupProps) 
           </span>
         </span>
       </CollapsibleTrigger>
-      <CollapsibleContent className="space-y-4 border-t p-4">{children}</CollapsibleContent>
+      {hasOpened ? (
+        <CollapsibleContent
+          forceMount
+          hidden={!open}
+          className="space-y-4 border-t p-4"
+        >
+          {children}
+        </CollapsibleContent>
+      ) : null}
     </Collapsible>
   );
 }

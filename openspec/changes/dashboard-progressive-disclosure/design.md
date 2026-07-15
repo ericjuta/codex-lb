@@ -8,7 +8,8 @@ The fork's dashboard currently renders Automations beside primary navigation and
 
 - Reduce primary navigation and Settings density through accessible progressive disclosure.
 - Preserve every fork-specific route, setting, and account indicator.
-- Keep existing page-level Accounts and upstream-proxy queries eager while advanced section components remain unmounted when collapsed.
+- Keep existing page-level Accounts and upstream-proxy queries eager while advanced section components remain unmounted until first expansion.
+- Preserve section-owned mutation observers and pending UI state across later collapse and reopen cycles.
 - Preserve route splitting, lazy chart loading, and direct deep-link behavior.
 
 **Non-Goals:**
@@ -25,7 +26,7 @@ The header will keep five core links visible and render Automations in an Advanc
 
 ### Use a controlled collapsed-by-default Settings group
 
-A small `AdvancedSettingsGroup` component will own open state and use a reusable Radix Collapsible wrapper. Its children are unmounted while closed. This prevents section hooks such as Firewall and Sticky Sessions from running before expansion and gives one accessible show/hide trigger.
+A small `AdvancedSettingsGroup` component will own open state and use a reusable Radix Collapsible wrapper. Its children are unmounted until the first expansion, preventing section hooks such as Firewall and Sticky Sessions from running on initial page load. After first expansion, the group keeps its children mounted and only hides the content while closed so in-flight mutation observers and local form state retain their lifecycle.
 
 ### Keep page-level query hooks outside the disclosure boundary
 
@@ -38,6 +39,7 @@ Routing, upstream proxy, Firewall, Quota Planner, and Sticky Sessions move into 
 ## Risks / Trade-offs
 
 - [Hidden advanced controls reduce discoverability] -> Provide clear title, description, localized trigger labels, and active-state navigation styling.
-- [Unmounting discards unsaved local section state when collapsed] -> The group is intended as navigation-level disclosure; tests cover remounting and query behavior, and mutations remain page-owned where already designed.
+- [Retaining mounted content uses resources after first expansion] -> Pay the lifecycle cost only after operator intent is established; preserve observers thereafter to prevent duplicate or conflicting writes.
+- [Hidden sections could become keyboard-accessible] -> Use the native `hidden` attribute while closed so retained controls are removed from layout and the accessibility tree.
 - [Accidentally deferring eager fork queries] -> Keep hooks at `SettingsPage` scope and assert they run while advanced section mocks remain unmounted.
 - [Route or bundle regressions during upstream adaptation] -> Run direct deep-link integration tests, full build, and existing bundle/route checks without changing route modules.

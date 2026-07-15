@@ -18,7 +18,7 @@ The dashboard header SHALL present Dashboard, Reports, Accounts, APIs, and Setti
 - **THEN** Automations is listed under an Advanced group label
 
 ### Requirement: Settings page progressively discloses advanced sections
-The Settings page SHALL keep core settings visible and SHALL place routing, upstream proxy, Firewall, Quota Planner, and Sticky Sessions in one collapsed-by-default Advanced settings group. Advanced section components MUST remain unmounted while the group is collapsed and MUST mount after one expand interaction.
+The Settings page SHALL keep core settings visible and SHALL place routing, upstream proxy, Firewall, Quota Planner, and Sticky Sessions in one collapsed-by-default Advanced settings group. Advanced section components MUST remain unmounted until the first expand interaction. After first expansion, the components MUST remain mounted but hidden while collapsed so section-owned mutation observers and pending controls retain their lifecycle.
 
 #### Scenario: View core settings before expansion
 - **WHEN** an operator opens Settings without interacting with the Advanced settings group
@@ -30,10 +30,17 @@ The Settings page SHALL keep core settings visible and SHALL place routing, upst
 - **THEN** routing, upstream proxy, Firewall, Quota Planner, and Sticky Sessions sections render
 - **AND** the control exposes a localized Hide advanced settings label
 
+#### Scenario: Preserve an in-flight advanced mutation across collapse
+- **WHEN** an advanced section mutation is pending after the operator has expanded the group
+- **AND** the operator collapses and reopens the group before that mutation settles
+- **THEN** the section's mutation observer remains mounted
+- **AND** the corresponding pending control remains disabled or busy
+- **AND** the interface does not permit a duplicate or conflicting write from remounting into an idle state
+
 #### Scenario: Preserve eager Settings page queries
 - **WHEN** an operator opens Settings while the Advanced settings group remains collapsed
 - **THEN** the existing Accounts and upstream-proxy page queries start eagerly
-- **AND** section-owned advanced queries do not start until their sections mount
+- **AND** section-owned advanced queries do not start until their sections first mount
 
 ### Requirement: Progressive disclosure preserves fork dashboard behavior
 The progressive-disclosure composition MUST preserve fork-specific routes, settings, Accounts reset-credit indicators, route splitting, lazy Recharts loading, and legacy Firewall routing behavior.

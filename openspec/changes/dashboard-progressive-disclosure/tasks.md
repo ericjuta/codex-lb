@@ -14,3 +14,9 @@
 - [x] 3.1 Verify fork-specific routes/settings, Accounts reset-credit badge, route splitting, lazy Recharts, and unchanged dependency/build surfaces.
 - [x] 3.2 Run focused and full frontend lint, typecheck, tests, build, bundle/deep-link checks, and strict OpenSpec/main-spec validation.
 - [x] 3.3 Inspect final diff/status and record scoped local commits without pushing.
+
+## 4. Mutation lifecycle follow-up
+
+- [x] 4.1 Retain advanced section component instances after first expansion while keeping them hidden when collapsed.
+- [x] 4.2 Add regression coverage proving an in-flight mutation remains pending after collapse and reopen.
+- [x] 4.3 Rerun focused and full bounded frontend validation, strict OpenSpec validation, and exact-head publication checks.
