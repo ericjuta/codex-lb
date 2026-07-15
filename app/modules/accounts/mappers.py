@@ -154,6 +154,18 @@ def _account_to_summary(
     status_seed = account.status
     allow_missing_runtime_reset_recovery = False
     long_quota_usage = monthly_usage or effective_secondary_usage
+    rate_limit_has_post_block_evidence = account.blocked_at is None
+    if account.status == AccountStatus.RATE_LIMITED and account.blocked_at is not None:
+        recovery_entry = _rate_limited_recovery_entry(
+            account=account,
+            primary_usage=primary_usage,
+            long_window_usage=long_quota_usage,
+            now_epoch=now_epoch,
+        )
+        rate_limit_has_post_block_evidence = _usage_entry_recorded_after_block(
+            recovery_entry,
+            float(account.blocked_at),
+        )
     long_quota_available = (
         long_quota_usage is not None
         and _usage_entry_is_recent_enough(long_quota_usage.recorded_at)
@@ -237,6 +249,7 @@ def _account_to_summary(
         credits_unlimited=credits_unlimited,
         credits_balance=credits_balance,
         allow_missing_runtime_reset_recovery=allow_missing_runtime_reset_recovery,
+        rate_limit_has_post_block_evidence=rate_limit_has_post_block_evidence,
     )
     # Display-only expiry for the SHORT window: a primary sample whose reset
     # elapsed is not an active window — show it as absent instead of
@@ -343,6 +356,7 @@ def _effective_status_from_usage(
     credits_unlimited: bool | None = None,
     credits_balance: float | None = None,
     allow_missing_runtime_reset_recovery: bool = False,
+    rate_limit_has_post_block_evidence: bool = False,
 ) -> AccountStatus:
     long_window_usage = monthly_usage or secondary_usage
     long_window_used_percent = monthly_used_percent if monthly_usage is not None else secondary_used_percent
@@ -364,6 +378,8 @@ def _effective_status_from_usage(
         credits_balance=credits_balance,
     )
     if account.status == AccountStatus.RATE_LIMITED and status == AccountStatus.ACTIVE:
+        if account.blocked_at is not None and not rate_limit_has_post_block_evidence:
+            return account.status
         if runtime_reset is None and allow_missing_runtime_reset_recovery:
             return status
         if _has_credit_override(
@@ -380,6 +396,46 @@ def _effective_status_from_usage(
             return status
         return account.status
     return status
+
+
+def _rate_limited_recovery_entry(
+    *,
+    account: Account,
+    primary_usage: UsageHistory | None,
+    long_window_usage: UsageHistory | None,
+    now_epoch: int,
+) -> UsageHistory | None:
+    """Select the same recovery-evidence window used by account routing."""
+    if (
+        long_window_usage is not None
+        and long_window_usage.window == "monthly"
+        and usage_core.capacity_for_plan(account.plan_type, "monthly") is not None
+    ):
+        return long_window_usage
+    if primary_usage is None:
+        return long_window_usage
+    if long_window_usage is None:
+        return primary_usage
+    primary_window_expired = primary_usage.reset_at is not None and primary_usage.reset_at <= now_epoch
+    long_window_available = (
+        long_window_usage.used_percent is not None and float(long_window_usage.used_percent) < 100.0
+    )
+    if (
+        primary_window_expired
+        and long_window_available
+        and long_window_usage.recorded_at > primary_usage.recorded_at
+    ):
+        return long_window_usage
+    return primary_usage
+
+
+def _usage_entry_recorded_after_block(entry: UsageHistory | None, blocked_at: float) -> bool:
+    if entry is None or entry.recorded_at is None:
+        return False
+    recorded_at = entry.recorded_at
+    if recorded_at.tzinfo is None:
+        recorded_at = recorded_at.replace(tzinfo=timezone.utc)
+    return recorded_at.timestamp() > blocked_at
 
 
 def _has_credit_override(

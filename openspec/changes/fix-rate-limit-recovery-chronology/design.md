@@ -9,6 +9,8 @@ Rate-limit handling keeps a precise `runtime.blocked_at` in the worker that obse
 - Preserve exact event ordering when the marking worker evaluates fresh-usage early recovery.
 - Keep peer-worker persisted cooldown enforcement unchanged.
 - Reproduce the subsecond ordering edge deterministically without timing sleeps.
+- Keep live usage ingestion transport-complete for direct Responses WebSockets.
+- Keep account-summary recovery aligned with the router's post-block evidence gate.
 
 **Non-Goals:**
 
@@ -30,8 +32,17 @@ Add a unit case with a persisted block at `T`, a precise runtime block at `T + 0
 
 The existing sticky-session integration expectation remains the product-path regression guard; no sleeps or weaker attempt assertions are introduced.
 
+### Reuse the live hub at the direct WebSocket relay boundary
+
+Inspect upstream text frames before downstream processing and publish only frames containing the existing event marker. Parsing and publication use the same fire-and-forget helpers as HTTP/SSE and the HTTP bridge, attributed to the serving account.
+
+### Gate displayed recovery with routing-equivalent chronology
+
+When a persisted `RATE_LIMITED` account maps to an active summary, require the relevant primary or long-window recovery row to be strictly newer than `blocked_at`. Use the same window-selection rules as routing, including the expired-primary/newer-available-long-window case. This prevents stale credits or stale capacity rows from making `/api/accounts` disagree with selection.
+
 ## Risks / Trade-offs
 
 - **Risk: valid early recovery waits for truly post-block evidence** -> This is intentional; only samples strictly newer than the exact local event qualify.
 - **Risk: peer behavior diverges from the marking worker** -> Peers continue using the persisted deadline by design because they do not possess the exact runtime event marker.
 - **Trade-off: no persisted subsecond precision** -> The fix remains process-local and avoids migration risk while preserving the existing cross-process contract.
+- **Trade-off: mapper duplicates a small routing evidence selector** -> Keeping it module-local avoids coupling account APIs to proxy internals; parity is locked by product-path tests and the shared normative requirement.

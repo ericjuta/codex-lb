@@ -1284,6 +1284,49 @@ async def test_accounts_list_preserves_credit_backed_rate_limited_reset_guard(as
 
 
 @pytest.mark.asyncio
+async def test_accounts_list_requires_post_block_usage_before_credit_backed_recovery(async_client, db_setup):
+    now = utcnow()
+    blocked_at = int((now - timedelta(minutes=10)).timestamp())
+    expired_reset = int((now - timedelta(minutes=5)).timestamp())
+    account = _make_account("acc_stale_credit_recovery", "stale-credit-recovery@example.com")
+    account.status = AccountStatus.RATE_LIMITED
+    account.reset_at = expired_reset
+    account.blocked_at = blocked_at
+
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        usage_repo = UsageRepository(session)
+        await accounts_repo.upsert(account)
+        recorded_at = datetime.fromtimestamp(blocked_at - 60, tz=timezone.utc).replace(tzinfo=None)
+        await usage_repo.add_entry(
+            account.id,
+            40.0,
+            window="primary",
+            reset_at=expired_reset,
+            window_minutes=300,
+            recorded_at=recorded_at,
+        )
+        await usage_repo.add_entry(
+            account.id,
+            100.0,
+            window="secondary",
+            reset_at=int((now + timedelta(days=2)).timestamp()),
+            window_minutes=10080,
+            credits_has=True,
+            credits_unlimited=False,
+            credits_balance=5.0,
+            recorded_at=recorded_at,
+        )
+
+    response = await async_client.get("/api/accounts")
+    assert response.status_code == 200
+    account_payload = next(
+        item for item in response.json()["accounts"] if item["accountId"] == account.id
+    )
+    assert account_payload["status"] == "rate_limited"
+
+
+@pytest.mark.asyncio
 async def test_accounts_list_ignores_zero_capacity_monthly_primary_status(async_client, db_setup):
     future_reset = int((utcnow() + timedelta(days=14)).timestamp())
     account = _make_account("acc_free_monthly_primary", "free-monthly@example.com", plan_type="free")

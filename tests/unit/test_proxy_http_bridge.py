@@ -15880,6 +15880,68 @@ async def test_websocket_reader_unexpected_processing_error_fails_pending_reques
 
 
 @pytest.mark.asyncio
+async def test_direct_websocket_relay_publishes_live_rate_limit_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.usage import live_hub
+
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    rate_limit_text = (
+        '{"type":"codex.rate_limits","rate_limits":{"primary":'
+        '{"used_percent":72,"window_minutes":300,"reset_at":1700000300}}}'
+    )
+    upstream = cast(
+        UpstreamResponsesWebSocket,
+        SimpleNamespace(
+            receive=AsyncMock(
+                side_effect=[
+                    UpstreamWebSocketMessage(kind="text", text=rate_limit_text),
+                    UpstreamWebSocketMessage(kind="close", close_code=1000),
+                ]
+            ),
+            close=AsyncMock(),
+            archive_received=lambda message: None,
+        ),
+    )
+    websocket = cast(
+        WebSocket,
+        SimpleNamespace(send_text=AsyncMock(), send_bytes=AsyncMock(), close=AsyncMock()),
+    )
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(service, "_process_upstream_websocket_text", AsyncMock(return_value=rate_limit_text))
+    monkeypatch.setattr(service, "_fail_pending_websocket_requests", AsyncMock())
+
+    captured: list[tuple[Any, str | None]] = []
+    live_hub.register_live_usage_publisher(
+        lambda snapshot, *, account_id=None, chatgpt_account_id=None: captured.append((snapshot, account_id))
+    )
+    try:
+        await service._relay_upstream_websocket_messages(
+            websocket,
+            upstream,
+            account=cast(Any, SimpleNamespace(id="acc-direct", status=AccountStatus.ACTIVE)),
+            account_id_value="acc-direct",
+            pending_requests=deque(),
+            pending_lock=anyio.Lock(),
+            client_send_lock=anyio.Lock(),
+            api_key=None,
+            upstream_control=proxy_service._WebSocketUpstreamControl(),
+            response_create_gate=asyncio.Semaphore(1),
+            proxy_request_budget_seconds=60.0,
+            stream_idle_timeout_seconds=60.0,
+            downstream_activity=proxy_service._DownstreamWebSocketActivity(),
+        )
+    finally:
+        live_hub.register_live_usage_publisher(None)
+
+    assert len(captured) == 1
+    snapshot, account_id = captured[0]
+    assert account_id == "acc-direct"
+    assert snapshot.primary is not None
+    assert snapshot.primary.used_percent == pytest.approx(72.0)
+
+
+@pytest.mark.asyncio
 async def test_maybe_touch_api_key_reservation_keeps_last_touch_when_touch_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

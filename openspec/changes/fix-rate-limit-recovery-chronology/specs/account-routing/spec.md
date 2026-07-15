@@ -27,3 +27,20 @@ Processes without a matching current runtime block marker MUST continue to enfor
 - **GIVEN** a worker did not observe the current upstream rate limit
 - **WHEN** it evaluates the rate-limited account before the persisted reset deadline
 - **THEN** it keeps the account unavailable under the persisted cooldown contract
+
+### Requirement: Account summaries preserve post-block recovery chronology
+
+When `/api/accounts` derives an active display status from a persisted `RATE_LIMITED` account, it MUST require the same qualifying usage-window evidence used by routing to be recorded strictly after persisted `blocked_at`. Credit fields or capacity rows recorded before or at the block MUST NOT make the account summary active while routing still excludes the account.
+
+#### Scenario: Stale credits do not reactivate the account summary
+
+- **GIVEN** an account is persistently `RATE_LIMITED` with a `blocked_at` marker
+- **AND** its usable credit fields and capacity rows were recorded before that marker
+- **WHEN** `/api/accounts` builds the account summary after the reset deadline
+- **THEN** the summary remains `rate_limited`
+
+#### Scenario: Post-block evidence keeps display and routing aligned
+
+- **GIVEN** a qualifying recovery row is recorded strictly after persisted `blocked_at`
+- **WHEN** both routing and account-summary status are evaluated
+- **THEN** both surfaces MAY apply the existing recovery rules

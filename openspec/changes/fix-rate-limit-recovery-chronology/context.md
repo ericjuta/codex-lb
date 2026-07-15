@@ -1,6 +1,6 @@
 ## Purpose and scope
 
-This change closes a chronology gap in local rate-limit recovery. It is limited to the worker that observed the current upstream 429 and still holds the matching precise runtime marker.
+This change closes related chronology gaps in routing, live WebSocket evidence ingestion, and account-summary display recovery.
 
 ## Decision rationale
 
@@ -12,6 +12,8 @@ The precise runtime marker is the only available value that preserves ordering w
 - Do not change database precision or add a migration.
 - Do not alter sticky-session fallback or reallocation policy.
 - Do not make tests wait for wall-clock delays.
+- Preserve the existing fire-and-forget live-ingestion boundary.
+- Keep account APIs and proxy routing free of new cross-module dependencies.
 
 ## Failure mode
 
@@ -24,3 +26,5 @@ For the sequence above, early recovery must compare `1700000000.7` with the exac
 ## Operational notes
 
 No rollout knobs or migrations are required. Validation should include the deterministic state-level regression and the existing sticky-session integration test in serial and xdist modes.
+
+Direct Responses WebSocket traffic must produce the same passive usage snapshot as bridge traffic. A blocked account with positive credits recorded before its block must remain `rate_limited` in `/api/accounts` until qualifying post-block evidence exists.
