@@ -538,8 +538,6 @@ class QuotaWarmupService:
             primary_reset_at=observed_after.reset_at if observed_after else None,
             confidence=effective_confidence,
         )
-
-
 def _local_midnight() -> datetime:
     return utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -556,8 +554,6 @@ def _sample_blocks_short_window_planning(entry: object | None) -> bool:
     if window_minutes is None:
         return False
     return int(window_minutes) > SHORT_WINDOW_MAX_MINUTES
-
-
 def _usage_history_is_fresh(before: object | None, after: object | None) -> bool:
     if after is None:
         return False
