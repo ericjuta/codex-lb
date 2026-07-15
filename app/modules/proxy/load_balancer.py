@@ -2090,7 +2090,9 @@ def _state_from_account(
             # runtime knowledge of the 429) wait for the persisted deadline.
             # The runtime block marker must be at least as recent as the
             # persisted block: leftover runtime state from an earlier 429 does
-            # not prove this replica observed the current one.
+            # not prove this replica observed the current one. Use that precise
+            # runtime marker for chronology because persistence truncates
+            # blocked_at to whole seconds.
             early_freshness_entry = _rate_limited_freshness_entry(
                 account=account,
                 primary_entry=primary_entry,
@@ -2098,7 +2100,7 @@ def _state_from_account(
             )
             if early_freshness_entry is not None and early_freshness_entry.recorded_at is not None:
                 recorded_epoch = early_freshness_entry.recorded_at.replace(tzinfo=timezone.utc).timestamp()
-                if recorded_epoch > effective_blocked_at:
+                if recorded_epoch > runtime.blocked_at:
                     rate_limited_cooldown_deadline = None
 
     if usage_core.capacity_for_plan(account.plan_type, "primary") == 0.0 and (
@@ -2199,12 +2201,19 @@ def _state_from_account(
             freshness_entry = None
         if freshness_entry and freshness_entry.recorded_at is not None:
             recorded_epoch = freshness_entry.recorded_at.replace(tzinfo=timezone.utc).timestamp()
-            if recorded_epoch > effective_blocked_at:
+            freshness_blocked_at = effective_blocked_at
+            if account.status == AccountStatus.RATE_LIMITED:
+                # cooldown_ready proves this worker owns a current runtime
+                # marker; preserve its subsecond chronology.
+                assert runtime.blocked_at is not None
+                freshness_blocked_at = runtime.blocked_at
+            if recorded_epoch > freshness_blocked_at:
                 effective_runtime_reset = None
 
     # Releasing a persisted rate limit requires evidence captured after the
-    # persisted block marker. This remains true after a process restart, when
-    # the runtime cooldown state is empty and the persisted reset has elapsed.
+    # authoritative block marker. The marking worker uses its precise runtime
+    # marker; after a restart, the persisted whole-second marker remains the
+    # available boundary.
     rate_limit_has_post_block_evidence = False
     if account.status == AccountStatus.RATE_LIMITED and effective_blocked_at is not None:
         recovery_entry = _rate_limited_freshness_entry(
@@ -2214,7 +2223,10 @@ def _state_from_account(
         )
         if recovery_entry is not None and recovery_entry.recorded_at is not None:
             recovery_epoch = recovery_entry.recorded_at.replace(tzinfo=timezone.utc).timestamp()
-            rate_limit_has_post_block_evidence = recovery_epoch > effective_blocked_at
+            recovery_blocked_at = effective_blocked_at
+            if runtime.blocked_at is not None and runtime.blocked_at >= effective_blocked_at:
+                recovery_blocked_at = runtime.blocked_at
+            rate_limit_has_post_block_evidence = recovery_epoch > recovery_blocked_at
 
     persisted_rate_limit_without_evidence = (
         status_seed == AccountStatus.RATE_LIMITED

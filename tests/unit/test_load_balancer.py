@@ -2791,6 +2791,43 @@ def test_state_from_account_rate_limited_clears_with_fresh_primary(monkeypatch):
     assert state.status == AccountStatus.ACTIVE
 
 
+def test_state_from_account_rate_limited_rejects_same_second_pre_block_usage(monkeypatch):
+    now = 1_700_000_001.0
+    persisted_blocked = 1_700_000_000
+    runtime_blocked = 1_700_000_000.8
+    future_reset = int(now + 30)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+
+    account = _make_test_account(
+        status=AccountStatus.RATE_LIMITED,
+        reset_at=future_reset,
+        blocked_at=persisted_blocked,
+    )
+    pre_block_primary = _make_test_usage(
+        window="primary",
+        used_percent=10.0,
+        reset_at=int(now + 3600),
+        recorded_at=_epoch_to_naive_utc(1_700_000_000.7),
+    )
+    runtime = RuntimeState()
+    runtime.reset_at = float(future_reset)
+    runtime.cooldown_until = now - 0.1
+    runtime.blocked_at = runtime_blocked
+
+    state = _state_from_account(
+        account=account,
+        primary_entry=pre_block_primary,
+        secondary_entry=None,
+        runtime=runtime,
+    )
+
+    assert pre_block_primary.recorded_at.timestamp() > persisted_blocked
+    assert pre_block_primary.recorded_at.timestamp() < runtime_blocked
+    assert state.status == AccountStatus.RATE_LIMITED
+    assert state.reset_at == future_reset
+
+
 def test_background_recovery_state_preserves_rate_limit_cooldown_when_reset_is_in_future(monkeypatch):
     now = 1_700_000_000.0
     blocked = now - 300.0
