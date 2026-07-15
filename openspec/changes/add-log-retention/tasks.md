@@ -4,8 +4,9 @@
 
 ## 2. Retention job
 
-- [x] 2.1 Implement `app/core/retention/` pass: request_logs pruning with `min(cutoff, rollup watermark)` gate (skip when no state row), usage_history/additional_usage_history pruning excluding latest row per identity key, all via bounded id-subquery delete batches with per-batch commits; clear the SQLite bulk-history cache after usage pruning
+- [x] 2.1 Implement `app/core/retention/`: prune request logs only when the fold is current and only below both the retention cutoff and full-lag watermark margin; preserve newest usage rows by reader-ordered `recorded_at` identity; delete in bounded committed batches; clear the SQLite bulk-history cache after usage pruning
 - [x] 2.2 Add `build_data_retention_scheduler()` (hourly, leader-gated, existing scheduler pattern); wire start/stop in `app/main.py`; disable via autouse fixture in `tests/conftest.py`
+- [x] 2.3 Add `api_key_usage_rollups` migration after the account-rollup revision, reset account rollup sums plus the watermark together, fold account/key sums under one watermark, and preserve key lifecycle semantics
 
 ## 3. Tests
 

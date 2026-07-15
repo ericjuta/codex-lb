@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TypeVar
@@ -401,8 +401,6 @@ class RequestLogsRepository:
         resolved_requested_at = requested_at or utcnow()
 
         async def _add_once() -> RequestLog:
-
-            
             log = RequestLog(
                 account_id=account_id,
                 api_key_id=api_key_id,
