@@ -76,7 +76,9 @@ See [`CODEXCONT.md`](CODEXCONT.md) for behavior, guards, settings, and tests.
 ```bash
 # Docker (recommended)
 docker volume create codex-lb-data
+docker network inspect codex-lb-net >/dev/null 2>&1 || docker network create codex-lb-net
 docker run -d --name codex-lb \
+  --network codex-lb-net \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
   ghcr.io/soju06/codex-lb:latest
