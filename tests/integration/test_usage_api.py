@@ -261,7 +261,7 @@ async def test_usage_summary_sql_aggregate_matches_legacy_python_summation(async
             (10, 0, 99, -5, 0.125, "error", "insufficient_quota"),  # output=0 wins over reasoning; negative cached
         ]
         for index, (inp, out, reasoning, cached, cost, status, error_code) in enumerate(cases):
-            await logs_repo.add_log(
+            log = await logs_repo.add_log(
                 account_id="acc_usage_eq",
                 request_id=f"req_eq_{index}",
                 model=f"gpt-eq-{index % 2}",
@@ -273,10 +273,10 @@ async def test_usage_summary_sql_aggregate_matches_legacy_python_summation(async
                 status=status,
                 error_code=error_code,
                 requested_at=now - timedelta(hours=index + 1),
-                cost_usd=cost,
             )
+            log.cost_usd = cost
         # Warmup rows are excluded by both paths.
-        await logs_repo.add_log(
+        warmup_log = await logs_repo.add_log(
             account_id="acc_usage_eq",
             request_id="req_eq_warm",
             model="gpt-eq-0",
@@ -286,9 +286,10 @@ async def test_usage_summary_sql_aggregate_matches_legacy_python_summation(async
             status="success",
             error_code=None,
             requested_at=now - timedelta(hours=1),
-            cost_usd=9.9,
             request_kind="warmup",
         )
+        warmup_log.cost_usd = 9.9
+        await session.commit()
 
     async with SessionLocal() as session:
         logs_repo = RequestLogsRepository(session)

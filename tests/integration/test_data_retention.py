@@ -36,7 +36,7 @@ def _make_account(account_id: str, email: str) -> Account:
 
 
 async def _add_log(logs_repo: RequestLogsRepository, *, account_id: str, request_id: str, requested_at):
-    return await logs_repo.add_log(
+    log = await logs_repo.add_log(
         account_id=account_id,
         request_id=request_id,
         model="gpt-5.1-codex",
@@ -46,8 +46,10 @@ async def _add_log(logs_repo: RequestLogsRepository, *, account_id: str, request
         status="success",
         error_code=None,
         requested_at=requested_at,
-        cost_usd=0.01,
     )
+    log.cost_usd = 0.01
+    await logs_repo._session.commit()
+    return log
 
 
 def _set_retention(monkeypatch, *, request_logs: int = 0, usage_history: int = 0) -> None:
@@ -381,9 +383,10 @@ async def test_api_key_totals_survive_pruning_and_match_pre_fold(db_setup, monke
                 status="success",
                 error_code=None,
                 requested_at=now - timedelta(days=days_ago),
-                cost_usd=0.01,
                 api_key_id="key_ret",
             )
+            log.cost_usd = 0.01
+            await session.commit()
             assert log is not None
 
     async def _key_summary():
