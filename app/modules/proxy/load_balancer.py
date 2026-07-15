@@ -72,6 +72,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Rows written by the same upstream fetch land within milliseconds of each
+# other; a sibling row only proves a *later* fetch (one that no longer
+# reported the stale window) when it is newer by more than this margin.
+_SIBLING_FETCH_MARGIN_SECONDS = 5.0
+
 _UsageWindowEntry = UsageHistory | AdditionalUsageHistory
 
 _MAX_SELECTION_ATTEMPTS = 4
@@ -2018,19 +2023,36 @@ def _state_from_account(
         secondary_entry,
     )
 
-    # If the usage window has reset (reset_at is in the past) but the last
-    # recorded sample still shows 100 % usage, the data is stale.  Zero it
-    # out so the account is not incorrectly blocked or deprioritised while
-    # waiting for the next usage refresh to fetch fresh numbers.
+    # If the usage window has reset (reset_at is in the past), the last
+    # recorded sample describes an expired window at ANY used percentage:
+    # upstream may have stopped reporting the window entirely (e.g. the
+    # temporary 5h-limit removal), in which case the row is never rewritten
+    # and a frozen sub-100% sample would otherwise hold drain tiers and
+    # budget pressure forever. Zero the derived locals — not the stored
+    # rows — so the account is not incorrectly blocked or deprioritised
+    # while waiting for the next usage refresh. Expired samples map to 0.0
+    # rather than None because usage-derived status recovery only evaluates
+    # non-None percentages.
     now_epoch = int(time.time())
-    if primary_used is not None and primary_used >= 100.0:
-        if primary_reset is not None and primary_reset <= now_epoch:
-            primary_used = 0.0
-            primary_reset = None
-    if secondary_used is not None and secondary_used >= 100.0:
-        if secondary_reset is not None and secondary_reset <= now_epoch:
-            secondary_used = 0.0
-            secondary_reset = None
+    if primary_used is not None and primary_reset is not None and primary_reset <= now_epoch:
+        primary_used = 0.0
+        primary_reset = None
+    # A strictly newer long-window row proves a later fetch no longer
+    # reported the short window: drop the stale duration — whether or not
+    # the stale row's reset has elapsed — so phase planning stops treating
+    # the account as having a short phase window.
+    if (
+        primary_window_minutes is not None
+        and primary_entry is not None
+        and effective_secondary_entry is not None
+        and effective_secondary_entry is not primary_entry
+        and (effective_secondary_entry.recorded_at - primary_entry.recorded_at).total_seconds()
+        > _SIBLING_FETCH_MARGIN_SECONDS
+    ):
+        primary_window_minutes = None
+    if secondary_used is not None and secondary_reset is not None and secondary_reset <= now_epoch:
+        secondary_used = 0.0
+        secondary_reset = None
 
     ignore_zero_capacity_primary_runtime_reset = False
     status_seed = account.status
@@ -2180,6 +2202,32 @@ def _state_from_account(
             if recorded_epoch > effective_blocked_at:
                 effective_runtime_reset = None
 
+    # Releasing a persisted rate limit requires evidence captured after the
+    # persisted block marker. This remains true after a process restart, when
+    # the runtime cooldown state is empty and the persisted reset has elapsed.
+    rate_limit_has_post_block_evidence = False
+    if account.status == AccountStatus.RATE_LIMITED and effective_blocked_at is not None:
+        recovery_entry = _rate_limited_freshness_entry(
+            account=account,
+            primary_entry=primary_entry,
+            long_window_entry=effective_secondary_entry,
+        )
+        if recovery_entry is not None and recovery_entry.recorded_at is not None:
+            recovery_epoch = recovery_entry.recorded_at.replace(tzinfo=timezone.utc).timestamp()
+            rate_limit_has_post_block_evidence = recovery_epoch > effective_blocked_at
+
+    persisted_rate_limit_without_evidence = (
+        status_seed == AccountStatus.RATE_LIMITED
+        and effective_blocked_at is not None
+        and not rate_limit_has_post_block_evidence
+    )
+    # A resetless legacy rate limit whose runtime cooldown was lost has neither
+    # a deadline nor a post-block evidence trail. Preserve the prior guard for
+    # rows without any primary sample.
+    resetless_rate_limit_without_evidence = (
+        status_seed == AccountStatus.RATE_LIMITED and db_reset_at is None and runtime.reset_at is None
+    )
+
     status, used_percent, reset_at = apply_usage_quota(
         status=status_seed,
         primary_used=primary_used,
@@ -2193,6 +2241,11 @@ def _state_from_account(
         credits_balance=credits_balance,
         infer_status_from_usage=False,
     )
+    if status == AccountStatus.ACTIVE and (
+        persisted_rate_limit_without_evidence or (resetless_rate_limit_without_evidence and primary_used is None)
+    ):
+        status = AccountStatus.RATE_LIMITED
+        reset_at = effective_runtime_reset
 
     if status == AccountStatus.QUOTA_EXCEEDED:
         next_blocked_at = effective_blocked_at
@@ -2270,6 +2323,7 @@ def _state_from_account(
         used_percent=effective_used_percent,
         reset_at=reset_at,
         primary_reset_at=primary_reset,
+        primary_window_minutes=primary_window_minutes,
         blocked_at=next_blocked_at,
         cooldown_until=runtime.cooldown_until,
         secondary_used_percent=effective_secondary_used_percent,
@@ -2376,9 +2430,23 @@ def _rate_limited_freshness_entry(
         and usage_core.capacity_for_plan(account.plan_type, "monthly") is not None
     ):
         return long_window_entry
-    if primary_entry is not None:
+    if primary_entry is None:
+        return long_window_entry
+    if long_window_entry is None:
         return primary_entry
-    return None
+    # A post-block refresh that no longer reports the short primary window
+    # writes only long-window rows, so a strictly newer long-window row is
+    # the recovery evidence — but only once the last primary sample's own
+    # reset deadline has provably elapsed, and only when that long window
+    # still has capacity. An exhausted long-window row must not clear the
+    # block: recovery would route traffic to an account whose long quota is
+    # still at 100%. While the primary sample still claims an active window,
+    # or omits reset metadata entirely, its freshness keeps gating recovery.
+    primary_window_expired = primary_entry.reset_at is not None and float(primary_entry.reset_at) <= time.time()
+    long_window_available = long_window_entry.used_percent is not None and float(long_window_entry.used_percent) < 100.0
+    if primary_window_expired and long_window_available and long_window_entry.recorded_at > primary_entry.recorded_at:
+        return long_window_entry
+    return primary_entry
 
 
 def _usage_entry_is_recent_available(entry: _UsageWindowEntry | None) -> bool:
