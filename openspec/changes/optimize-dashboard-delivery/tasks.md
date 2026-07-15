@@ -15,7 +15,7 @@
 
 ## 4. Self-hosted font
 
-- [ ] 4.1 Port the JetBrains Mono assets and local font declarations from `acfb295e` and remove Google Fonts references.
+- [x] 4.1 Port the JetBrains Mono assets and local font declarations from `acfb295e` and remove Google Fonts references.
 - [ ] 4.2 Verify the production build contains the local font files and no Google Fonts origin references.
 
 ## 5. Validation and evidence
