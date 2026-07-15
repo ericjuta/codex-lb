@@ -10,7 +10,7 @@
 
 ## 3. Frontend load boundaries
 
-- [ ] 3.1 Port route-level lazy loading and deferred Recharts chunking from `3e4479d9` and `c01abcaf` without dropping fork routes.
+- [x] 3.1 Port route-level lazy loading and deferred Recharts chunking from `3e4479d9` and `c01abcaf` without dropping fork routes.
 - [ ] 3.2 Verify the production entry graph excludes unvisited route modules and static/modulepreloaded Recharts code.
 
 ## 4. Self-hosted font
