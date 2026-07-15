@@ -454,10 +454,7 @@ def _websocket_anchor_delta_is_reasoning_consistent(delta_items: list[JsonValue]
         if item_type == "reasoning":
             seen_reasoning = True
         elif (
-            item_type == "message"
-            and isinstance(item, dict)
-            and item.get("role") == "assistant"
-            and not seen_reasoning
+            item_type == "message" and isinstance(item, dict) and item.get("role") == "assistant" and not seen_reasoning
         ):
             return False
     return True
@@ -1079,9 +1076,7 @@ def _maybe_rewrite_websocket_previous_response_not_found_event(
         return event, payload, event_type, original_text
 
     reconnect_requested = (
-        variant is not None
-        or reason == "orphaned_reasoning_item"
-        or request_state.preferred_account_id is not None
+        variant is not None or reason == "orphaned_reasoning_item" or request_state.preferred_account_id is not None
     )
     return _rewrite_websocket_continuity_corruption_event(
         request_state=request_state,

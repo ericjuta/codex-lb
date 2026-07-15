@@ -3775,9 +3775,7 @@ class _WebSocketMixin:
                 "websocket_orphaned_reasoning_recovery request_id=%s previous_response_id=%s retry_safe=%s",
                 request_state.request_id,
                 request_state.previous_response_id,
-                bool(
-                    request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text
-                ),
+                bool(request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text),
             )
         retry_is_previous_response_not_found = is_previous_response_not_found_event or (
             is_orphaned_reasoning_recovery_event

@@ -15990,8 +15990,7 @@ def test_websocket_anchor_delta_reasoning_consistency_rules():
 
 def test_is_orphaned_reasoning_item_error_classifier():
     orphan_message = (
-        "Item 'msg_0d1f4d40' of type 'message' was provided without its required "
-        "'reasoning' item: 'rs_0d1f4d40'."
+        "Item 'msg_0d1f4d40' of type 'message' was provided without its required 'reasoning' item: 'rs_0d1f4d40'."
     )
     assert websocket_helpers._is_orphaned_reasoning_item_error(
         code="invalid_request_error",

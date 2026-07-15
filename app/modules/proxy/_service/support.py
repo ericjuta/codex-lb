@@ -747,9 +747,7 @@ class _WebSocketContinuityState:
             return False
         if fingerprint is not None and not isinstance(fingerprint, str):
             return False
-        if not isinstance(pending_call_ids, list) or not all(
-            isinstance(call_id, str) for call_id in pending_call_ids
-        ):
+        if not isinstance(pending_call_ids, list) or not all(isinstance(call_id, str) for call_id in pending_call_ids):
             return False
         if not isinstance(aliases, dict) or not all(
             isinstance(visible_id, str) and isinstance(upstream_id, str) for visible_id, upstream_id in aliases.items()
@@ -763,6 +761,7 @@ class _WebSocketContinuityState:
         for visible_id, upstream_id in cast(dict[str, str], aliases).items():
             self.record_folded_response_id_alias(visible_id, upstream_id)
         return True
+
     last_pending_tool_call_types: dict[str, str] = field(default_factory=dict)
     responses_lite_model: str | None = None
     responses_lite_response_id: str | None = None
