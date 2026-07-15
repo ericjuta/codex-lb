@@ -33,7 +33,11 @@ Status, complete, manual callback, and browser callback paths read durable state
 
 ### Make terminal writes monotonic in SQL
 
-Status updates use one conditional SQL `UPDATE`. A non-success terminal cannot overwrite success, and callers must honor a rejected error write by reconciling and returning the durable success. A client-side read-then-write guard was rejected because separate sessions can race after both read pending.
+Status updates use conditional SQL `UPDATE` statements. A worker first claims a live `pending` row by moving it to an internal `completing` state; only the claim winner may save account tokens. It then finalizes durable `success` before exposing local success. Missing or expired rows cannot be claimed, so an expiry/purge race cannot save an uncoordinated account. The internal state is presented externally as `pending`. Persistence failures move the owned claim to `error`. A non-success terminal cannot overwrite success, and callers must honor a rejected error write by reconciling and returning the durable success. A client-side read-then-write guard was rejected because separate sessions can race after both read pending.
+
+### Revalidate callback liveness after shutdown
+
+All non-forced listener stops route through one liveness guard. The guard checks local and durable pending browser flows before stopping, retains the process-local reservation until socket cleanup completes, then queries durable state again. If a remote flow was created while the listener was stopping, the process reserves and starts a replacement listener. A remote flow created after the post-stop check can bind the now-free socket on its originating replica. Explicit store reset remains a force-shutdown operation used for lifecycle teardown and tests.
 
 ### Use one atomic device-flow slot
 

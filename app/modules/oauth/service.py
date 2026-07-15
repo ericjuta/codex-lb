@@ -320,13 +320,19 @@ class OauthService:
         *,
         status: str,
         error_message: str | None,
+        expected_status: str | None = None,
     ) -> bool:
         async with get_background_session() as session:
             return await OAuthFlowRepository(session, self._encryptor).set_status(
                 flow_id,
                 status=status,
                 error_message=error_message,
+                expected_status=expected_status,
             )
+
+    async def _claim_flow_completion(self, flow_id: str) -> bool:
+        async with get_background_session() as session:
+            return await OAuthFlowRepository(session, self._encryptor).claim_completion(flow_id)
 
     async def _load_flow_record(
         self,
@@ -362,6 +368,10 @@ class OauthService:
             finished_at=(naive_utc_to_epoch(record.finished_at) if record.finished_at is not None else None),
         )
 
+    @staticmethod
+    def _public_flow_status(status: str) -> str:
+        return "pending" if status in {"idle", "completing"} else status
+
     async def _reconcile_flow_from_durable(
         self,
         *,
@@ -396,15 +406,10 @@ class OauthService:
         if not force_method:
             accounts = await self._accounts_repo.list_accounts()
             if accounts:
-                server: OAuthCallbackServer | None = None
-                stop_task: asyncio.Task[None] | None = None
                 async with self._store.lock:
-                    server = self._store._cleanup_locked(clear_callback_server=False)
+                    self._store._cleanup_locked(clear_callback_server=False)
                     self._store._state = OAuthState(status="success")
-                    if server is not None:
-                        stop_task = self._start_callback_server_stop_locked(server)
-                if server is not None and stop_task is not None:
-                    await self._finish_callback_server_stop(server, stop_task)
+                await self._stop_callback_server_if_idle()
                 return OauthStartResponse(method="browser")
 
         if force_method == "device":
@@ -424,14 +429,14 @@ class OauthService:
             record = await self._reconcile_flow_from_durable(flow_id=target_flow_id)
             if record is not None:
                 return OauthStatusResponse(
-                    status=record.status if record.status != "idle" else "pending",
+                    status=self._public_flow_status(record.status),
                     error_message=record.error_message,
                 )
         async with self._store.lock:
             state = self._store.get_flow_locked(target_flow_id)
             if state is None:
                 state = self._store.state if flow_id is None else OAuthState(status="pending")
-            status = state.status if state.status != "idle" else "pending"
+            status = self._public_flow_status(state.status)
             return OauthStatusResponse(status=status, error_message=state.error_message)
 
     async def complete_oauth(self, request: OauthCompleteRequest | None = None) -> OauthCompleteResponse:
@@ -576,8 +581,11 @@ class OauthService:
                 route=route,
                 allow_direct_egress=route is None,
             )
-            await self._persist_tokens(tokens)
-            await self._set_success(flow.flow_id)
+            if not await self._complete_with_tokens(tokens, flow.flow_id):
+                return ManualCallbackResponse(
+                    status="error",
+                    error_message="OAuth flow expired before completion.",
+                )
             asyncio.create_task(self._stop_callback_server_if_idle())
             return ManualCallbackResponse(status="success")
         except OAuthError as exc:
@@ -697,9 +705,11 @@ class OauthService:
                 route=route,
                 allow_direct_egress=route is None,
             )
-            await self._persist_tokens(tokens)
-            await self._set_success(flow.flow_id)
-            html = _success_html()
+            html = (
+                _success_html()
+                if await self._complete_with_tokens(tokens, flow.flow_id)
+                else _error_html("OAuth flow expired before completion.")
+            )
         except OAuthError as exc:
             html = (
                 _success_html()
@@ -735,8 +745,7 @@ class OauthService:
                     consumed = await self._consume_device_slot(flow_id)
                     if not consumed:
                         return
-                    await self._persist_tokens(tokens)
-                    await self._set_success(flow_id)
+                    await self._complete_with_tokens(tokens, flow_id)
                     return
                 await _async_sleep(context.interval_seconds)
             if consumed or await self._consume_device_slot(flow_id):
@@ -826,7 +835,34 @@ class OauthService:
         if poller is not None:
             await poller.bump(NAMESPACE_API_KEY)
 
-    async def _set_success(self, flow_id: str | None = None) -> None:
+    async def _complete_with_tokens(self, tokens: OAuthTokens, flow_id: str | None) -> bool:
+        if flow_id is None or not await self._claim_flow_completion(flow_id):
+            record = await self._reconcile_flow_from_durable(flow_id=flow_id) if flow_id is not None else None
+            return record is not None and record.status == "success"
+
+        try:
+            await self._persist_tokens(tokens)
+        except Exception:
+            await self._set_error(
+                "OAuth account persistence failed.",
+                flow_id=flow_id,
+                expected_status="completing",
+            )
+            raise
+
+        return await self._set_success(flow_id)
+
+    async def _set_success(self, flow_id: str | None = None) -> bool:
+        if flow_id is not None:
+            applied = await self._persist_flow_status(
+                flow_id,
+                status="success",
+                error_message=None,
+                expected_status="completing",
+            )
+            if not applied:
+                await self._reconcile_flow_from_durable(flow_id=flow_id)
+                return False
         async with self._store.lock:
             flow = self._store.get_flow_locked(flow_id)
             if flow is not None:
@@ -834,10 +870,15 @@ class OauthService:
             elif flow_id is None:
                 self._store.state.status = "success"
                 self._store.state.error_message = None
-        if flow_id is not None:
-            await self._persist_flow_status(flow_id, status="success", error_message=None)
+        return True
 
-    async def _set_error(self, message: str, flow_id: str | None = None) -> bool:
+    async def _set_error(
+        self,
+        message: str,
+        flow_id: str | None = None,
+        *,
+        expected_status: str | None = None,
+    ) -> bool:
         if flow_id is None:
             async with self._store.lock:
                 if self._store.state.flow_id is None:
@@ -849,6 +890,7 @@ class OauthService:
             flow_id,
             status="error",
             error_message=message,
+            expected_status=expected_status,
         )
         if not applied:
             return False
@@ -896,6 +938,30 @@ class OauthService:
                 return
             await asyncio.shield(stop_task)
 
+    async def _restore_callback_server_if_durable_flow_pending(self) -> None:
+        if not await self._has_pending_browser_flows_durable():
+            return
+
+        callback_server: OAuthCallbackServer | None = None
+        settings = get_settings()
+        async with self._store.lock:
+            if self._store._callback_server is None and self._store._callback_server_stop_task is None:
+                callback_server = OAuthCallbackServer(
+                    self._handle_callback,
+                    host=settings.oauth_callback_host,
+                    port=settings.oauth_callback_port,
+                )
+                self._store._callback_server = callback_server
+        if callback_server is None:
+            return
+
+        try:
+            await callback_server.start()
+        except OSError:
+            async with self._store.lock:
+                if self._store._callback_server is callback_server:
+                    self._store._callback_server = None
+
     async def _stop_callback_server_if_idle(self) -> None:
         server: OAuthCallbackServer | None = None
         stop_task: asyncio.Task[None] | None = None
@@ -912,6 +978,7 @@ class OauthService:
                 stop_task = self._start_callback_server_stop_locked(server)
         if server and stop_task:
             await self._finish_callback_server_stop(server, stop_task)
+            await self._restore_callback_server_if_durable_flow_pending()
 
     @staticmethod
     def _html_response(html: str) -> web.Response:

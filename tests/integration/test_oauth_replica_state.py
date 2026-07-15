@@ -151,6 +151,104 @@ async def test_monotonic_success_is_atomic_across_sessions():
 
 
 @pytest.mark.asyncio
+async def test_completion_claim_has_one_cross_session_winner():
+    encryptor = TokenEncryptor()
+    async with SessionLocal() as session:
+        await OAuthFlowRepository(session, encryptor).create(
+            OAuthFlowRecord(
+                flow_id="completion-claim-race",
+                method="browser",
+                status="pending",
+                expires_at=utcnow() + timedelta(minutes=5),
+            )
+        )
+
+    async def claim() -> bool:
+        async with SessionLocal() as session:
+            return await OAuthFlowRepository(session, encryptor).claim_completion("completion-claim-race")
+
+    claims = await asyncio.gather(claim(), claim())
+    assert sorted(claims) == [False, True]
+    async with SessionLocal() as session:
+        record = await OAuthFlowRepository(session, encryptor).get_by_flow_id("completion-claim-race")
+        assert record is not None and record.status == "completing"
+
+
+@pytest.mark.asyncio
+async def test_account_persistence_failure_compensates_owned_completion(monkeypatch):
+    store = oauth_module.OAuthStateStore()
+    replica = _service(store)
+    expires_at = utcnow() + timedelta(minutes=5)
+    async with SessionLocal() as session:
+        await OAuthFlowRepository(session, TokenEncryptor()).create(
+            OAuthFlowRecord(
+                flow_id="completion-compensation",
+                method="browser",
+                status="pending",
+                expires_at=expires_at,
+            )
+        )
+    async with store.lock:
+        store.remember_flow_locked(
+            oauth_module.OAuthState(
+                flow_id="completion-compensation",
+                method="browser",
+                status="pending",
+                expires_at=expires_at.timestamp(),
+            )
+        )
+
+    monkeypatch.setattr(
+        replica,
+        "_persist_tokens",
+        AsyncMock(side_effect=RuntimeError("account write failed")),
+    )
+    with pytest.raises(RuntimeError, match="account write failed"):
+        await replica._complete_with_tokens(
+            OAuthTokens("access", "refresh", "id"),
+            "completion-compensation",
+        )
+
+    async with SessionLocal() as session:
+        record = await OAuthFlowRepository(session, TokenEncryptor()).get_by_flow_id("completion-compensation")
+        assert record is not None
+        assert record.status == "error"
+        assert record.error_message == "OAuth account persistence failed."
+    async with store.lock:
+        local = store.get_flow_locked("completion-compensation")
+        assert local is not None and local.status == "error"
+
+
+@pytest.mark.asyncio
+async def test_rejected_success_finalization_does_not_publish_local_success(monkeypatch):
+    store = oauth_module.OAuthStateStore()
+    replica = _service(store)
+    expires_at = utcnow() + timedelta(minutes=5)
+    async with store.lock:
+        store.remember_flow_locked(
+            oauth_module.OAuthState(
+                flow_id="missing-success-row",
+                method="browser",
+                status="pending",
+                expires_at=expires_at.timestamp(),
+            )
+        )
+
+    persist_status = AsyncMock(return_value=False)
+    monkeypatch.setattr(replica, "_persist_flow_status", persist_status)
+
+    assert not await replica._set_success("missing-success-row")
+    persist_status.assert_awaited_once_with(
+        "missing-success-row",
+        status="success",
+        error_message=None,
+        expected_status="completing",
+    )
+    async with store.lock:
+        assert store.get_flow_locked("missing-success-row") is None
+
+
+@pytest.mark.asyncio
 async def test_unscoped_status_and_complete_reconcile_current_flow_from_durable_state():
     store = oauth_module.OAuthStateStore()
     replica = _service(store)
@@ -280,6 +378,90 @@ async def test_durable_remote_browser_flow_keeps_local_callback_listener_active(
 
 
 @pytest.mark.asyncio
+async def test_remote_browser_flow_created_during_stop_restarts_listener(monkeypatch):
+    store = oauth_module.OAuthStateStore()
+    replica = _service(store)
+    stop_started = asyncio.Event()
+    release_stop = asyncio.Event()
+    replacements: list[object] = []
+
+    class StoppingServer:
+        async def stop(self) -> None:
+            stop_started.set()
+            await release_stop.wait()
+
+    class ReplacementServer:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.started = False
+            replacements.append(self)
+
+        async def start(self) -> None:
+            self.started = True
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(oauth_module, "OAuthCallbackServer", ReplacementServer)
+    async with store.lock:
+        store._callback_server = cast(oauth_module.OAuthCallbackServer, StoppingServer())
+
+    stop_task = asyncio.create_task(replica._stop_callback_server_if_idle())
+    await asyncio.wait_for(stop_started.wait(), timeout=2)
+    async with SessionLocal() as session:
+        await OAuthFlowRepository(session, TokenEncryptor()).create(
+            OAuthFlowRecord(
+                flow_id="created-during-stop",
+                method="browser",
+                status="pending",
+                expires_at=utcnow() + timedelta(minutes=5),
+            )
+        )
+    release_stop.set()
+    await asyncio.wait_for(stop_task, timeout=2)
+
+    assert len(replacements) == 1
+    replacement = replacements[0]
+    assert replacement.started  # type: ignore[attr-defined]
+    async with store.lock:
+        assert store._callback_server is replacement
+
+
+@pytest.mark.asyncio
+async def test_existing_account_start_uses_durable_listener_guard():
+    store = oauth_module.OAuthStateStore()
+
+    @asynccontextmanager
+    async def repo_factory():
+        async with SessionLocal() as session:
+            yield AccountsRepository(session)
+
+    accounts = cast(
+        AccountsRepository,
+        SimpleNamespace(list_accounts=AsyncMock(return_value=[object()])),
+    )
+    replica = oauth_module.OauthService(accounts, repo_factory=repo_factory, store=store)
+    fake_server = cast(oauth_module.OAuthCallbackServer, SimpleNamespace(stop=AsyncMock()))
+    async with SessionLocal() as session:
+        await OAuthFlowRepository(session, TokenEncryptor()).create(
+            OAuthFlowRecord(
+                flow_id="remote-existing-account",
+                method="browser",
+                status="pending",
+                expires_at=utcnow() + timedelta(minutes=5),
+            )
+        )
+    async with store.lock:
+        store._callback_server = fake_server
+
+    response = await replica.start_oauth(OauthStartRequest())
+
+    assert response.method == "browser"
+    fake_server.stop.assert_not_awaited()
+    async with store.lock:
+        assert store._callback_server is fake_server
+
+
+@pytest.mark.asyncio
 async def test_browser_callback_and_duplicate_reconcile_across_replicas(monkeypatch):
     async def no_callback_server(self) -> None:
         del self
@@ -371,6 +553,54 @@ async def test_callback_loser_reports_durable_success(monkeypatch, path):
         local = replica._store.get_flow_locked(started.flow_id)
         assert local is not None
         assert local.status == "success"
+
+
+@pytest.mark.parametrize("path", ["manual_callback", "handle_callback"])
+@pytest.mark.asyncio
+async def test_callback_purge_race_saves_no_uncoordinated_account(monkeypatch, path):
+    async def no_callback_server(self) -> None:
+        del self
+
+    async def no_route():
+        return None
+
+    monkeypatch.setattr(oauth_module.OAuthCallbackServer, "start", no_callback_server)
+    monkeypatch.setattr(oauth_module, "_oauth_route", no_route)
+    replica = _service(oauth_module.OAuthStateStore())
+    persist_tokens = AsyncMock()
+    monkeypatch.setattr(replica, "_persist_tokens", persist_tokens)
+    started = await replica.start_oauth(OauthStartRequest(force_method="browser"))
+    assert started.flow_id is not None
+    assert started.authorization_url is not None
+    state = _state_token(started.authorization_url)
+
+    async def exchange_after_purge(**_kwargs):
+        async with SessionLocal() as session:
+            row = await session.get(OAuthFlowState, started.flow_id)
+            assert row is not None
+            await session.delete(row)
+            await session.commit()
+        return OAuthTokens("access", "refresh", "id")
+
+    monkeypatch.setattr(oauth_module, "exchange_authorization_code", exchange_after_purge)
+    if path == "manual_callback":
+        result = await replica.manual_callback(
+            f"http://localhost:1455/auth/callback?code=race&state={state}",
+            flow_id=started.flow_id,
+        )
+        assert result.status == "error"
+    else:
+        request = make_mocked_request(
+            "GET",
+            f"/auth/callback?code=race&state={state}",
+        )
+        response = await replica._handle_callback(request)
+        assert response.status == 200
+        assert response.text is not None and "Login failed" in response.text
+
+    persist_tokens.assert_not_awaited()
+    async with replica._store.lock:
+        assert replica._store.get_flow_locked(started.flow_id) is None
 
 
 @pytest.mark.asyncio
@@ -553,6 +783,63 @@ async def test_superseded_device_poller_writes_nothing(monkeypatch):
         repo = OAuthFlowRepository(session, TokenEncryptor())
         assert (await repo.get_by_flow_id("superseded")).status == "pending"  # type: ignore[union-attr]
         assert await repo.current_device_slot_flow_id() == "replacement"
+
+
+@pytest.mark.asyncio
+async def test_device_purge_race_saves_no_uncoordinated_account(monkeypatch):
+    replica = _service(oauth_module.OAuthStateStore())
+    expires_at = utcnow() + timedelta(minutes=1)
+    flow = oauth_module.OAuthState(
+        flow_id="device-purge-race",
+        method="device",
+        status="pending",
+        device_auth_id="auth",
+        user_code="code",
+        interval_seconds=0,
+        expires_at=expires_at.timestamp(),
+    )
+    async with replica._store.lock:
+        replica._store.remember_flow_locked(flow)
+    async with SessionLocal() as session:
+        repo = OAuthFlowRepository(session, TokenEncryptor())
+        await repo.create(
+            OAuthFlowRecord(
+                flow_id="device-purge-race",
+                method="device",
+                status="pending",
+                device_auth_id="auth",
+                user_code="code",
+                expires_at=expires_at,
+            )
+        )
+        await repo.claim_device_slot("device-purge-race")
+
+    async def exchange_after_purge(**_kwargs):
+        async with SessionLocal() as session:
+            row = await session.get(OAuthFlowState, "device-purge-race")
+            assert row is not None
+            await session.delete(row)
+            await session.commit()
+        return OAuthTokens("access", "refresh", "id")
+
+    monkeypatch.setattr(oauth_module, "_oauth_route", AsyncMock(return_value=None))
+    monkeypatch.setattr(oauth_module, "exchange_device_token", exchange_after_purge)
+    persist_tokens = AsyncMock()
+    monkeypatch.setattr(replica, "_persist_tokens", persist_tokens)
+
+    await replica._poll_device_tokens(
+        "device-purge-race",
+        oauth_module.DevicePollContext(
+            device_auth_id="auth",
+            user_code="code",
+            interval_seconds=0,
+            expires_at=expires_at.timestamp(),
+        ),
+    )
+
+    persist_tokens.assert_not_awaited()
+    async with replica._store.lock:
+        assert replica._store.get_flow_locked("device-purge-race") is None
 
 
 @pytest.mark.asyncio

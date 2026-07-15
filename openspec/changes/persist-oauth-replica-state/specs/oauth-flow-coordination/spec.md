@@ -2,7 +2,7 @@
 
 ### Requirement: OAuth flow metadata is durable across replicas
 
-The dashboard OAuth service SHALL persist browser and device flow metadata in the database keyed by flow id so that status, completion, browser callback, and manual callback requests can be served by a replica that did not originate the flow. Status and completion requests that omit a flow id MUST resolve the process-local current flow id and reconcile that targeted flow from durable storage before returning. The PKCE code verifier MUST be encrypted at rest with the existing account-token encryption key. Pending flows MUST carry an expiry and MUST be treated as absent after that expiry on every replica, including a replica that still has local pending state. A process-local callback listener MUST remain active while any non-expired pending browser flow exists in durable storage, even when that flow is absent from the listener owner's local store.
+The dashboard OAuth service SHALL persist browser and device flow metadata in the database keyed by flow id so that status, completion, browser callback, and manual callback requests can be served by a replica that did not originate the flow. Status and completion requests that omit a flow id MUST resolve the process-local current flow id and reconcile that targeted flow from durable storage before returning. The PKCE code verifier MUST be encrypted at rest with the existing account-token encryption key. Pending flows MUST carry an expiry and MUST be treated as absent after that expiry on every replica, including a replica that still has local pending state. A process-local callback listener MUST remain active while any non-expired pending browser flow exists in durable storage, even when that flow is absent from the listener owner's local store. Every non-forced listener shutdown path MUST use the same durable liveness guard, and a listener owner MUST revalidate durable liveness after releasing its socket so a flow created during shutdown is not stranded.
 
 #### Scenario: Callback completes on another replica
 
@@ -31,6 +31,19 @@ The dashboard OAuth service SHALL persist browser and device flow metadata in th
 - **AND** durable storage contains a non-expired pending browser flow created by another replica
 - **WHEN** replica A evaluates whether the listener is idle
 - **THEN** replica A keeps the listener active
+
+#### Scenario: Flow created during listener shutdown remains reachable
+
+- **GIVEN** replica A has determined that its callback listener is idle and has begun stopping it
+- **WHEN** replica B durably creates a browser flow before replica A releases the callback socket
+- **THEN** replica A revalidates durable liveness after shutdown and restores a listener
+
+#### Scenario: Existing-account shortcut preserves remote listener liveness
+
+- **GIVEN** durable storage contains a pending browser flow owned by another replica
+- **AND** replica A has an existing account and owns the callback listener
+- **WHEN** replica A receives an unforced OAuth start request
+- **THEN** replica A does not bypass the durable listener-liveness guard
 
 #### Scenario: Expiry invalidates an originating replica's local verifier
 
@@ -71,7 +84,7 @@ The service SHALL coordinate the current device OAuth flow through one database 
 
 ### Requirement: Durable terminal status is monotonic and authoritative
 
-Every externally reachable OAuth entry point MUST reconcile durable state before acting on local state. A durable success MUST NOT regress to error. When an attempted error write is rejected because durable success already exists, the caller MUST leave local state non-error, reconcile, and report success without replaying the consumed authorization code.
+Every externally reachable OAuth entry point MUST reconcile durable state before acting on local state. A durable success MUST NOT regress to error. When an attempted error write is rejected because durable success already exists, the caller MUST leave local state non-error, reconcile, and report success without replaying the consumed authorization code. Before saving account tokens, a callback or device poller MUST atomically claim a live pending flow for completion. If the durable row is missing, expired, or already claimed, that worker MUST NOT save account tokens or expose a new local success. A claimed completion MUST finalize durable success before local success is exposed; an intermediate completion claim MUST be reported externally as pending.
 
 #### Scenario: Duplicate callback does not replay a consumed code
 
@@ -86,3 +99,10 @@ Every externally reachable OAuth entry point MUST reconcile durable state before
 - **WHEN** the losing exchange fails and its conditional error write is rejected
 - **THEN** the loser reports the durable success
 - **AND** it does not leave the local flow in error
+
+#### Scenario: Flow expires while credentials are exchanged
+
+- **GIVEN** a callback or device poller has exchanged credentials for a pending flow
+- **WHEN** the durable flow expires or is purged before completion is claimed
+- **THEN** the worker does not save the account tokens
+- **AND** the worker does not report or cache an uncoordinated success

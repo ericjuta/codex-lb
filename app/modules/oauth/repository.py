@@ -14,6 +14,7 @@ from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import OAuthDeviceFlowSlot, OAuthFlowState
 
 _TERMINAL_OAUTH_STATUSES = {"error", "success"}
+_LIVE_OAUTH_STATUSES = {"completing", "pending"}
 DEVICE_FLOW_SLOT_KEY = "dashboard"
 
 
@@ -65,7 +66,7 @@ class OAuthFlowRepository:
 
     @staticmethod
     def _is_expired_pending(row: OAuthFlowState, now: datetime) -> bool:
-        return row.status == "pending" and row.expires_at is not None and to_utc_naive(row.expires_at) <= now
+        return row.status in _LIVE_OAUTH_STATUSES and row.expires_at is not None and to_utc_naive(row.expires_at) <= now
 
     async def create(self, record: OAuthFlowRecord) -> None:
         encrypted = None
@@ -113,7 +114,7 @@ class OAuthFlowRepository:
             select(OAuthFlowState.flow_id)
             .where(
                 OAuthFlowState.method == "browser",
-                OAuthFlowState.status == "pending",
+                OAuthFlowState.status.in_(tuple(_LIVE_OAUTH_STATUSES)),
                 or_(OAuthFlowState.expires_at.is_(None), OAuthFlowState.expires_at > now),
             )
             .limit(1)
@@ -126,11 +127,14 @@ class OAuthFlowRepository:
         *,
         status: str,
         error_message: str | None,
+        expected_status: str | None = None,
     ) -> bool:
         finished_at = utcnow() if status in _TERMINAL_OAUTH_STATUSES else None
         statement = update(OAuthFlowState).where(OAuthFlowState.flow_id == flow_id)
-        if status != "success":
-            statement = statement.where(OAuthFlowState.status != "success")
+        if expected_status is not None:
+            statement = statement.where(OAuthFlowState.status == expected_status)
+        if status != "success" and expected_status is None:
+            statement = statement.where(OAuthFlowState.status.not_in(("success", "completing")))
         statement = statement.values(
             status=status,
             error_message=error_message,
@@ -140,11 +144,29 @@ class OAuthFlowRepository:
         await self._session.commit()
         return int(result.rowcount or 0) > 0
 
+    async def claim_completion(self, flow_id: str) -> bool:
+        now = utcnow()
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(OAuthFlowState)
+                .where(
+                    OAuthFlowState.flow_id == flow_id,
+                    OAuthFlowState.status == "pending",
+                    or_(OAuthFlowState.expires_at.is_(None), OAuthFlowState.expires_at > now),
+                )
+                .values(status="completing", error_message=None, finished_at=None)
+                .execution_options(synchronize_session=False)
+            ),
+        )
+        await self._session.commit()
+        return int(result.rowcount or 0) > 0
+
     async def purge_expired(self, *, terminal_keep: int) -> None:
         now = utcnow()
         await self._session.execute(
             delete(OAuthFlowState).where(
-                OAuthFlowState.status == "pending",
+                OAuthFlowState.status.in_(tuple(_LIVE_OAUTH_STATUSES)),
                 OAuthFlowState.expires_at.is_not(None),
                 OAuthFlowState.expires_at <= now,
             )
