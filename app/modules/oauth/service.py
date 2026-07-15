@@ -342,6 +342,10 @@ class OauthService:
                 return await repo.get_by_state_token(state_token)
         return None
 
+    async def _has_pending_browser_flows_durable(self) -> bool:
+        async with get_background_session() as session:
+            return await OAuthFlowRepository(session, self._encryptor).has_pending_browser_flows()
+
     @staticmethod
     def _record_to_state(record: OAuthFlowRecord) -> OAuthState:
         return OAuthState(
@@ -412,15 +416,19 @@ class OauthService:
             return await self._start_device_flow()
 
     async def oauth_status(self, flow_id: str | None = None) -> OauthStatusResponse:
-        if flow_id is not None:
-            record = await self._reconcile_flow_from_durable(flow_id=flow_id)
+        target_flow_id = flow_id
+        if target_flow_id is None:
+            async with self._store.lock:
+                target_flow_id = self._store.state.flow_id
+        if target_flow_id is not None:
+            record = await self._reconcile_flow_from_durable(flow_id=target_flow_id)
             if record is not None:
                 return OauthStatusResponse(
                     status=record.status if record.status != "idle" else "pending",
                     error_message=record.error_message,
                 )
         async with self._store.lock:
-            state = self._store.get_flow_locked(flow_id)
+            state = self._store.get_flow_locked(target_flow_id)
             if state is None:
                 state = self._store.state if flow_id is None else OAuthState(status="pending")
             status = state.status if state.status != "idle" else "pending"
@@ -428,12 +436,16 @@ class OauthService:
 
     async def complete_oauth(self, request: OauthCompleteRequest | None = None) -> OauthCompleteResponse:
         payload = request or OauthCompleteRequest()
-        if payload.flow_id is not None:
-            record = await self._reconcile_flow_from_durable(flow_id=payload.flow_id)
+        target_flow_id = payload.flow_id
+        if target_flow_id is None:
+            async with self._store.lock:
+                target_flow_id = self._store.state.flow_id
+        if target_flow_id is not None:
+            record = await self._reconcile_flow_from_durable(flow_id=target_flow_id)
             if record is not None and record.status in _TERMINAL_OAUTH_STATUSES:
                 return OauthCompleteResponse(status=record.status)
         async with self._store.lock:
-            flow = self._store.get_flow_locked(payload.flow_id)
+            flow = self._store.get_flow_locked(target_flow_id)
             state = flow
             if state is None:
                 state = self._store.state if payload.flow_id is None else OAuthState(status="pending")
@@ -887,6 +899,11 @@ class OauthService:
     async def _stop_callback_server_if_idle(self) -> None:
         server: OAuthCallbackServer | None = None
         stop_task: asyncio.Task[None] | None = None
+        async with self._store.lock:
+            if self._store.has_pending_browser_flows_locked():
+                return
+        if await self._has_pending_browser_flows_durable():
+            return
         async with self._store.lock:
             if self._store.has_pending_browser_flows_locked():
                 return

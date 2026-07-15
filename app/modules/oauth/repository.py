@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, delete, select, update
+from sqlalchemy import CursorResult, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -106,6 +106,19 @@ class OAuthFlowRepository:
         if row is None or self._is_expired_pending(row, utcnow()):
             return None
         return self._to_record(row)
+
+    async def has_pending_browser_flows(self) -> bool:
+        now = utcnow()
+        result = await self._session.execute(
+            select(OAuthFlowState.flow_id)
+            .where(
+                OAuthFlowState.method == "browser",
+                OAuthFlowState.status == "pending",
+                or_(OAuthFlowState.expires_at.is_(None), OAuthFlowState.expires_at > now),
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
 
     async def set_status(
         self,

@@ -29,7 +29,7 @@ A new repository stores flow id, state token, method, status, encrypted verifier
 
 ### Reconcile before every externally reachable decision
 
-Status, complete, manual callback, and browser callback paths read durable state before trusting local pending state. A durable terminal overrides local pending; a missing or expired durable row removes stale local state; a durable pending row may hydrate a replica that did not originate the flow.
+Status, complete, manual callback, and browser callback paths read durable state before trusting local pending state. Legacy status and complete requests that omit a flow id first snapshot the local store's current flow id, then perform the same targeted durable reconciliation. A durable terminal overrides local pending; a missing or expired durable row removes stale local state; a durable pending row may hydrate a replica that did not originate the flow. Callback-listener idle checks also query durable non-expired browser flows before stopping a process-local listener.
 
 ### Make terminal writes monotonic in SQL
 
@@ -37,7 +37,7 @@ Status updates use one conditional SQL `UPDATE`. A non-success terminal cannot o
 
 ### Use one atomic device-flow slot
 
-A fixed database slot is claimed with a dialect-specific UPSERT and consumed with a conditional DELETE immediately before tokens are persisted. Only the poller that consumes the current slot may save an account or write a terminal status. The originating process remains the sole device poller; a non-originating `complete` call reports durable status without starting another poller for the single-use code.
+A fixed database slot is claimed with a dialect-specific UPSERT and consumed with a conditional DELETE immediately before tokens are persisted. A start claims the slot and launches its poller only while it is still the process-local current flow, with that decision serialized under the local store lock, so an overlapping later start cannot be replaced by a stale earlier claim. Only the poller that consumes the current slot may save an account or write a terminal status. The originating process remains the sole device poller; a non-originating `complete` call reports durable status without starting another poller for the single-use code.
 
 ### Add one fork-parented migration
 

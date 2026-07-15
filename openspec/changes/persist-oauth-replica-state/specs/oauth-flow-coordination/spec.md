@@ -2,7 +2,7 @@
 
 ### Requirement: OAuth flow metadata is durable across replicas
 
-The dashboard OAuth service SHALL persist browser and device flow metadata in the database keyed by flow id so that status, completion, browser callback, and manual callback requests can be served by a replica that did not originate the flow. The PKCE code verifier MUST be encrypted at rest with the existing account-token encryption key. Pending flows MUST carry an expiry and MUST be treated as absent after that expiry on every replica, including a replica that still has local pending state.
+The dashboard OAuth service SHALL persist browser and device flow metadata in the database keyed by flow id so that status, completion, browser callback, and manual callback requests can be served by a replica that did not originate the flow. Status and completion requests that omit a flow id MUST resolve the process-local current flow id and reconcile that targeted flow from durable storage before returning. The PKCE code verifier MUST be encrypted at rest with the existing account-token encryption key. Pending flows MUST carry an expiry and MUST be treated as absent after that expiry on every replica, including a replica that still has local pending state. A process-local callback listener MUST remain active while any non-expired pending browser flow exists in durable storage, even when that flow is absent from the listener owner's local store.
 
 #### Scenario: Callback completes on another replica
 
@@ -17,6 +17,20 @@ The dashboard OAuth service SHALL persist browser and device flow metadata in th
 - **AND** replica B has recorded durable success or error
 - **WHEN** status or complete is served by replica A
 - **THEN** replica A returns the durable terminal result and reconciles its local state
+
+#### Scenario: Unscoped status and completion reconcile the current flow
+
+- **GIVEN** replica A's local store identifies a current pending flow
+- **AND** replica B has recorded that flow's durable terminal result
+- **WHEN** status or complete reaches replica A without a flow id
+- **THEN** replica A resolves its local current flow id and returns the durable terminal result
+
+#### Scenario: Durable pending flow keeps a callback listener active
+
+- **GIVEN** replica A owns a callback listener and has no local pending browser flow
+- **AND** durable storage contains a non-expired pending browser flow created by another replica
+- **WHEN** replica A evaluates whether the listener is idle
+- **THEN** replica A keeps the listener active
 
 #### Scenario: Expiry invalidates an originating replica's local verifier
 
@@ -34,6 +48,13 @@ The service SHALL coordinate the current device OAuth flow through one database 
 - **WHEN** two replicas start device OAuth concurrently
 - **THEN** the shared slot identifies exactly one current flow
 - **AND** only that flow's originating poller can consume the slot and persist
+
+#### Scenario: Overlapping starts on one replica preserve the later flow
+
+- **GIVEN** an earlier device start is waiting for durable persistence
+- **WHEN** a later start on the same replica supersedes it and claims the slot
+- **THEN** the earlier start does not replace the later slot claim
+- **AND** only the later start launches a poller
 
 #### Scenario: Superseded poller cannot persist
 

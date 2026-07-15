@@ -15,11 +15,14 @@
 - [x] 3.2 Reconcile status, complete, manual callback, and browser callback against durable state before local decisions.
 - [x] 3.3 Gate device account persistence and every terminal write on atomic slot ownership.
 - [x] 3.4 Honor rejected callback error writes by reconciling to durable success.
+- [x] 3.5 Reconcile unscoped status and complete requests through the local current flow id, and keep callback listeners active for durable pending browser flows.
 
 ## 4. Regression coverage
 
 - [x] 4.1 Add cross-session browser callback, durable-terminal, expiry, and duplicate-callback regression tests.
 - [x] 4.2 Add concurrent device-start, superseded-poller, and non-originating-complete regression tests.
+- [x] 4.3 Add regression coverage for unscoped cross-replica terminal reconciliation and durable callback-listener liveness.
+- [x] 4.4 Audit the compressed fork adaptation against upstream `8e2ee2d3` and add focused proof for timezone-aware expiry, cross-session monotonic writes, every reconciliation entry point, and same-replica device-start ordering.
 
 ## 5. Validation and review
 
