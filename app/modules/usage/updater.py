@@ -424,11 +424,13 @@ class UsageUpdater:
             return False
         latest_at = await self._additional_usage_repo.latest_recorded_at_for_account(account_id)
         if latest_at is None:
-            # No additional rows ever fetched: live rows alone must not
-            # suppress the fetch, or a first gated-model use would never be
-            # discovered. Non-gated accounts simply keep the pre-live poll
-            # cadence.
-            return True
+            # A successful empty response is still a completed discovery poll.
+            # Use the process-local success marker to preserve the configured
+            # cadence instead of refetching on every scheduler visit.
+            last_successful_refresh = _last_successful_refresh.get(account_id)
+            if last_successful_refresh is None:
+                return True
+            return (now - last_successful_refresh).total_seconds() >= interval_seconds
         return (now - latest_at).total_seconds() >= interval_seconds
 
     async def _freshness_usage_entry(self, account: Account, latest: UsageHistory | None) -> UsageHistory | None:

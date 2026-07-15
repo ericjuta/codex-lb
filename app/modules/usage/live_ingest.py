@@ -11,6 +11,7 @@ from app.core import usage as usage_core
 from app.core.config.settings import get_settings
 from app.core.usage.live_hub import register_live_usage_publisher
 from app.core.usage.live_snapshots import LiveRateLimitSnapshot, LiveUsageWindow
+from app.core.utils.time import utcnow
 from app.db.models import Account
 from app.db.session import get_background_session
 from app.modules.proxy.account_cache import get_account_selection_cache
@@ -156,6 +157,7 @@ class LiveUsageIngestor:
             and primary.window_minutes == usage_core.DEFAULT_WINDOW_MINUTES_MONTHLY
         ):
             monthly, primary = primary, None
+        snapshot_recorded_at = utcnow()
         async with get_background_session() as session:
             repo = UsageRepository(session)
             if primary is not None:
@@ -170,6 +172,7 @@ class LiveUsageIngestor:
                     credits_has=snapshot.credits_has,
                     credits_unlimited=snapshot.credits_unlimited,
                     credits_balance=snapshot.credits_balance,
+                    recorded_at=snapshot_recorded_at,
                 )
             if secondary is not None:
                 # Mirror the poller: credits normally ride the primary row.
@@ -187,6 +190,7 @@ class LiveUsageIngestor:
                     credits_has=snapshot.credits_has if secondary_carries_credits else None,
                     credits_unlimited=snapshot.credits_unlimited if secondary_carries_credits else None,
                     credits_balance=snapshot.credits_balance if secondary_carries_credits else None,
+                    recorded_at=snapshot_recorded_at,
                 )
             if monthly is not None:
                 await repo.add_entry(
@@ -200,6 +204,7 @@ class LiveUsageIngestor:
                     credits_has=snapshot.credits_has,
                     credits_unlimited=snapshot.credits_unlimited,
                     credits_balance=snapshot.credits_balance,
+                    recorded_at=snapshot_recorded_at,
                 )
         self._last_write[account_id] = (_fingerprint(snapshot), time.monotonic())
         await self._invalidate_caches_throttled()

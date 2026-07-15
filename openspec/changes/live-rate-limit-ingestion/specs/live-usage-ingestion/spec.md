@@ -2,7 +2,7 @@
 
 ### Requirement: Proxied responses feed passive usage snapshots
 
-The proxy SHALL parse upstream rate-limit signals from proxied traffic — `x-codex-{primary,secondary}-used-percent`, `-window-minutes`, `-reset-at`, and `x-codex-credits-*` response headers, and `codex.rate_limits` stream events — into per-account usage snapshots attributed to the account that served the request. Snapshots SHALL be persisted through the same usage-history storage contract the background poller uses (per-window rows with used percent, reset timestamp, window duration, and credits fields).
+The proxy SHALL parse upstream rate-limit signals from proxied traffic — `x-codex-{primary,secondary}-used-percent`, `-window-minutes`, `-reset-at`, and `x-codex-credits-*` response headers, and `codex.rate_limits` stream events — into per-account usage snapshots attributed to the account that served the request. Snapshots SHALL be persisted through the same usage-history storage contract the background poller uses (per-window rows with used percent, reset timestamp, window duration, and credits fields). Every window row derived from one snapshot SHALL share one observation timestamp, including when storage retries delay an individual row.
 
 #### Scenario: Stream event updates usage rows
 
@@ -13,6 +13,11 @@ The proxy SHALL parse upstream rate-limit signals from proxied traffic — `x-co
 
 - **WHEN** an upstream response carries `x-codex-*` rate-limit headers
 - **THEN** an equivalent snapshot is ingested for the serving account
+
+#### Scenario: Sibling rows share one observation time
+
+- **WHEN** one live snapshot contains multiple usage windows
+- **THEN** every persisted window row from that snapshot has the same `recorded_at` value
 
 #### Scenario: Snapshots without any window are ignored
 

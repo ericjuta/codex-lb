@@ -78,6 +78,18 @@ Background usage refresh SHALL reconcile persisted `rate_limited` and `quota_exc
 - **AND** no newer long-window row proves a post-block refresh
 - **THEN** the scheduler leaves the account `rate_limited`
 
+#### Scenario: Successful empty additional-usage discovery respects refresh cadence
+- **GIVEN** live main-window rows are fresh and no per-model usage rows exist
+- **WHEN** an upstream usage refresh succeeds without returning per-model limits
+- **THEN** subsequent scheduler visits within the configured refresh interval do not repeat that discovery fetch
+
+#### Scenario: Restart does not trust pre-block recovery evidence
+- **GIVEN** an account is persisted as `rate_limited` with a block marker and an elapsed reset deadline
+- **AND** the account's plan expects a primary usage window
+- **AND** every stored main-window row predates the block marker
+- **WHEN** a process without runtime cooldown state reconstructs the account
+- **THEN** the account remains `rate_limited` until a post-block usage row proves recovery
+
 #### Scenario: Scheduler preserves an unexpired rate-limit cooldown
 - **WHEN** an account is persisted as `rate_limited`
 - **AND** its persisted rate-limit reset deadline is still in the future

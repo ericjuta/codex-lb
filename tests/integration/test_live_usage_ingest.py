@@ -78,6 +78,7 @@ async def test_live_ingestor_writes_usage_rows_for_internal_account(db_setup) ->
     assert primary.credits_balance == pytest.approx(7.5)
     assert secondary.used_percent == pytest.approx(44.0)
     assert secondary.window_minutes == 10080
+    assert primary.recorded_at == secondary.recorded_at
 
 
 @pytest.mark.asyncio

@@ -2733,6 +2733,36 @@ def test_state_from_account_rate_limited_checks_primary_freshness(monkeypatch):
     assert state.status == AccountStatus.RATE_LIMITED
 
 
+def test_state_from_account_restart_keeps_rate_limit_without_post_block_evidence(monkeypatch):
+    now = 1_700_000_000.0
+    blocked = now - 130.0
+    expired_reset = int(now - 1)
+    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
+    monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
+
+    account = _make_test_account(
+        status=AccountStatus.RATE_LIMITED,
+        reset_at=expired_reset,
+        blocked_at=int(blocked),
+    )
+    stale_secondary = _make_test_usage(
+        window="secondary",
+        used_percent=10.0,
+        reset_at=int(now + 3600),
+        recorded_at=_epoch_to_naive_utc(blocked - 30),
+    )
+
+    state = _state_from_account(
+        account=account,
+        primary_entry=None,
+        secondary_entry=stale_secondary,
+        runtime=RuntimeState(),
+    )
+
+    assert state.status == AccountStatus.RATE_LIMITED
+    assert state.blocked_at == pytest.approx(blocked)
+
+
 def test_state_from_account_rate_limited_clears_with_fresh_primary(monkeypatch):
     now = 1_700_000_000.0
     blocked = now - 130.0

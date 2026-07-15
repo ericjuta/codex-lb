@@ -3596,6 +3596,9 @@ async def test_refresh_accounts_fetches_when_no_additional_rows_were_ever_synced
     await updater.refresh_accounts([acc], latest_usage={"acc_undiscovered": latest})
 
     assert fetch_calls == 1
+    await updater.refresh_accounts([acc], latest_usage={"acc_undiscovered": latest})
+
+    assert fetch_calls == 1
 
 
 @pytest.mark.asyncio

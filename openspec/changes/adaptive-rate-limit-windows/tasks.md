@@ -18,7 +18,12 @@
 - [x] 4.1 Add a core helper that maps usage window rows with elapsed `reset_at` to expired samples (`0.0` used, no reset) and apply it in `_compute_rate_limit_headers` and `get_rate_limit_payload` after weekly-only normalization.
 - [x] 4.2 Unit coverage: pooled headers report expired primary rows as 0% without a past reset-at; `limit_reached` is false when only elapsed samples report 100%.
 
-## 5. Validation
+## 5. Review hardening
 
-- [x] 5.1 Run targeted unit and integration suites for the load balancer, usage updater, and proxy rate-limit surfaces.
-- [x] 5.2 Validate the OpenSpec change with `openspec validate adaptive-rate-limit-windows --strict`.
+- [x] 5.1 Preserve persisted rate limits across restart until a post-block usage row proves recovery.
+- [x] 5.2 Treat successful empty per-model discovery as a completed refresh for the configured in-process cadence.
+
+## 6. Validation
+
+- [x] 6.1 Run targeted unit and integration suites for the load balancer, usage updater, and proxy rate-limit surfaces.
+- [x] 6.2 Validate the OpenSpec change with `openspec validate adaptive-rate-limit-windows --strict`.

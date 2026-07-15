@@ -2202,11 +2202,28 @@ def _state_from_account(
             if recorded_epoch > effective_blocked_at:
                 effective_runtime_reset = None
 
-    # A resetless rate limit whose runtime cooldown was lost (e.g. a restart
-    # after a 429 without reset metadata) has no deadline to expire and no
-    # post-block evidence trail; a long-window sample alone must not clear
-    # it. Evidence-gated clearing above always starts from a persisted or
-    # runtime reset, so this only matches the truly resetless case.
+    # Releasing a persisted rate limit requires evidence captured after the
+    # persisted block marker. This remains true after a process restart, when
+    # the runtime cooldown state is empty and the persisted reset has elapsed.
+    rate_limit_has_post_block_evidence = False
+    if account.status == AccountStatus.RATE_LIMITED and effective_blocked_at is not None:
+        recovery_entry = _rate_limited_freshness_entry(
+            account=account,
+            primary_entry=primary_entry,
+            long_window_entry=effective_secondary_entry,
+        )
+        if recovery_entry is not None and recovery_entry.recorded_at is not None:
+            recovery_epoch = recovery_entry.recorded_at.replace(tzinfo=timezone.utc).timestamp()
+            rate_limit_has_post_block_evidence = recovery_epoch > effective_blocked_at
+
+    persisted_rate_limit_without_evidence = (
+        status_seed == AccountStatus.RATE_LIMITED
+        and effective_blocked_at is not None
+        and not rate_limit_has_post_block_evidence
+    )
+    # A resetless legacy rate limit whose runtime cooldown was lost has neither
+    # a deadline nor a post-block evidence trail. Preserve the prior guard for
+    # rows without any primary sample.
     resetless_rate_limit_without_evidence = (
         status_seed == AccountStatus.RATE_LIMITED and db_reset_at is None and runtime.reset_at is None
     )
@@ -2224,8 +2241,11 @@ def _state_from_account(
         credits_balance=credits_balance,
         infer_status_from_usage=False,
     )
-    if resetless_rate_limit_without_evidence and primary_used is None and status == AccountStatus.ACTIVE:
+    if status == AccountStatus.ACTIVE and (
+        persisted_rate_limit_without_evidence or (resetless_rate_limit_without_evidence and primary_used is None)
+    ):
         status = AccountStatus.RATE_LIMITED
+        reset_at = effective_runtime_reset
 
     if status == AccountStatus.QUOTA_EXCEEDED:
         next_blocked_at = effective_blocked_at
