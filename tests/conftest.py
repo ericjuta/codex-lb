@@ -28,6 +28,7 @@ os.environ["CODEX_LB_DATABASE_POOL_SIZE"] = "15"
 os.environ["CODEX_LB_DATABASE_MAX_OVERFLOW"] = "10"
 os.environ["CODEX_LB_DATABASE_BACKGROUND_POOL_SIZE"] = "15"
 os.environ["CODEX_LB_DATABASE_BACKGROUND_MAX_OVERFLOW"] = "10"
+os.environ["CODEX_LB_REQUEST_LOG_COUNT_CACHE_TTL_SECONDS"] = "0"
 
 from app.db.models import Base  # noqa: E402
 from app.db.session import engine  # noqa: E402
@@ -86,6 +87,20 @@ def _disable_rate_limit_reset_credits_scheduler_startup(monkeypatch):
     import app.main as main_module
 
     monkeypatch.setattr(main_module, "build_rate_limit_reset_credits_scheduler", lambda: _NoopScheduler())
+
+
+@pytest.fixture(autouse=True)
+def _disable_account_usage_rollup_scheduler_startup(monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "build_account_usage_rollup_scheduler", lambda: _NoopScheduler())
+
+
+@pytest.fixture(autouse=True)
+def _disable_data_retention_scheduler_startup(monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "build_data_retention_scheduler", lambda: _NoopScheduler())
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
