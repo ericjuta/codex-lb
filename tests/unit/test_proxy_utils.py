@@ -58,6 +58,7 @@ from app.modules.proxy._service.support import (
     _account_selection_recovery_sleep_seconds,
     _sleep_for_account_selection_recovery,
 )
+from app.modules.proxy._service.websocket import helpers as websocket_helpers
 from app.modules.proxy._service.websocket import mixin as websocket_mixin
 from app.modules.proxy._service.websocket import mixin as websocket_mixin_module
 from app.modules.proxy.continuity_repository import WebsocketContinuityStatesRepository
@@ -15992,19 +15993,19 @@ def test_is_orphaned_reasoning_item_error_classifier():
         "Item 'msg_0d1f4d40' of type 'message' was provided without its required "
         "'reasoning' item: 'rs_0d1f4d40'."
     )
-    assert proxy_service._is_orphaned_reasoning_item_error(
+    assert websocket_helpers._is_orphaned_reasoning_item_error(
         code="invalid_request_error",
         message=orphan_message,
     )
-    assert not proxy_service._is_orphaned_reasoning_item_error(
+    assert not websocket_helpers._is_orphaned_reasoning_item_error(
         code="server_error",
         message=orphan_message,
     )
-    assert not proxy_service._is_orphaned_reasoning_item_error(
+    assert not websocket_helpers._is_orphaned_reasoning_item_error(
         code="invalid_request_error",
         message="Previous response not found.",
     )
-    assert not proxy_service._is_orphaned_reasoning_item_error(
+    assert not websocket_helpers._is_orphaned_reasoning_item_error(
         code="invalid_request_error",
         message=None,
     )

@@ -376,6 +376,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _assign_websocket_response_id,
     _find_websocket_request_state_by_response_id,
     _folded_terminal_function_call_ids,
+    _is_orphaned_reasoning_item_error,
     _is_websocket_response_create,
     _match_websocket_request_state_for_anonymous_event,
     _matching_websocket_request_states_for_missing_tool_output_error,
@@ -3766,7 +3767,7 @@ class _WebSocketMixin:
 
         is_orphaned_reasoning_recovery_event = bool(
             request_state.proxy_injected_previous_response_id
-            and _facade()._is_orphaned_reasoning_item_error(
+            and _is_orphaned_reasoning_item_error(
                 code=normalized_upstream_error_code,
                 message=error_message,
             )
