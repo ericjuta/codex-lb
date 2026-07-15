@@ -47,7 +47,7 @@ async def _add_log(
     cost_usd: float | None = 0.01,
     request_kind: str = "normal",
 ):
-    return await logs_repo.add_log(
+    log = await logs_repo.add_log(
         account_id=account_id,
         request_id=request_id,
         model="gpt-5.1-codex",
@@ -58,9 +58,13 @@ async def _add_log(
         status="success",
         error_code=None,
         requested_at=requested_at,
-        cost_usd=cost_usd,
         request_kind=request_kind,
     )
+    # This fork derives cost during log insertion. Override the persisted fixture
+    # value so rollup arithmetic can use small exact amounts independent of pricing.
+    log.cost_usd = cost_usd
+    await logs_repo._session.commit()
+    return log
 
 
 async def _summaries(account_ids: list[str] | None = None):
