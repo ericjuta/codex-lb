@@ -135,6 +135,7 @@ class AccountsRepositoryWithStatusComparePort(AccountsRepositoryPort, Protocol):
 class AccountRefreshResult:
     usage_written: bool
     fetch_succeeded: bool = True
+    additional_usage_synced: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,10 +147,11 @@ class _MergedAdditionalWindow:
     window_minutes: int | None
 
 
-# Module-level freshness cache for additional-only accounts (no main UsageHistory
-# entry). Used as a fast path to avoid DB queries on every pass within the same
-# process. Updated only after a successful refresh that wrote data.
-_last_successful_refresh: dict[str, datetime] = {}
+# Module-level freshness cache for successful additional-usage discovery. Used
+# when a successful upstream response contains no per-model rows, leaving no DB
+# timestamp to preserve the configured cadence. Refresh paths without an
+# additional-usage repository must never update this marker.
+_last_successful_additional_usage_refresh: dict[str, datetime] = {}
 _usage_refresh_auth_cooldowns: dict[str, float] = {}
 
 
@@ -276,7 +278,12 @@ class UsageUpdater:
                 continue
             latest = await self._freshness_usage_entry(account, latest_usage.get(account.id))
             bypass_freshness = _quota_recovery_should_bypass_freshness(account, latest=latest)
-            if not bypass_freshness and _latest_usage_is_fresh(latest, now=now, interval_seconds=interval):
+            if not bypass_freshness and await self._usage_is_fresh_with_siblings(
+                account,
+                latest,
+                now=now,
+                interval_seconds=interval,
+            ):
                 continue
             # Additional-only accounts have no main UsageHistory entry.
             # Check DB-backed freshness (works across workers/restarts)
@@ -286,10 +293,10 @@ class UsageUpdater:
             # Cross-worker may re-fetch; process-local cache (line ~138)
             # prevents redundant calls within the same worker.
             if latest is None:
-                last_ok = _last_successful_refresh.get(account.id)
-                if not bypass_freshness and last_ok and (now - last_ok).total_seconds() < interval:
-                    continue
                 if self._additional_usage_repo is not None:
+                    last_ok = _last_successful_additional_usage_refresh.get(account.id)
+                    if not bypass_freshness and last_ok and (now - last_ok).total_seconds() < interval:
+                        continue
                     additional_fresh_at = await self._additional_usage_repo.latest_recorded_at_for_account(
                         account.id,
                     )
@@ -298,7 +305,7 @@ class UsageUpdater:
                         and additional_fresh_at
                         and (now - additional_fresh_at).total_seconds() < interval
                     ):
-                        _last_successful_refresh[account.id] = additional_fresh_at
+                        _last_successful_additional_usage_refresh[account.id] = additional_fresh_at
                         continue
             # NOTE: AsyncSession is not safe for concurrent use. Run sequentially
             # within the request-scoped session to avoid PK collisions and
@@ -335,8 +342,9 @@ class UsageUpdater:
                 # Only cache when the upstream fetch actually succeeded.
                 # Transient errors (401 retry failure, 5xx, etc.) must not
                 # suppress retries within the interval.
+                if result.additional_usage_synced:
+                    _last_successful_additional_usage_refresh[account.id] = now
                 if result.fetch_succeeded:
-                    _last_successful_refresh[account.id] = now
                     _clear_usage_refresh_auth_cooldown(account.id)
             except Exception as exc:
                 logger.warning(
@@ -374,8 +382,9 @@ class UsageUpdater:
                 join_existing=False,
             )
             await self._sync_account_from_repo(account)
+            if result.additional_usage_synced:
+                _last_successful_additional_usage_refresh[account.id] = utcnow()
             if result.fetch_succeeded:
-                _last_successful_refresh[account.id] = utcnow()
                 _clear_usage_refresh_auth_cooldown(account.id)
             return result.usage_written
         except Exception as exc:
@@ -397,16 +406,36 @@ class UsageUpdater:
     ) -> AccountRefreshResult:
         primary_latest = await self._usage_repo.latest_entry_for_account(account.id, window="primary")
         latest = await self._freshness_usage_entry(account, primary_latest)
-        if not _quota_recovery_should_bypass_freshness(account, latest=latest) and _latest_usage_is_fresh(
-            latest,
-            now=utcnow(),
-            interval_seconds=interval_seconds,
-        ):
-            return AccountRefreshResult(usage_written=False)
+        if not _quota_recovery_should_bypass_freshness(account, latest=latest):
+            if await self._usage_is_fresh_with_siblings(
+                account,
+                latest,
+                now=utcnow(),
+                interval_seconds=interval_seconds,
+            ):
+                return AccountRefreshResult(usage_written=False)
         return await self._refresh_account(
             account,
             usage_account_id=usage_account_id,
         )
+
+    async def _additional_usage_is_stale(self, account_id: str, *, now: datetime, interval_seconds: int) -> bool:
+        # The upstream fetch is the only path that syncs additional
+        # (per-model) rate limits; live main-window rows must not keep an
+        # account "fresh" while its additional rows age past the interval,
+        # or gated-model routing starves on additional_quota_data_unavailable.
+        if self._additional_usage_repo is None:
+            return False
+        latest_at = await self._additional_usage_repo.latest_recorded_at_for_account(account_id)
+        if latest_at is None:
+            # A successful empty response is still a completed discovery poll.
+            # Use the process-local success marker to preserve the configured
+            # cadence instead of refetching on every scheduler visit.
+            last_successful_refresh = _last_successful_additional_usage_refresh.get(account_id)
+            if last_successful_refresh is None:
+                return True
+            return (now - last_successful_refresh).total_seconds() >= interval_seconds
+        return (now - latest_at).total_seconds() >= interval_seconds
 
     async def _freshness_usage_entry(self, account: Account, latest: UsageHistory | None) -> UsageHistory | None:
         if latest is not None:
@@ -414,6 +443,46 @@ class UsageUpdater:
         if usage_core.capacity_for_plan(account.plan_type, "monthly") is None:
             return None
         return await self._usage_repo.latest_entry_for_account(account.id, window="monthly")
+
+    async def _usage_is_fresh_with_siblings(
+        self,
+        account: Account,
+        latest: UsageHistory | None,
+        *,
+        now: datetime,
+        interval_seconds: int,
+    ) -> bool:
+        if _latest_usage_is_fresh(latest, now=now, interval_seconds=interval_seconds):
+            return not await self._additional_usage_is_stale(account.id, now=now, interval_seconds=interval_seconds)
+        # A stale (or elapsed-reset) newest row of one window must not
+        # permanently defeat freshness once upstream stops reporting that
+        # window: a strictly newer sibling-window row proves a later fetch
+        # happened without rewriting the stale window, so the newest row's
+        # own freshness governs the account instead. When no primary-slot
+        # row exists at all (upstream omitted the short window from the
+        # first fetch), any sibling row is that proof.
+        newest = latest
+        for window in _MAIN_USAGE_WINDOWS:
+            if latest is not None and window == latest.window:
+                continue
+            if window == "monthly" and usage_core.capacity_for_plan(account.plan_type, "monthly") is None:
+                # A lingering monthly row from a former plan (e.g. after a
+                # free-to-paid upgrade) is not applicable usage and must not
+                # suppress refreshes.
+                continue
+            sibling = await self._usage_repo.latest_entry_for_account(account.id, window=window)
+            if sibling is not None and (newest is None or sibling.recorded_at > newest.recorded_at):
+                newest = sibling
+        if newest is None or newest is latest:
+            return False
+        if (
+            latest is not None
+            and (newest.recorded_at - latest.recorded_at).total_seconds() <= _SIBLING_FETCH_MARGIN_SECONDS
+        ):
+            return False
+        if not _latest_usage_is_fresh(newest, now=now, interval_seconds=interval_seconds):
+            return False
+        return not await self._additional_usage_is_stale(account.id, now=now, interval_seconds=interval_seconds)
 
     async def _refresh_account_if_stale_with_owned_session(
         self,
@@ -590,7 +659,10 @@ class UsageUpdater:
         rate_limit = payload.rate_limit
         if rate_limit is None:
             additional_synced = self._additional_usage_repo is not None and payload.additional_rate_limits is not None
-            return AccountRefreshResult(usage_written=additional_synced)
+            return AccountRefreshResult(
+                usage_written=additional_synced,
+                additional_usage_synced=self._additional_usage_repo is not None,
+            )
         # Treat both None and empty rate_limit (both windows absent) as
         # additional-only to avoid falling through to window processing.
         normalized_windows = usage_core.normalize_rate_limit_windows(
@@ -605,10 +677,16 @@ class UsageUpdater:
                 additional_synced = (
                     self._additional_usage_repo is not None and payload.additional_rate_limits is not None
                 )
-                return AccountRefreshResult(usage_written=additional_synced)
+                return AccountRefreshResult(
+                    usage_written=additional_synced,
+                    additional_usage_synced=self._additional_usage_repo is not None,
+                )
         if primary is None and secondary is None and monthly is None:
             additional_synced = self._additional_usage_repo is not None and payload.additional_rate_limits is not None
-            return AccountRefreshResult(usage_written=additional_synced)
+            return AccountRefreshResult(
+                usage_written=additional_synced,
+                additional_usage_synced=self._additional_usage_repo is not None,
+            )
         credits_has, credits_unlimited, credits_balance = _credits_snapshot(payload)
         usage_written = False
 
@@ -654,7 +732,10 @@ class UsageUpdater:
             )
             usage_written = usage_written or _usage_entry_written(entry)
         await self._recover_quota_status_from_usage(account, primary=primary, secondary=secondary, monthly=monthly)
-        return AccountRefreshResult(usage_written=usage_written)
+        return AccountRefreshResult(
+            usage_written=usage_written,
+            additional_usage_synced=self._additional_usage_repo is not None,
+        )
 
     async def _deactivate_for_client_error(self, account: Account, exc: UsageFetchError) -> None:
         if not self._auth_manager:
@@ -1076,6 +1157,14 @@ def _latest_usage_is_fresh(
     return True
 
 
+# Rows written by the same upstream fetch land within milliseconds of each
+# other; a sibling row only proves a *later* fetch (one that no longer
+# reported the stale window) when it is newer by more than this margin.
+_SIBLING_FETCH_MARGIN_SECONDS = 5.0
+
+_MAIN_USAGE_WINDOWS = ("primary", "secondary", "monthly")
+
+
 def _quota_recovery_should_bypass_freshness(account: Account, *, latest: UsageHistory | None) -> bool:
     if _account_needs_post_reset_refresh(account, latest=latest):
         return True
@@ -1201,5 +1290,5 @@ def _prune_usage_refresh_auth_cooldowns() -> None:
 
 def _clear_usage_refresh_state() -> None:
     _usage_refresh_auth_cooldowns.clear()
-    _last_successful_refresh.clear()
+    _last_successful_additional_usage_refresh.clear()
     _USAGE_REFRESH_SINGLEFLIGHT.clear()

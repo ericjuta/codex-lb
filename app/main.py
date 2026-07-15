@@ -81,6 +81,7 @@ from app.modules.sticky_sessions import api as sticky_sessions_api
 from app.modules.sticky_sessions.cleanup_scheduler import build_sticky_session_cleanup_scheduler
 from app.modules.usage import api as usage_api
 from app.modules.usage.additional_quota_keys import reload_additional_quota_registry
+from app.modules.usage.live_ingest import start_live_usage_ingestor, stop_live_usage_ingestor
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,7 @@ async def lifespan(app: FastAPI):
     prompt_cache_canary_scheduler = build_prompt_cache_canary_scheduler()
     account_usage_rollup_scheduler = build_account_usage_rollup_scheduler()
     data_retention_scheduler = build_data_retention_scheduler()
+    start_live_usage_ingestor()
     await usage_scheduler.start()
     await api_key_limit_reset_scheduler.start()
     await model_scheduler.start()
@@ -343,6 +345,7 @@ async def lifespan(app: FastAPI):
         await model_scheduler.stop()
         await api_key_limit_reset_scheduler.stop()
         await usage_scheduler.stop()
+        await stop_live_usage_ingestor()
         await rate_limit_reset_credits_scheduler.stop()
         await prompt_cache_canary_scheduler.stop()
         await account_usage_rollup_scheduler.stop()
