@@ -454,10 +454,7 @@ def _websocket_anchor_delta_is_reasoning_consistent(delta_items: list[JsonValue]
         if item_type == "reasoning":
             seen_reasoning = True
         elif (
-            item_type == "message"
-            and isinstance(item, dict)
-            and item.get("role") == "assistant"
-            and not seen_reasoning
+            item_type == "message" and isinstance(item, dict) and item.get("role") == "assistant" and not seen_reasoning
         ):
             return False
     return True
@@ -701,6 +698,25 @@ def _websocket_event_error_message(event_type: str | None, payload: dict[str, Js
     return stripped or None
 
 
+def _is_orphaned_reasoning_item_error(
+    *,
+    code: str | None,
+    message: str | None,
+) -> bool:
+    """Match the upstream 400 for an anchored delta that orphans a reasoning item.
+
+    Upstream rejects a ``previous_response_id`` turn whose input carries an
+    assistant output item without its paired ``reasoning`` item using
+    ``invalid_request_error`` and a message shaped like "Item 'msg_...' of type
+    'message' was provided without its required 'reasoning' item: 'rs_...'".
+    """
+    if code != "invalid_request_error":
+        return False
+    if not message:
+        return False
+    return "without its required 'reasoning' item" in message
+
+
 def _websocket_precreated_retry_error_code(
     request_state: _WebSocketRequestState | None,
     *,
@@ -739,7 +755,7 @@ def _websocket_precreated_retry_error_code(
         message=error_message,
     ):
         return "stream_incomplete"
-    if request_state.proxy_injected_previous_response_id and _facade()._is_orphaned_reasoning_item_error(
+    if request_state.proxy_injected_previous_response_id and _is_orphaned_reasoning_item_error(
         code=error_code,
         message=error_message,
     ):
@@ -1039,7 +1055,7 @@ def _maybe_rewrite_websocket_previous_response_not_found_event(
     reason = "previous_response_not_found"
     variant: str | None = None
     if not should_rewrite and request_state.proxy_injected_previous_response_id:
-        if _facade()._is_orphaned_reasoning_item_error(
+        if _is_orphaned_reasoning_item_error(
             code=_normalize_error_code(error_code, _websocket_event_error_type(event_type, payload)),
             message=error_message,
         ):
@@ -1060,9 +1076,7 @@ def _maybe_rewrite_websocket_previous_response_not_found_event(
         return event, payload, event_type, original_text
 
     reconnect_requested = (
-        variant is not None
-        or reason == "orphaned_reasoning_item"
-        or request_state.preferred_account_id is not None
+        variant is not None or reason == "orphaned_reasoning_item" or request_state.preferred_account_id is not None
     )
     return _rewrite_websocket_continuity_corruption_event(
         request_state=request_state,

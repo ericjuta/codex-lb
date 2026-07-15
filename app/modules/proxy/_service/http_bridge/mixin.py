@@ -67,10 +67,8 @@ from app.modules.proxy._service.compact import (
 from app.modules.proxy._service.http_bridge.account_sessions import _HTTPBridgeAccountSessionsMixin
 from app.modules.proxy._service.http_bridge.activity import _HTTPBridgeActivityMixin
 from app.modules.proxy._service.http_bridge.helpers import (
-    _HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS,
     _HTTP_BRIDGE_INFLIGHT_STARTED_AT_ATTR,
     _active_http_bridge_instance_ring,
-    _close_http_bridge_session_bounded,
     _durable_bridge_lookup_active_owner,
     _durable_bridge_lookup_allows_local_reuse,
     _forwarded_http_bridge_session_key,
@@ -143,11 +141,9 @@ from app.modules.proxy._service.http_bridge.service_stubs import (
     _websocket_connect_deadline,
     _websocket_safe_headers_with_turn_state,
 )
+from app.modules.proxy._service.http_bridge.session_cleanup import _HTTPBridgeSessionCleanupMixin
 from app.modules.proxy._service.http_bridge.streaming import _HTTPBridgeStreamingMixin
 from app.modules.proxy._service.http_bridge.upstream_events import _HTTPBridgeUpstreamEventsMixin
-from app.modules.proxy._service.observability import (
-    _hash_identifier as _hash_identifier,
-)
 from app.modules.proxy._service.observability import (
     _hash_identifier_or_none as _hash_identifier_or_none,
 )
@@ -233,7 +229,6 @@ _SECURITY_WORK_NO_AUTHORIZED_ACCOUNTS_MESSAGE = (
     "security work. codex-lb is continuing with normal account selection; the upstream request may still fail until "
     "an account with Trusted Access for Cyber is marked as security-work-authorized."
 )
-_HTTP_BRIDGE_BACKGROUND_CLEANUP_WARN_THRESHOLD = 100
 
 
 def _is_retryable_websocket_open_timeout(exc: ProxyResponseError) -> bool:
@@ -242,6 +237,7 @@ def _is_retryable_websocket_open_timeout(exc: ProxyResponseError) -> bool:
 
 class _HTTPBridgeMixin(
     _HTTPBridgeStreamingMixin,
+    _HTTPBridgeSessionCleanupMixin,
     _HTTPBridgeAccountSessionsMixin,
     _HTTPBridgeActivityMixin,
     _HTTPBridgeOwnerForwardingMixin,
@@ -249,59 +245,6 @@ class _HTTPBridgeMixin(
     _HTTPBridgeUpstreamEventsMixin,
     _HTTPBridgeServiceProtocol,
 ):
-    async def _close_http_bridge_session_bounded(
-        self,
-        session: "_HTTPBridgeSession",
-        *,
-        reason: str,
-    ) -> None:
-        await _close_http_bridge_session_bounded(self, session, reason=reason)
-
-    def _schedule_http_bridge_session_closes(
-        self,
-        sessions: list["_HTTPBridgeSession"],
-        *,
-        reason: str,
-    ) -> None:
-        for session in sessions:
-            if len(self._background_cleanup_tasks) >= _HTTP_BRIDGE_BACKGROUND_CLEANUP_WARN_THRESHOLD:
-                logger.warning(
-                    "http_bridge_background_cleanup_backlog action=session_close count=%d threshold=%d reason=%s",
-                    len(self._background_cleanup_tasks),
-                    _HTTP_BRIDGE_BACKGROUND_CLEANUP_WARN_THRESHOLD,
-                    reason,
-                )
-            self._schedule_cancel_safe_cleanup(
-                self._close_http_bridge_session_bounded(session, reason=reason),
-                action="http_bridge_session_close",
-                request_id=_hash_identifier(session.key.affinity_key),
-            )
-
-    async def _drain_http_bridge_background_cleanup_tasks(self, *, reason: str) -> None:
-        tasks = [
-            task
-            for task in self._background_cleanup_tasks
-            if not task.done()
-            and (
-                task.get_name().startswith("proxy-http_bridge_session_close-")
-                or task.get_name().startswith("http-bridge-close-")
-            )
-        ]
-        if not tasks:
-            return
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True),
-                timeout=_HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS,
-            )
-        except TimeoutError:
-            logger.warning(
-                "http_bridge_background_cleanup_drain_timeout reason=%s count=%d timeout_seconds=%.1f",
-                reason,
-                len(tasks),
-                _HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS,
-            )
-
     async def _fail_http_bridge_inflight_session_creation(
         self,
         key: "_HTTPBridgeSessionKey",

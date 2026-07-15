@@ -9,7 +9,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import anyio
 
@@ -318,6 +318,85 @@ class _StreamSettlement:
     def reset(self) -> None:
         fresh = type(self)()
         self.__dict__.update(fresh.__dict__)
+
+
+@dataclass(frozen=True, slots=True)
+class _StreamUsageAccounting:
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    reasoning_tokens: int | None = None
+
+
+def _token_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _usage_accounting_from_mapping(usage: Mapping[str, Any]) -> _StreamUsageAccounting | None:
+    input_tokens = _token_int(usage.get("input_tokens"))
+    output_tokens = _token_int(usage.get("output_tokens"))
+    if input_tokens is None or output_tokens is None:
+        return None
+
+    cached_input_tokens = None
+    input_details = usage.get("input_tokens_details")
+    if isinstance(input_details, Mapping):
+        cached_input_tokens = _token_int(input_details.get("cached_tokens"))
+
+    reasoning_tokens = None
+    output_details = usage.get("output_tokens_details")
+    if isinstance(output_details, Mapping):
+        reasoning_tokens = _token_int(output_details.get("reasoning_tokens"))
+
+    return _StreamUsageAccounting(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_input_tokens=cached_input_tokens,
+        reasoning_tokens=reasoning_tokens,
+    )
+
+
+def _usage_accounting_from_response_usage(usage: Any) -> _StreamUsageAccounting:
+    input_tokens = usage.input_tokens if usage else None
+    output_tokens = usage.output_tokens if usage else None
+    cached_input_tokens = usage.input_tokens_details.cached_tokens if usage and usage.input_tokens_details else None
+    reasoning_tokens = usage.output_tokens_details.reasoning_tokens if usage and usage.output_tokens_details else None
+    return _StreamUsageAccounting(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_input_tokens=cached_input_tokens,
+        reasoning_tokens=reasoning_tokens,
+    )
+
+
+def _proxy_billed_usage_from_event_payload(
+    event_payload: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    if event_payload is None:
+        return None
+    response_payload = event_payload.get("response")
+    if not isinstance(response_payload, Mapping):
+        return None
+    metadata = response_payload.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return None
+    billed_usage = metadata.get("proxy_billed_usage")
+    return billed_usage if isinstance(billed_usage, Mapping) else None
+
+
+def _stream_usage_accounting(
+    usage: Any,
+    billed_usage_payload: Mapping[str, Any] | None,
+) -> _StreamUsageAccounting:
+    if billed_usage_payload is not None:
+        billed_accounting = _usage_accounting_from_mapping(billed_usage_payload)
+        if billed_accounting is not None:
+            return billed_accounting
+    return _usage_accounting_from_response_usage(usage)
 
 
 def _stream_settlement_error_payload(settlement: _StreamSettlement) -> UpstreamError:
@@ -668,9 +747,7 @@ class _WebSocketContinuityState:
             return False
         if fingerprint is not None and not isinstance(fingerprint, str):
             return False
-        if not isinstance(pending_call_ids, list) or not all(
-            isinstance(call_id, str) for call_id in pending_call_ids
-        ):
+        if not isinstance(pending_call_ids, list) or not all(isinstance(call_id, str) for call_id in pending_call_ids):
             return False
         if not isinstance(aliases, dict) or not all(
             isinstance(visible_id, str) and isinstance(upstream_id, str) for visible_id, upstream_id in aliases.items()
@@ -679,11 +756,12 @@ class _WebSocketContinuityState:
         self.last_completed_input_count = input_count
         self.last_completed_response_id = response_id
         self.last_completed_input_prefix_fingerprint = fingerprint
-        self.last_pending_function_call_ids = list(pending_call_ids)
+        self.last_pending_function_call_ids = list(cast(list[str], pending_call_ids))
         self.folded_response_id_aliases = {}
-        for visible_id, upstream_id in aliases.items():
+        for visible_id, upstream_id in cast(dict[str, str], aliases).items():
             self.record_folded_response_id_alias(visible_id, upstream_id)
         return True
+
     last_pending_tool_call_types: dict[str, str] = field(default_factory=dict)
     responses_lite_model: str | None = None
     responses_lite_response_id: str | None = None

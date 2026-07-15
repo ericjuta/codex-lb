@@ -307,10 +307,6 @@ from app.modules.proxy._service.observability import (
 from app.modules.proxy._service.observability import (
     _truncate_identifier as _truncate_identifier,
 )
-from app.modules.proxy._service.streaming.usage import (
-    _proxy_billed_usage_from_event_payload,
-    _stream_usage_accounting,
-)
 from app.modules.proxy._service.support import (
     _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
     _REQUEST_TRANSPORT_HTTP,
@@ -321,11 +317,13 @@ from app.modules.proxy._service.support import (
     _DownstreamWebSocketActivity,
     _event_type_from_payload,
     _PreparedWebSocketRequest,
+    _proxy_billed_usage_from_event_payload,
     _record_response_event,
     _record_websocket_route_metadata,
     _request_log_useragent_fields,
     _sleep_for_account_selection_recovery,
     _stream_settlement_error_payload,
+    _stream_usage_accounting,
     _StreamSettlement,
     _wait_for_websocket_continuity_gap,
     _websocket_full_replay_should_wait_for_continuity,
@@ -378,6 +376,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _assign_websocket_response_id,
     _find_websocket_request_state_by_response_id,
     _folded_terminal_function_call_ids,
+    _is_orphaned_reasoning_item_error,
     _is_websocket_response_create,
     _match_websocket_request_state_for_anonymous_event,
     _matching_websocket_request_states_for_missing_tool_output_error,
@@ -3773,7 +3772,7 @@ class _WebSocketMixin:
 
         is_orphaned_reasoning_recovery_event = bool(
             request_state.proxy_injected_previous_response_id
-            and _facade()._is_orphaned_reasoning_item_error(
+            and _is_orphaned_reasoning_item_error(
                 code=normalized_upstream_error_code,
                 message=error_message,
             )
@@ -3783,9 +3782,7 @@ class _WebSocketMixin:
                 "websocket_orphaned_reasoning_recovery request_id=%s previous_response_id=%s retry_safe=%s",
                 request_state.request_id,
                 request_state.previous_response_id,
-                bool(
-                    request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text
-                ),
+                bool(request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text),
             )
         retry_is_previous_response_not_found = is_previous_response_not_found_event or (
             is_orphaned_reasoning_recovery_event
