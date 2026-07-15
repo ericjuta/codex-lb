@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import select
 
@@ -29,6 +30,7 @@ class _QueuedSnapshot:
     account_id: str | None
     chatgpt_account_id: str | None
     snapshot: LiveRateLimitSnapshot
+    observed_at: datetime
 
 
 def _fingerprint(snapshot: LiveRateLimitSnapshot) -> tuple[object, ...]:
@@ -76,9 +78,14 @@ class LiveUsageIngestor:
         account_id: str | None = None,
         chatgpt_account_id: str | None = None,
     ) -> None:
-        item = _QueuedSnapshot(account_id=account_id, chatgpt_account_id=chatgpt_account_id, snapshot=snapshot)
         if account_id is not None and self._should_skip(account_id, snapshot):
             return
+        item = _QueuedSnapshot(
+            account_id=account_id,
+            chatgpt_account_id=chatgpt_account_id,
+            snapshot=snapshot,
+            observed_at=utcnow(),
+        )
         try:
             self._queue.put_nowait(item)
         except asyncio.QueueFull:
@@ -157,7 +164,6 @@ class LiveUsageIngestor:
             and primary.window_minutes == usage_core.DEFAULT_WINDOW_MINUTES_MONTHLY
         ):
             monthly, primary = primary, None
-        snapshot_recorded_at = utcnow()
         async with get_background_session() as session:
             repo = UsageRepository(session)
             if primary is not None:
@@ -172,7 +178,7 @@ class LiveUsageIngestor:
                     credits_has=snapshot.credits_has,
                     credits_unlimited=snapshot.credits_unlimited,
                     credits_balance=snapshot.credits_balance,
-                    recorded_at=snapshot_recorded_at,
+                    recorded_at=item.observed_at,
                 )
             if secondary is not None:
                 # Mirror the poller: credits normally ride the primary row.
@@ -190,7 +196,7 @@ class LiveUsageIngestor:
                     credits_has=snapshot.credits_has if secondary_carries_credits else None,
                     credits_unlimited=snapshot.credits_unlimited if secondary_carries_credits else None,
                     credits_balance=snapshot.credits_balance if secondary_carries_credits else None,
-                    recorded_at=snapshot_recorded_at,
+                    recorded_at=item.observed_at,
                 )
             if monthly is not None:
                 await repo.add_entry(
@@ -204,7 +210,7 @@ class LiveUsageIngestor:
                     credits_has=snapshot.credits_has,
                     credits_unlimited=snapshot.credits_unlimited,
                     credits_balance=snapshot.credits_balance,
-                    recorded_at=snapshot_recorded_at,
+                    recorded_at=item.observed_at,
                 )
         self._last_write[account_id] = (_fingerprint(snapshot), time.monotonic())
         await self._invalidate_caches_throttled()

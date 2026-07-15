@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -67,6 +68,10 @@ def test_parse_rate_limit_headers_rejects_non_finite_values() -> None:
     assert snapshot.primary == LiveUsageWindow(used_percent=25.0, window_minutes=None, reset_at=None)
 
     assert parse_rate_limit_headers({"x-codex-primary-used-percent": "NaN"}) is None
+
+
+def test_parse_rate_limit_headers_rejects_numeric_overflow() -> None:
+    assert parse_rate_limit_headers({"x-codex-primary-used-percent": 10**10000}) is None
 
 
 def test_parse_rate_limit_headers_without_windows_returns_none() -> None:
@@ -142,6 +147,17 @@ def test_live_hub_is_inert_until_registered() -> None:
 
     assert len(captured) == 1
     assert captured[0][1] == "acc-1"
+
+
+def test_ingestor_stamps_observation_time_before_enqueue(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed_at = datetime(2026, 7, 15, 13, 45)
+    ingestor = live_ingest.LiveUsageIngestor(queue_size=2, write_min_interval_seconds=60.0)
+    monkeypatch.setattr(live_ingest, "utcnow", lambda: observed_at)
+
+    ingestor.publish(_snapshot(), account_id="acc-observed")
+
+    queued = ingestor._queue.get_nowait()
+    assert queued.observed_at == observed_at
 
 
 @pytest.mark.asyncio

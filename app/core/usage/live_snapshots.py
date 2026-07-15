@@ -39,7 +39,7 @@ def _parse_float(value: object) -> float | None:
         return None
     try:
         parsed = float(value)
-    except ValueError:
+    except (OverflowError, ValueError):
         return None
     # Live signals run synchronously on the serving path; non-finite values
     # (NaN/Infinity strings) must degrade to "unparseable", not raise later

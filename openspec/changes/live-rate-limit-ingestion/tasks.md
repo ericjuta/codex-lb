@@ -5,7 +5,7 @@
 
 ## 2. Ingestor
 
-- [x] 2.1 `app/modules/usage/live_ingest.py`: bounded queue (drop-oldest), single consumer with its own background sessions, per-account fingerprint + min-interval throttle, usage-history writes with credits fields and a shared snapshot observation timestamp, selection-cache invalidation on write.
+- [x] 2.1 `app/modules/usage/live_ingest.py`: bounded queue (drop-oldest), single consumer with its own background sessions, per-account fingerprint + min-interval throttle, usage-history writes with credits fields and an enqueue-time snapshot observation timestamp retained across delays, selection-cache invalidation on write.
 - [x] 2.2 Settings: `live_usage_ingestion_enabled` (default true), `live_usage_write_min_interval_seconds` (default 5), queue size; startup wiring in main.py.
 
 ## 3. Tap points
@@ -15,6 +15,6 @@
 
 ## 4. Validation
 
-- [x] 4.1 Unit: parser edge cases; throttle fingerprint/interval; queue overflow drop-oldest; hub no-op; sibling rows from one snapshot share an observation timestamp.
+- [x] 4.1 Unit: parser edge cases including numeric overflow; throttle fingerprint/interval; queue overflow drop-oldest; hub no-op; snapshots capture observation time before enqueue and sibling rows share it.
 - [x] 4.2 Integration: SSE stream with rate-limit event writes rows for the serving account; kill switch produces no writes.
 - [x] 4.3 `openspec validate live-rate-limit-ingestion --strict`; targeted proxy/usage suites.

@@ -2,7 +2,7 @@
 
 ### Requirement: Proxied responses feed passive usage snapshots
 
-The proxy SHALL parse upstream rate-limit signals from proxied traffic — `x-codex-{primary,secondary}-used-percent`, `-window-minutes`, `-reset-at`, and `x-codex-credits-*` response headers, and `codex.rate_limits` stream events — into per-account usage snapshots attributed to the account that served the request. Snapshots SHALL be persisted through the same usage-history storage contract the background poller uses (per-window rows with used percent, reset timestamp, window duration, and credits fields). Every window row derived from one snapshot SHALL share one observation timestamp, including when storage retries delay an individual row.
+The proxy SHALL parse upstream rate-limit signals from proxied traffic — `x-codex-{primary,secondary}-used-percent`, `-window-minutes`, `-reset-at`, and `x-codex-credits-*` response headers, and `codex.rate_limits` stream events — into per-account usage snapshots attributed to the account that served the request. Snapshots SHALL be persisted through the same usage-history storage contract the background poller uses (per-window rows with used percent, reset timestamp, window duration, and credits fields). The observation timestamp SHALL be captured before enqueueing, retained across queue and storage delays, and shared by every window row derived from one snapshot.
 
 #### Scenario: Stream event updates usage rows
 
@@ -19,6 +19,11 @@ The proxy SHALL parse upstream rate-limit signals from proxied traffic — `x-co
 - **WHEN** one live snapshot contains multiple usage windows
 - **THEN** every persisted window row from that snapshot has the same `recorded_at` value
 
+#### Scenario: Queue delay preserves observation time
+
+- **WHEN** a live snapshot waits in the ingest queue before persistence
+- **THEN** its `recorded_at` value reflects when the snapshot was enqueued rather than when the delayed write began
+
 #### Scenario: Snapshots without any window are ignored
 
 - **WHEN** a response carries no rate-limit headers and no rate-limit stream event
@@ -33,6 +38,11 @@ Live usage ingestion MUST be fire-and-forget: parsing failures, storage failures
 - **WHEN** persisting a live snapshot fails
 - **THEN** the proxied response continues unaffected
 - **AND** the failure is logged with the account id
+
+#### Scenario: Oversized numeric signal does not affect the stream
+
+- **WHEN** a rate-limit field contains a numeric value too large for a finite float
+- **THEN** the field is treated as unparseable without raising on the serving path
 
 #### Scenario: Queue overflow drops oldest
 

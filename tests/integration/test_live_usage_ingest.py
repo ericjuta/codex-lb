@@ -102,6 +102,9 @@ async def test_live_ingestor_invalidates_rate_limit_header_cache(monkeypatch, db
     try:
         ingestor.publish(_snapshot(), account_id="acc_live_headers")
         primary, secondary = await _wait_for_rows("acc_live_headers")
+        deadline = asyncio.get_event_loop().time() + 5.0
+        while not invalidations and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.05)
     finally:
         await ingestor.stop()
 
