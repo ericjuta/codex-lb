@@ -121,6 +121,8 @@ def _bootstrap_model(
         "visibility": visibility,
         "availability_nux": None,
         "max_context_window": context_window,
+        "truncation_policy": {"mode": "tokens", "limit": 10_000},
+        "experimental_supported_tools": [],
     }
     if raw:
         raw_fields.update(raw)
@@ -236,6 +238,7 @@ _BOOTSTRAP_STATIC_MODELS: tuple[UpstreamModel, ...] = (
         "GPT-5.2",
         prefer_websockets=True,
         minimal_client_version="0.0.1",
+        raw={"truncation_policy": {"mode": "bytes", "limit": 10_000}},
     ),
     _bootstrap_model(
         "codex-auto-review",

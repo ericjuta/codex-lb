@@ -97,7 +97,7 @@ from app.core.resilience.overload import is_local_overload_error_code, merge_ret
 from app.core.runtime_logging import log_error_response
 from app.core.types import JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
-from app.core.utils.json_guards import is_json_mapping
+from app.core.utils.json_guards import is_json_list, is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import (
     CODEX_KEEPALIVE_FRAME,
@@ -155,6 +155,7 @@ from app.modules.proxy.schemas import (
     AccountPoolUsageResponse,
     CodexModelEntry,
     CodexModelsResponse,
+    CodexTruncationPolicy,
     ConsumeRateLimitResetCreditRequest,
     ConsumeRateLimitResetCreditResponse,
     FileCreateRequest,
@@ -804,10 +805,13 @@ async def models(
     return await _build_codex_models_response(api_key)
 
 
-@v1_router.get("/models", response_model=ModelListResponse)
+@v1_router.get("/models", response_model=None)
 async def v1_models(
+    request: Request,
     api_key: ApiKeyData | None = Security(validate_proxy_api_key),
 ) -> Response:
+    if request.query_params.get("client_version"):
+        return await _build_codex_models_response(api_key)
     return await _build_models_response(api_key)
 
 
@@ -2514,6 +2518,23 @@ def _is_codex_backend_catalog_model(model: UpstreamModel) -> bool:
     return model.raw.get("shell_type") == "shell_command"
 
 
+def _codex_model_truncation_policy(model: UpstreamModel) -> CodexTruncationPolicy:
+    if "truncation_policy" in model.raw:
+        try:
+            return CodexTruncationPolicy.model_validate(model.raw["truncation_policy"])
+        except ValidationError:
+            pass
+    mode = "bytes" if model.slug == "gpt-5.2" else "tokens"
+    return CodexTruncationPolicy(mode=mode, limit=10_000)
+
+
+def _codex_model_experimental_supported_tools(model: UpstreamModel) -> list[str]:
+    tools = model.raw.get("experimental_supported_tools")
+    if not is_json_list(tools):
+        return []
+    return [tool for tool in tools if isinstance(tool, str)]
+
+
 def _to_codex_model_entry(model: UpstreamModel, *, visibility: str | None = None) -> CodexModelEntry:
     raw = model.raw
     effective_context_window = _effective_context_window(model)
@@ -2538,6 +2559,8 @@ def _to_codex_model_entry(model: UpstreamModel, *, visibility: str | None = None
         "available_in_plans",
         "prefer_websockets",
         "visibility",
+        "truncation_policy",
+        "experimental_supported_tools",
     }
     for key, value in raw.items():
         if key not in skip_keys and isinstance(value, (bool, int, float, str, type(None), list, Mapping)):
@@ -2567,6 +2590,8 @@ def _to_codex_model_entry(model: UpstreamModel, *, visibility: str | None = None
         available_in_plans=sorted(model.available_in_plans),
         prefer_websockets=model.prefer_websockets,
         visibility=visibility or _model_visibility(model),
+        truncation_policy=_codex_model_truncation_policy(model),
+        experimental_supported_tools=_codex_model_experimental_supported_tools(model),
         **extra,
     )
 

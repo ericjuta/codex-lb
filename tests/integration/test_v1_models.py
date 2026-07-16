@@ -157,6 +157,10 @@ async def test_backend_codex_models_uses_bootstrap_upstream_metadata(async_clien
     assert set(entries) == set(EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS)
     for slug, expected_version in EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS.items():
         assert entries[slug]["minimal_client_version"] == expected_version
+        assert entries[slug]["shell_type"] == "shell_command"
+        assert isinstance(entries[slug]["experimental_supported_tools"], list)
+        assert entries[slug]["truncation_policy"]["mode"] in {"bytes", "tokens"}
+        assert isinstance(entries[slug]["truncation_policy"]["limit"], int)
 
     for slug, multi_agent_version in EXPECTED_BOOTSTRAP_GPT_5_6_CAPABILITIES.items():
         entry = entries[slug]
@@ -164,6 +168,8 @@ async def test_backend_codex_models_uses_bootstrap_upstream_metadata(async_clien
         assert entry["tool_mode"] == "code_mode_only"
         assert entry["experimental_supported_tools"] == ["exec", "wait"]
         assert entry["multi_agent_version"] == multi_agent_version
+
+    assert entries["gpt-5.2"]["truncation_policy"] == {"mode": "bytes", "limit": 10_000}
 
     gpt54 = entries["gpt-5.4"]
     assert gpt54["minimal_client_version"] == "0.98.0"
@@ -188,6 +194,119 @@ async def test_backend_codex_models_uses_bootstrap_upstream_metadata(async_clien
     assert auto_review["minimal_client_version"] == "0.98.0"
     assert set(auto_review["available_in_plans"]) == EXPECTED_CORE_MODEL_PLANS
     assert set(entries["gpt-5.3-codex"]["available_in_plans"]) == EXPECTED_CORE_MODEL_PLANS
+
+
+@pytest.mark.asyncio
+async def test_v1_models_with_client_version_returns_codex_catalog(async_client):
+    await _populate_test_registry()
+    response = await async_client.get("/v1/models", params={"client_version": "0.144.3"})
+    codex_response = await async_client.get("/backend-api/codex/models")
+
+    assert response.status_code == 200
+    assert codex_response.status_code == 200
+    assert response.json() == codex_response.json()
+
+
+@pytest.mark.asyncio
+async def test_v1_models_with_empty_client_version_keeps_openai_shape(async_client):
+    await _populate_test_registry()
+    response = await async_client.get("/v1/models?client_version=")
+
+    assert response.status_code == 200
+    assert response.json()["object"] == "list"
+    assert "models" not in response.json()
+
+
+@pytest.mark.parametrize(
+    ("raw_tools", "expected_tools"),
+    [
+        (["custom", 42, {"type": "bad"}], ["custom"]),
+        ("custom", []),
+    ],
+)
+@pytest.mark.asyncio
+async def test_codex_catalog_sanitizes_invalid_tool_metadata(
+    async_client,
+    raw_tools: JsonValue,
+    expected_tools: list[str],
+):
+    model = _make_upstream_model(
+        "external-tool-metadata",
+        raw={
+            "shell_type": "shell_command",
+            "visibility": "list",
+            "experimental_supported_tools": raw_tools,
+        },
+    )
+    await get_model_registry().update({"pro": [model]})
+
+    response = await async_client.get("/backend-api/codex/models")
+
+    assert response.status_code == 200
+    entry = next(item for item in response.json()["models"] if item["slug"] == model.slug)
+    assert entry["experimental_supported_tools"] == expected_tools
+
+
+@pytest.mark.parametrize(
+    "raw_policy",
+    [
+        None,
+        "tokens",
+        {"mode": "tokens"},
+        {"mode": "characters", "limit": 1_234},
+        {"mode": "tokens", "limit": "4096"},
+        {"mode": "tokens", "limit": 2**63},
+    ],
+)
+@pytest.mark.asyncio
+async def test_codex_catalog_defaults_invalid_truncation_policy(
+    async_client,
+    raw_policy: JsonValue,
+):
+    model = _make_upstream_model(
+        "external-truncation-policy",
+        raw={
+            "shell_type": "shell_command",
+            "visibility": "list",
+            "truncation_policy": raw_policy,
+        },
+    )
+    await get_model_registry().update({"pro": [model]})
+
+    response = await async_client.get("/backend-api/codex/models")
+
+    assert response.status_code == 200
+    entry = next(item for item in response.json()["models"] if item["slug"] == model.slug)
+    assert entry["truncation_policy"] == {"mode": "tokens", "limit": 10_000}
+
+
+@pytest.mark.asyncio
+async def test_codex_catalog_preserves_valid_required_fields(async_client):
+    model = _make_upstream_model(
+        "external-valid-metadata",
+        raw={
+            "shell_type": "shell_command",
+            "visibility": "list",
+            "truncation_policy": {
+                "mode": "tokens",
+                "limit": 4_096,
+                "future_setting": "preserved",
+            },
+            "experimental_supported_tools": ["live-tool"],
+        },
+    )
+    await get_model_registry().update({"pro": [model]})
+
+    response = await async_client.get("/backend-api/codex/models")
+
+    assert response.status_code == 200
+    entry = next(item for item in response.json()["models"] if item["slug"] == model.slug)
+    assert entry["truncation_policy"] == {
+        "mode": "tokens",
+        "limit": 4_096,
+        "future_setting": "preserved",
+    }
+    assert entry["experimental_supported_tools"] == ["live-tool"]
 
 
 @pytest.mark.asyncio
