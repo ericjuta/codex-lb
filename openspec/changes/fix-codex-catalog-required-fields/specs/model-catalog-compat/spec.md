@@ -4,9 +4,10 @@
 
 ### Requirement: Every Codex-native catalog entry is wire-parseable
 
-Every model entry returned by `GET /backend-api/codex/models` or the equivalent
-`GET /v1/models?client_version=<version>` route MUST include the non-defaulted
-Codex wire fields `truncation_policy` and `experimental_supported_tools`, even
+Every model entry returned by `GET /backend-api/codex/models` MUST include the
+non-defaulted Codex wire fields described below. The equivalent
+`GET /v1/models?client_version=<version>` route MUST include the same fields:
+`truncation_policy` and `experimental_supported_tools`, even
 when the entry comes from hidden retained bootstrap metadata or a persisted
 legacy registry snapshot. When either field is absent from stored raw metadata,
 the mapper MUST provide a conservative model-compatible default. Wire-valid

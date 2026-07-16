@@ -2,8 +2,8 @@
 
 ### Requirement: Stuck HTTP bridge response-create gate sessions are retired
 
-When a visible HTTP bridge request times out waiting for a per-session
-response-create gate, the proxy MUST retire the bridge session only if a
+The proxy MUST retire a stuck HTTP bridge response-create gate session when a
+visible request times out waiting for it, but only if a
 pending visible request still owns the gate, is still awaiting
 `response.created`, has not produced downstream-visible output, and its age
 meets or exceeds the configured stuck-gate retirement threshold. Receiving a
