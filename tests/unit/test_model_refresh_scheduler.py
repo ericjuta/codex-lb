@@ -4,7 +4,6 @@ import contextlib
 import errno
 import logging
 import socket
-from collections.abc import Awaitable, Callable
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any

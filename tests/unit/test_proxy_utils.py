@@ -28,9 +28,8 @@ from websockets.exceptions import ConnectionClosedError
 from websockets.frames import Close
 
 import app.core.clients.proxy as proxy_module
-from app.core.clients.codex_continuation import CodexContinuationConfig
 import app.core.resilience.network_recovery as network_recovery_module
-import app.modules.proxy.load_balancer as load_balancer_module
+from app.core.clients.codex_continuation import CodexContinuationConfig
 from app.core.clients.proxy import _build_upstream_compact_headers, _build_upstream_headers, filter_inbound_headers
 from app.core.clients.proxy_websocket import (
     CodexResponsesWebSocket,
