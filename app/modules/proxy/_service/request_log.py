@@ -21,6 +21,21 @@ from app.modules.proxy.repo_bundle import ProxyRepoFactory
 
 logger = logging.getLogger("app.modules.proxy.service")
 
+# _background_cleanup_tasks also tracks non-persistence work (bridge session
+# close cleanups, security-work error forwards); the shutdown drain must not
+# spend its budget on those - they have their own teardown - so it only waits
+# on tasks whose names mark them as request-log or settlement persistence.
+_PERSISTENCE_TASK_NAME_PREFIXES = (
+    "proxy-request-log-",
+    "proxy-stream-api-key-settle-",
+    "proxy-release_stream_api_key_reservation",
+)
+
+
+def _is_persistence_task(task: asyncio.Task[None]) -> bool:
+    return task.get_name().startswith(_PERSISTENCE_TASK_NAME_PREFIXES)
+
+
 _REQUEST_TRANSPORT_HTTP = "http"
 
 
@@ -87,6 +102,7 @@ def _record_prompt_cache_usage(
 class _RequestLogServiceProtocol(Protocol):
     _repo_factory: ProxyRepoFactory
     _request_log_tasks: set[asyncio.Task[None]]
+    _background_cleanup_tasks: set[asyncio.Task[None]]
 
 
 def _normalize_session_id(session_id: str | None) -> str | None:
@@ -306,6 +322,49 @@ class _RequestLogMixin:
             useragent_group=useragent_group,
             model=model,
         )
+
+    async def drain_persistence_tasks(self, timeout_seconds: float) -> bool:
+        """Await detached request-log and settlement tasks, e.g. at shutdown.
+
+        Persistence runs detached from the response path, so a graceful
+        shutdown must flush whatever is still in flight or the final
+        requests' logs and reservation settlements would be lost. Task done
+        callbacks can schedule follow-up work (a failed settlement enqueues
+        its reservation release), so draining loops until the tracked sets
+        are stable rather than snapshotting once. Returns True when
+        everything drained within the timeout.
+        """
+        proxy = cast(_RequestLogServiceProtocol, self)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_seconds
+        while True:
+            pending = {
+                task
+                for task in (proxy._request_log_tasks | proxy._background_cleanup_tasks)
+                if not task.done() and _is_persistence_task(task)
+            }
+            if not pending:
+                # One scheduling tick so just-finished tasks' done callbacks
+                # (which may enqueue follow-up tasks) run before we re-check.
+                await asyncio.sleep(0)
+                if not any(
+                    _is_persistence_task(task)
+                    for task in (proxy._request_log_tasks | proxy._background_cleanup_tasks)
+                    if not task.done()
+                ):
+                    return True
+                continue
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                for task in pending:
+                    logger.warning("Persistence task did not drain before shutdown: %s", task.get_name())
+                return False
+            done, still_pending = await asyncio.wait(pending, timeout=remaining)
+            del done
+            if still_pending:
+                for task in still_pending:
+                    logger.warning("Persistence task did not drain before shutdown: %s", task.get_name())
+                return False
 
     def _track_request_log_task(
         self,

@@ -1215,8 +1215,26 @@ class _StreamingRetryMixin:
                         )
                         yield format_sse_event(event)
                         return
-                    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    except (RefreshError, aiohttp.ClientError, asyncio.TimeoutError) as exc:
                         selected_account_model_replacement = account.id == account_model_replacement_account_id
+                        if isinstance(exc, RefreshError):
+                            if exc.is_permanent:
+                                await proxy._load_balancer.mark_permanent_failure(account, exc.code)
+                                # The account is now removed from selection, but its
+                                # stream-concurrency slot is still occupied by the
+                                # lease appended at selection. Release it before the
+                                # failover ``continue`` so the dead account's slot is
+                                # freed immediately.
+                                await _release_tracked_stream_lease(current_account_lease)
+                                current_account_lease = None
+                                if not selected_account_model_replacement:
+                                    continue
+                            elif not exc.transport_error and not selected_account_model_replacement:
+                                # Non-transport, non-permanent RefreshError: release
+                                # the stream lease and reselect (prior behavior).
+                                await _release_tracked_stream_lease(current_account_lease)
+                                current_account_lease = None
+                                continue
                         _facade().logger.warning(
                             "Stream refresh/connect failed request_id=%s attempt=%s account_id=%s",
                             request_id,
@@ -1224,7 +1242,7 @@ class _StreamingRetryMixin:
                             account.id,
                             exc_info=True,
                         )
-                        message = str(exc) or "Request to upstream timed out"
+                        message = getattr(exc, "message", None) or str(exc) or "Request to upstream timed out"
                         if (
                             not selected_account_model_replacement
                             and _facade()._should_retry_transient_stream_error("upstream_unavailable", message)

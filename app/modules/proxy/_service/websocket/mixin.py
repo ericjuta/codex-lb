@@ -340,6 +340,7 @@ from app.modules.proxy._service.support import (
     _WebSocketDownstreamSendFailure,
     _WebSocketReceiveTimeout,
     _WebSocketRequestState,
+    _WebSocketTransientRefreshFailover,
     _WebSocketUpstreamControl,
 )
 from app.modules.proxy._service.support import (
@@ -2191,6 +2192,45 @@ class _WebSocketMixin:
                         websocket=websocket,
                         force_refresh=forced_refresh_account_id == account.id,
                     )
+                except _WebSocketTransientRefreshFailover as failover:
+                    # A transient, transport-level refresh failure reached the
+                    # connect path. Release the skipped account's already-
+                    # acquired stream lease so it does not keep consuming a
+                    # stream-concurrency slot for a connection that never
+                    # opens, exclude it, and reselect a healthy account. The
+                    # account credentials are fine, so this must be a
+                    # 503/capacity-style upstream error, NOT a bogus 401
+                    # invalid_api_key.
+                    await proxy._load_balancer.release_account_lease(selected_stream_lease)
+                    selected_stream_lease = None
+                    refresh_failure = ProxyResponseError(
+                        503,
+                        openai_error(
+                            "upstream_unavailable",
+                            "Account refresh is temporarily unavailable; no healthy account could be reached.",
+                            error_type="server_error",
+                        ),
+                    )
+                    if selected_account_model_replacement:
+                        await proxy._emit_websocket_connect_failure(
+                            websocket,
+                            client_send_lock=client_send_lock,
+                            account_id=account.id,
+                            api_key=api_key,
+                            request_state=request_state,
+                            status_code=refresh_failure.status_code,
+                            payload=refresh_failure.payload,
+                            error_code="upstream_unavailable",
+                            error_message=(
+                                "Account refresh is temporarily unavailable; no healthy account could be reached."
+                            ),
+                        )
+                        return None, None
+                    excluded_account_ids.add(failover.account_id)
+                    last_failover_exc = refresh_failure
+                    last_failover_account = account
+                    failover_to_next_account = True
+                    break
                 except ProxyResponseError as exc:
                     if selected_account_model_replacement:
                         # The account/model retry budget selected this replacement;

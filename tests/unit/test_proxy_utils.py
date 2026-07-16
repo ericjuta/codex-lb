@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Iterator, Literal, Protocol, Self, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import aiohttp
 import anyio
@@ -4220,7 +4220,7 @@ def test_request_log_failure_metadata_tags_owner_forward_failures() -> None:
     assert metadata.bridge_stage == "owner_forward"
 
 
-def _make_proxy_settings(*, log_proxy_service_tier_trace: bool) -> SimpleNamespace:
+def _make_proxy_settings(*, log_proxy_service_tier_trace: bool = False) -> SimpleNamespace:
     return SimpleNamespace(
         prefer_earlier_reset_accounts=False,
         prefer_earlier_reset_window="secondary",
@@ -33855,7 +33855,6 @@ async def test_retry_http_bridge_precreated_request_reacquires_replacement_respo
         account_id=replacement_account.id,
         request_id=request_state.request_id,
         surface="http_bridge",
-        concurrency_caps=proxy_service.effective_account_concurrency_caps(settings),
     )
     assert request_state.account_response_create_lease is replacement_lease
     assert request_state.account_response_create_release is release_lease
