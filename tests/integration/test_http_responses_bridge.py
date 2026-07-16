@@ -6950,6 +6950,223 @@ async def test_v1_responses_http_bridge_gate_contention_waits_and_completes_afte
 
 
 @pytest.mark.asyncio
+async def test_http_bridge_stale_gate_retires_after_leading_rate_limit_telemetry(
+    app_instance,
+    monkeypatch,
+):
+    app_settings = _make_app_settings(
+        enabled=True,
+        admission_wait_timeout_seconds=0.001,
+    )
+    app_settings.http_responses_session_bridge_stuck_gate_retire_after_seconds = 0.01
+    _install_proxy_settings(
+        monkeypatch,
+        app_settings=app_settings,
+        dashboard_settings=_make_dashboard_settings(),
+    )
+    service = get_proxy_service_for_app(app_instance)
+    upstream = _SilentUpstreamWebSocket()
+    key = proxy_module._HTTPBridgeSessionKey("session_header", "stale-after-rate-limits", None)
+    gate = asyncio.Semaphore(1)
+    await gate.acquire()
+    request_state = proxy_module._WebSocketRequestState(
+        request_id="req-stale-after-rate-limits",
+        model="gpt-5.6-sol",
+        service_tier=None,
+        reasoning_effort="high",
+        api_key_reservation=None,
+        started_at=time.monotonic() - 1.0,
+        transport="http",
+        response_create_gate=gate,
+        response_create_gate_acquired=True,
+        awaiting_response_created=True,
+        event_queue=asyncio.Queue(),
+    )
+    session = proxy_module._HTTPBridgeSession(
+        key=key,
+        headers={},
+        affinity=proxy_module._AffinityPolicy(key="stale-after-rate-limits"),
+        request_model="gpt-5.6-sol",
+        account=cast(Account, SimpleNamespace(id="acct-stale-rate-limits", status=AccountStatus.ACTIVE)),
+        upstream=cast(proxy_module.UpstreamResponsesWebSocket, upstream),
+        upstream_control=proxy_module._WebSocketUpstreamControl(),
+        pending_requests=deque([request_state]),
+        pending_lock=anyio.Lock(),
+        response_create_gate=gate,
+        queued_request_count=1,
+        last_used_at=time.monotonic(),
+        idle_ttl_seconds=120.0,
+    )
+    service._http_bridge_sessions[key] = session
+
+    await service._process_http_bridge_upstream_text(
+        session,
+        json.dumps(
+            {
+                "type": "codex.rate_limits",
+                "plan_type": "pro",
+                "rate_limits": {"allowed": True, "limit_reached": False},
+            },
+            separators=(",", ":"),
+        ),
+    )
+
+    assert request_state.latency_first_upstream_event_ms is not None
+    assert request_state.latency_response_created_ms is None
+    assert request_state.response_id is None
+    assert request_state.awaiting_response_created is True
+    assert gate.locked() is True
+
+    waiter = proxy_module._WebSocketRequestState(
+        request_id="req-waiting-after-rate-limits",
+        model="gpt-5.6-sol",
+        service_tier=None,
+        reasoning_effort="high",
+        api_key_reservation=None,
+        started_at=time.monotonic(),
+        transport="http",
+        downstream_visible=True,
+    )
+    try:
+        with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+            await service._acquire_request_state_response_create_admission(
+                waiter,
+                response_create_gate=gate,
+                bridge_session=session,
+            )
+    finally:
+        if gate.locked():
+            gate.release()
+
+    assert exc_info.value.payload["error"]["code"] == "response_create_gate_timeout"
+    assert session.closed is True
+    assert key not in service._http_bridge_sessions
+    assert upstream.closed is True
+
+
+@pytest.mark.asyncio
+async def test_codex_responses_http_bridge_replaces_retired_gate_without_client_retry(
+    async_client,
+    app_instance,
+    monkeypatch,
+):
+    _install_bridge_settings_with_limits(
+        monkeypatch,
+        enabled=True,
+        admission_wait_timeout_seconds=0.001,
+    )
+    proxy_module.get_settings().http_responses_session_bridge_stuck_gate_retire_after_seconds = 0.01
+    account_id = await _import_account(
+        async_client,
+        "acc-http-bridge-retired-gate-replace",
+        "http-bridge-retired-gate-replace@example.com",
+    )
+    account = await _get_account(account_id)
+    service = get_proxy_service_for_app(app_instance)
+    replacement_upstream = _FakeBridgeUpstreamWebSocket()
+    monkeypatch.setattr(
+        service,
+        "_select_account_with_budget",
+        AsyncMock(return_value=AccountSelection(account=account, error_message=None, error_code=None)),
+    )
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(return_value=account))
+
+    async def fake_connect_responses_websocket(
+        headers,
+        access_token,
+        account_id_header,
+        *,
+        base_url=None,
+        session=None,
+    ):
+        del headers, access_token, account_id_header, base_url, session
+        return replacement_upstream
+
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", fake_connect_responses_websocket)
+
+    request_headers = {
+        "session_id": "retired-gate-replace",
+        "x-codex-turn-state": "http_turn_retired_gate_replace",
+        "user-agent": "codex_cli_rs/0.145.0",
+    }
+    payload = proxy_module.ResponsesRequest(
+        model="gpt-5.6-sol",
+        instructions="Return exactly OK.",
+        input="continue after stale gate",
+    )
+    affinity = proxy_module._sticky_key_for_responses_request(
+        payload,
+        request_headers,
+        codex_session_affinity=True,
+        openai_cache_affinity=True,
+        openai_cache_affinity_max_age_seconds=300,
+        sticky_threads_enabled=False,
+        api_key=None,
+    )
+    key = proxy_module._HTTPBridgeSessionKey("session_header", "retired-gate-replace", None)
+    stale_upstream = _SilentUpstreamWebSocket()
+    gate = asyncio.Semaphore(1)
+    await gate.acquire()
+    stale_request = proxy_module._WebSocketRequestState(
+        request_id="req-stale-gate-owner",
+        model="gpt-5.6-sol",
+        service_tier=None,
+        reasoning_effort="high",
+        api_key_reservation=None,
+        started_at=time.monotonic() - 1.0,
+        transport="http",
+        response_create_gate=gate,
+        response_create_gate_acquired=True,
+        awaiting_response_created=True,
+        event_queue=asyncio.Queue(),
+        request_text='{"type":"response.create","model":"gpt-5.6-sol"}',
+    )
+    stale_session = proxy_module._HTTPBridgeSession(
+        key=key,
+        headers=request_headers,
+        affinity=affinity,
+        request_model="gpt-5.6-sol",
+        account=account,
+        upstream=cast(proxy_module.UpstreamResponsesWebSocket, stale_upstream),
+        upstream_control=proxy_module._WebSocketUpstreamControl(),
+        pending_requests=deque([stale_request]),
+        pending_lock=anyio.Lock(),
+        response_create_gate=gate,
+        queued_request_count=1,
+        last_used_at=time.monotonic(),
+        idle_ttl_seconds=120.0,
+        codex_session=True,
+    )
+    stale_session.downstream_turn_state_aliases.add("http_turn_retired_gate_replace")
+    service._http_bridge_sessions[key] = stale_session
+    service._http_bridge_turn_state_index[
+        proxy_module._http_bridge_turn_state_alias_key("http_turn_retired_gate_replace", None)
+    ] = key
+
+    try:
+        response = await asyncio.wait_for(
+            async_client.post(
+                "/backend-api/codex/responses",
+                json=payload.to_payload(),
+                headers=request_headers,
+            ),
+            timeout=_TEST_SYNC_TIMEOUT_SECONDS,
+        )
+    finally:
+        if gate.locked():
+            gate.release()
+
+    assert response.status_code == 200
+    assert stale_session.closed is True
+    assert stale_upstream.closed is True
+    assert len(replacement_upstream.sent_text) == 1
+    assert any(
+        current_session is not stale_session and current_session.upstream is replacement_upstream
+        for current_session in service._http_bridge_sessions.values()
+    )
+
+
+@pytest.mark.asyncio
 async def test_v1_responses_http_bridge_enforces_queue_limit_atomically_for_same_session(
     async_client,
     app_instance,

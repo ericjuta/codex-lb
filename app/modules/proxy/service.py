@@ -7,7 +7,6 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Collection
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from typing import Any, AsyncIterator, Literal, Mapping, NoReturn, TypeVar, cast
 
 import aiohttp
@@ -276,6 +275,9 @@ from app.modules.proxy._service.http_bridge.helpers import (
 )
 from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_turn_state_alias_key as _http_bridge_turn_state_alias_key,
+)
+from app.modules.proxy._service.http_bridge.helpers import (
+    _HTTPBridgeRuntimeConfig as _HTTPBridgeRuntimeConfig,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
     _is_http_bridge_previous_response_output_item as _is_http_bridge_previous_response_output_item,
@@ -885,17 +887,6 @@ _SECURITY_WORK_NO_AUTHORIZED_ACCOUNTS_MESSAGE = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class _HTTPBridgeRuntimeConfig:
-    enabled: bool
-    idle_ttl_seconds: float
-    codex_idle_ttl_seconds: float
-    max_sessions: int
-    queue_limit: int
-    prompt_cache_idle_ttl_seconds: float
-    gateway_safe_mode: bool
-
-
 def _estimated_lease_tokens_from_request_usage_budget(budget: ApiKeyRequestUsageBudget | None) -> float:
     if budget is None:
         return 0.0
@@ -1330,14 +1321,16 @@ class ProxyService(
                         300.0,
                     )
                 )
+                # Leading telemetry records latency without assigning a response
+                # or releasing this gate; only response-created proves progress.
                 should_retire_stuck_session = any(
                     state.transport == _REQUEST_TRANSPORT_HTTP
                     and not state.skip_request_log
                     and state.response_create_gate_acquired
                     and state.awaiting_response_created
                     and not state.downstream_visible
-                    and state.latency_first_upstream_event_ms is None
                     and state.latency_response_created_ms is None
+                    and state.response_event_count == 0
                     and max(0.0, now - state.started_at) >= threshold_seconds
                     for state in pending_states
                 )
