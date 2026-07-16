@@ -23,6 +23,25 @@ For higher concurrency or infrastructure-managed deployments, PostgreSQL support
 - Enable `pg_stat_statements` on sustained PostgreSQL deployments when query-level tuning is needed; it requires `shared_preload_libraries=pg_stat_statements`, a PostgreSQL restart, and `CREATE EXTENSION IF NOT EXISTS pg_stat_statements` in the application database.
 - SQLite remains the local/smoke path. If SQLite lock retries or exhausted retry metrics rise during sustained serving, move the deployment to PostgreSQL rather than relying on unconstrained multi-worker SQLite.
 
+### PostgreSQL temporary-spill diagnosis
+
+- `pg_stat_database.temp_files` and `temp_bytes` are cumulative counters
+  since the statistics reset; they are not current temporary-disk occupancy.
+  Record the statistics reset or postmaster start time, sample the counters at
+  two timestamps, and calculate the active byte and file rate before declaring
+  an incident.
+- Use `pg_stat_statements` temporary-block counters to attribute sustained
+  spill to query families. Separate request-path queries from background
+  cleanup, synchronization, and dashboard work before choosing a remedy.
+- Correlate the delta with query latency, database waits, host I/O, request
+  gate wait, and tail latency. A large cumulative counter without active
+  growth or user-visible pressure is historical evidence, not a reason to
+  restart PostgreSQL.
+- `work_mem` applies per sort or hash operation and can multiply across
+  concurrent statements. Prefer a query or index fix, or a scoped session
+  override backed by `EXPLAIN (ANALYZE, BUFFERS)`, before raising it
+  globally.
+
 ## Example
 
 Use PostgreSQL while keeping all other defaults:

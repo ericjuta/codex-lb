@@ -27,6 +27,26 @@ See `openspec/specs/proxy-runtime-observability/spec.md` for normative requireme
 - When snapshots show requested `ultrafast` with actual upstream `default`, keep reporting it as a tier mismatch observation rather than a local proxy failure by itself. Correlate it with p95/max latency and recent error classes; do not hide it by changing the configured Codex CLI tier.
 - For a quick live health/performance read, pair `scripts/codex_lb_live_snapshot.py` with the configured Codex CLI smoke (`codex exec --ephemeral ... "Reply with OK only."`). The snapshot shows local health, latency percentiles, upstream failure classes, and tier mismatches; the CLI smoke proves the configured provider chain without exposing credentials.
 
+## Prompt-cache economics triage
+
+- Evaluate prompt-cache health with three model-scoped signals together: cache
+  ratio, average uncached input tokens per successful request, and total
+  uncached input volume over the observation window. Ratio describes reuse
+  shape; uncached tokens describe the billed input that remains; total volume
+  identifies which lane has the largest fleet impact.
+- A lower cache ratio is not automatically a regression. A workload can send a
+  smaller request while reducing uncached input, and an incremental WebSocket
+  payload can still be billed against the provider's folded conversation
+  context. Do not change replay mode from payload size or ratio alone; compare
+  provider-reported input and cached-input usage before and after the change.
+- Set canary thresholds per model or workload from an observed healthy
+  baseline. Investigate a low-ratio, high-uncached lane at the upstream caller
+  first: an unstable or missing workload-level `prompt_cache_key` fragments
+  cache identity even when proxy affinity is working.
+- Provider configuration is captured when a client session starts. After an
+  affinity or replay configuration change, restart or recreate the affected
+  sessions before judging the result.
+
 ## Performance Triage Example
 
 A gateway can be locally healthy while still showing a slow request tail. For example, a snapshot may show:

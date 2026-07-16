@@ -262,6 +262,19 @@ As of 2026-05-17, a live `codex-lb-direct` snapshot on this host showed the same
 
 Interpret this as a health/performance split: local readiness and websocket routing can be green while upstream tier resolution and stream stability still need investigation.
 
+### WebSocket failure-severity triage
+
+| Signal | Proven phase | Client impact | Operator interpretation |
+|---|---|---|---|
+| `upstream_websocket_open_timeout` | Opening handshake, before the upstream response lifecycle | The client receives `upstream_unavailable` only when bounded connection attempts are exhausted | Attempt or account-level timeout counters can exceed failed requests. Correlate with settled request rows, later successes, and whether the event affects accounts uniformly before changing local timeouts. |
+| `server_is_overloaded` / `overloaded_error` | Upstream overload envelope, including terminal stream events after HTTP `200` | The proxy may recover transparently only before downstream-visible output | Count requests that exhaust the bounded retry/failover budget. A raw upstream overload event is not automatically a user-visible failure. |
+| `stream_incomplete` | The upstream stream opened but closed before `response.completed` | Client-visible terminal `response.failed` | Include it directly in request error rate and inspect websocket close detail, output already emitted, account, and surrounding open-timeout activity. |
+
+Retries and replays stay bounded by the existing request deadline and
+downstream-visibility guard. Do not increase retry budgets as the first
+response to warning volume; first determine how many requests actually failed
+and in which lifecycle phase.
+
 ## HTTP `/v1/responses` Session Bridge Operations
 
 HTTP `/v1/responses` now uses an internal upstream websocket session bridge by default.
