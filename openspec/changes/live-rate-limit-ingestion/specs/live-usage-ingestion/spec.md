@@ -2,7 +2,7 @@
 
 ### Requirement: Proxied responses feed passive usage snapshots
 
-The proxy SHALL parse upstream rate-limit signals from proxied traffic — `x-codex-{primary,secondary}-used-percent`, `-window-minutes`, `-reset-at`, and `x-codex-credits-*` error-response headers, and `codex.rate_limits` stream events — into per-account usage snapshots attributed to the account that served the request. For successful HTTP/SSE responses, the terminal `codex.rate_limits` stream event SHALL be the persisted live usage source and response headers MUST NOT be independently persisted. Error-response headers SHALL be ingested because no terminal event may follow. Snapshots SHALL be persisted through the same usage-history storage contract the background poller uses (per-window rows with used percent, reset timestamp, window duration, and credits fields). The observation timestamp SHALL be captured before enqueueing, retained across queue and storage delays, and shared by every window row derived from one snapshot.
+The proxy SHALL parse upstream rate-limit signals from proxied traffic — `x-codex-{primary,secondary}-used-percent`, `-window-minutes`, `-reset-at`, and `x-codex-credits-*` error-response headers, and `codex.rate_limits` stream events — into per-account usage snapshots attributed to the account that served the request. For successful HTTP/SSE responses, the terminal `codex.rate_limits` stream event SHALL be the persisted live usage source and response headers MUST NOT be independently persisted. Error-response headers SHALL be ingested because no terminal event may follow. A signal observed while serving a model mapped to an additional quota key MUST NOT be persisted into the shared usage-history windows; that model's quota SHALL remain in its separate additional-usage lane. Shared-lane snapshots SHALL be persisted through the same usage-history storage contract the background poller uses (per-window rows with used percent, reset timestamp, window duration, and credits fields). The observation timestamp SHALL be captured before enqueueing, retained across queue and storage delays, and shared by every window row derived from one snapshot.
 
 #### Scenario: Stream event updates usage rows
 
@@ -18,6 +18,12 @@ The proxy SHALL parse upstream rate-limit signals from proxied traffic — `x-co
 
 - **WHEN** an upstream error response carries `x-codex-*` rate-limit headers
 - **THEN** an equivalent snapshot is ingested for the serving account without waiting for a stream event
+
+#### Scenario: Additional-quota event does not overwrite the shared weekly meter
+
+- **WHEN** proxied traffic for a model mapped to an additional quota key carries a `codex.rate_limits` event or rate-limit error headers
+- **THEN** no shared primary or secondary usage row is ingested from that signal
+- **AND** the model's separately refreshed additional-usage history remains the source for its quota lane
 
 #### Scenario: Sibling rows share one observation time
 

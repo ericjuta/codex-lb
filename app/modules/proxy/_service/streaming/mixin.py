@@ -390,6 +390,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _websocket_top_level_error_payload,  # noqa: F401
     _wrapped_websocket_error_event,  # noqa: F401
 )
+from app.modules.proxy.additional_model_limits import get_additional_quota_key_for_model_id
 from app.modules.proxy.affinity import (
     _owner_lookup_session_id_from_headers,
     _sticky_key_from_session_header,  # noqa: F401
@@ -512,6 +513,7 @@ class _StreamingMixin(_StreamingEntrypointMixin, _StreamingRetryMixin):
                 "codex_installation_id": account.codex_installation_id,
                 "enforce_openai_sdk_contract": enforce_openai_sdk_contract,
                 "codex_lb_account_id": account.id,
+                "suppress_live_usage": get_additional_quota_key_for_model_id(payload.model) is not None,
             }
             if upstream_stream_transport is not None:
                 stream_optional_kwargs["upstream_stream_transport_override"] = upstream_stream_transport

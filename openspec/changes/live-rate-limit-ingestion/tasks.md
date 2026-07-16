@@ -24,3 +24,9 @@
 - [x] 5.1 Restrict HTTP/SSE response-header ingestion to upstream errors so successful headers cannot overwrite terminal event snapshots.
 - [x] 5.2 Add routed-stream regressions for conflicting successful headers/event precedence and error-header persistence.
 - [x] 5.3 Run strict OpenSpec validation, focused tests, static checks, and final diff inspection.
+
+## 6. Additional-quota lane isolation
+
+- [x] 6.1 Suppress shared live usage ingestion for HTTP/SSE and WebSocket requests whose model maps to an additional quota key.
+- [x] 6.2 Add regressions proving ordinary models still publish shared snapshots while `gpt-5.3-codex-spark` does not on both WebSocket relay paths.
+- [x] 6.3 Run strict OpenSpec validation, focused proxy tests, static checks, and inspect the final diff.

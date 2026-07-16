@@ -144,6 +144,7 @@ from app.modules.proxy._service.warmup import (
 from app.modules.proxy._service.warmup import (
     _WarmupUsageSnapshot as _WarmupUsageSnapshot,
 )
+from app.modules.proxy.additional_model_limits import get_additional_quota_key_for_model_id
 from app.modules.proxy.affinity import (
     _extract_model_class,
 )
@@ -293,7 +294,10 @@ class _HTTPBridgeUpstreamEventsMixin:
 
                 if message.kind == "text" and message.text is not None:
                     session.last_upstream_close_code = None
-                    if EVENT_MARKER in message.text:
+                    if (
+                        EVENT_MARKER in message.text
+                        and get_additional_quota_key_for_model_id(session.request_model) is None
+                    ):
                         publish_live_usage(
                             parse_rate_limit_event_text(message.text),
                             account_id=session.account.id,

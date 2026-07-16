@@ -57,6 +57,7 @@ def _make_bridge_session(
     *,
     key: proxy_service._HTTPBridgeSessionKey | None = None,
     key_value: str = "bridge-test",
+    request_model: str | None = "gpt-5.2",
     pending_requests: deque[proxy_service._WebSocketRequestState] | None = None,
     queued_request_count: int = 0,
 ) -> proxy_service._HTTPBridgeSession:
@@ -68,7 +69,7 @@ def _make_bridge_session(
             key=key_value,
             kind=proxy_service.StickySessionKind.CODEX_SESSION,
         ),
-        request_model="gpt-5.2",
+        request_model=request_model,
         account=cast(Any, SimpleNamespace(id="acc-bridge", status=AccountStatus.ACTIVE, plan_type="plus")),
         upstream=cast(UpstreamResponsesWebSocket, SimpleNamespace(close=AsyncMock())),
         upstream_control=proxy_service._WebSocketUpstreamControl(),
@@ -1924,13 +1925,19 @@ async def test_http_bridge_upstream_non_text_archives_with_request_archive_id(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("request_model", "expected_snapshots"),
+    [("gpt-5.2", 1), ("gpt-5.3-codex-spark", 0)],
+)
 async def test_http_bridge_relay_publishes_live_rate_limit_events(
     monkeypatch: pytest.MonkeyPatch,
+    request_model: str,
+    expected_snapshots: int,
 ) -> None:
     from app.core.usage import live_hub
 
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
-    session = _make_bridge_session(key_value="bridge-live-rate-limits")
+    session = _make_bridge_session(key_value="bridge-live-rate-limits", request_model=request_model)
     rate_limit_text = (
         '{"type":"codex.rate_limits","rate_limits":{"primary":'
         '{"used_percent":72,"window_minutes":300,"reset_at":1700000300}}}'
@@ -1963,7 +1970,9 @@ async def test_http_bridge_relay_publishes_live_rate_limit_events(
     finally:
         live_hub.register_live_usage_publisher(None)
 
-    assert len(captured) == 1
+    assert len(captured) == expected_snapshots
+    if expected_snapshots == 0:
+        return
     snapshot, account_id = captured[0]
     assert account_id == session.account.id
     assert snapshot.primary is not None
@@ -16414,8 +16423,14 @@ async def test_websocket_reader_unexpected_processing_error_fails_pending_reques
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("request_model", "expected_snapshots"),
+    [("gpt-5.2", 1), ("gpt-5.3-codex-spark", 0)],
+)
 async def test_direct_websocket_relay_publishes_live_rate_limit_events(
     monkeypatch: pytest.MonkeyPatch,
+    request_model: str,
+    expected_snapshots: int,
 ) -> None:
     from app.core.usage import live_hub
 
@@ -16444,6 +16459,18 @@ async def test_direct_websocket_relay_publishes_live_rate_limit_events(
     monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
     monkeypatch.setattr(service, "_process_upstream_websocket_text", AsyncMock(return_value=rate_limit_text))
     monkeypatch.setattr(service, "_fail_pending_websocket_requests", AsyncMock())
+    pending_requests = deque(
+        [
+            proxy_service._WebSocketRequestState(
+                request_id="req-direct-live-rate-limits",
+                model=request_model,
+                service_tier=None,
+                reasoning_effort=None,
+                api_key_reservation=None,
+                started_at=time.monotonic(),
+            )
+        ]
+    )
 
     captured: list[tuple[Any, str | None]] = []
     live_hub.register_live_usage_publisher(
@@ -16455,7 +16482,7 @@ async def test_direct_websocket_relay_publishes_live_rate_limit_events(
             upstream,
             account=cast(Any, SimpleNamespace(id="acc-direct", status=AccountStatus.ACTIVE)),
             account_id_value="acc-direct",
-            pending_requests=deque(),
+            pending_requests=pending_requests,
             pending_lock=anyio.Lock(),
             client_send_lock=anyio.Lock(),
             api_key=None,
@@ -16468,7 +16495,9 @@ async def test_direct_websocket_relay_publishes_live_rate_limit_events(
     finally:
         live_hub.register_live_usage_publisher(None)
 
-    assert len(captured) == 1
+    assert len(captured) == expected_snapshots
+    if expected_snapshots == 0:
+        return
     snapshot, account_id = captured[0]
     assert account_id == "acc-direct"
     assert snapshot.primary is not None

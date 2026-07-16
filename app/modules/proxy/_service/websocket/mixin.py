@@ -424,6 +424,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _wrapped_websocket_error_event,
 )
 from app.modules.proxy._service.websocket.protocol import _WebSocketServiceProtocol
+from app.modules.proxy.additional_model_limits import get_additional_quota_key_for_model_id
 from app.modules.proxy.affinity import (
     _AffinityPolicy,
     _owner_lookup_session_id_from_headers,
@@ -3080,10 +3081,13 @@ class _WebSocketMixin:
                 if message.kind == "text" and message.text is not None:
                     downstream_activity.mark()
                     if EVENT_MARKER in message.text:
-                        publish_live_usage(
-                            parse_rate_limit_event_text(message.text),
-                            account_id=account.id,
-                        )
+                        async with pending_lock:
+                            live_usage_model = pending_requests[0].model if pending_requests else None
+                        if get_additional_quota_key_for_model_id(live_usage_model) is None:
+                            publish_live_usage(
+                                parse_rate_limit_event_text(message.text),
+                                account_id=account.id,
+                            )
                     downstream_text = await proxy._process_upstream_websocket_text(
                         message.text,
                         account=account,
