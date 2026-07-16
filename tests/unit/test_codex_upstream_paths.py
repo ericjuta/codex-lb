@@ -92,6 +92,40 @@ class _StreamResponse:
     content = _FakeStreamContent()
 
 
+class _FakeRateLimitStreamContent:
+    async def iter_chunked(self, size: int):
+        yield (
+            b'data: {"type":"codex.rate_limits","rate_limits":{"primary":'
+            b'{"used_percent":56,"window_minutes":10080,"reset_at":1700000300}}}\n\n'
+        )
+        yield b'data: {"type":"response.completed","response":{"id":"resp_1"}}\n\n'
+
+
+class _StreamRateLimitResponse:
+    status_code = 200
+    headers = {
+        "content-type": "text/event-stream",
+        "x-codex-primary-used-percent": "9",
+        "x-codex-primary-window-minutes": "10080",
+        "x-codex-primary-reset-at": "1700000000",
+    }
+    content = _FakeRateLimitStreamContent()
+
+
+class _StreamRateLimitErrorResponse:
+    status_code = 429
+    headers = {
+        "content-type": "application/json",
+        "x-codex-primary-used-percent": "91",
+        "x-codex-primary-window-minutes": "10080",
+        "x-codex-primary-reset-at": "1700000600",
+    }
+    content = b'{"error":{"message":"weekly limit reached","type":"rate_limit_error"}}'
+
+    def json(self) -> dict[str, dict[str, str]]:
+        return {"error": {"message": "weekly limit reached", "type": "rate_limit_error"}}
+
+
 class _FakeStreamErrorContent:
     async def iter_chunked(self, size: int):
         raise OSError("proxy http://user:***@proxy.test:8080 read failed")
@@ -445,6 +479,84 @@ async def test_stream_responses_uses_codex_client_when_route_is_resolved(
     assert client.calls[0]["url"].endswith("/backend-api/codex/responses")
     assert client.calls[0]["buffer_response"] is False
     assert trace.endpoint_id == "ep_1"
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_prefers_terminal_rate_limit_event_over_success_headers(
+    route: ResolvedUpstreamRoute,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(proxy_module, "should_apply_codex_continuation", lambda payload, config: False)
+    published: list[Any] = []
+    monkeypatch.setattr(
+        proxy_module,
+        "publish_live_usage",
+        lambda snapshot, **kwargs: published.append((snapshot, kwargs)),
+    )
+    client = _CodexClient(_StreamRateLimitResponse())
+    payload = ResponsesRequest(model="gpt-5.2", instructions="Reply.", input="hello", stream=True)
+
+    events = [
+        event
+        async for event in stream_responses(
+            payload,
+            {"user-agent": "codex"},
+            "access",
+            "chatgpt_account",
+            session=cast(Any, object()),
+            upstream_stream_transport_override="http",
+            route=route,
+            codex_client=cast(Any, client),
+            codex_lb_account_id="account_internal",
+        )
+    ]
+
+    assert len(events) == 2
+    assert len(published) == 1
+    snapshot, kwargs = published[0]
+    assert snapshot is not None
+    assert snapshot.primary is not None
+    assert snapshot.primary.used_percent == pytest.approx(56.0)
+    assert kwargs == {"account_id": "account_internal", "chatgpt_account_id": None}
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_ingests_rate_limit_headers_from_error_response(
+    route: ResolvedUpstreamRoute,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(proxy_module, "should_apply_codex_continuation", lambda payload, config: False)
+    published: list[Any] = []
+    monkeypatch.setattr(
+        proxy_module,
+        "publish_live_usage",
+        lambda snapshot, **kwargs: published.append((snapshot, kwargs)),
+    )
+    client = _CodexClient(_StreamRateLimitErrorResponse())
+    payload = ResponsesRequest(model="gpt-5.2", instructions="Reply.", input="hello", stream=True)
+
+    events = [
+        event
+        async for event in stream_responses(
+            payload,
+            {"user-agent": "codex"},
+            "access",
+            "chatgpt_account",
+            session=cast(Any, object()),
+            upstream_stream_transport_override="http",
+            route=route,
+            codex_client=cast(Any, client),
+            codex_lb_account_id="account_internal",
+        )
+    ]
+
+    assert any('"type":"response.failed"' in event for event in events)
+    assert len(published) == 1
+    snapshot, kwargs = published[0]
+    assert snapshot is not None
+    assert snapshot.primary is not None
+    assert snapshot.primary.used_percent == pytest.approx(91.0)
+    assert kwargs == {"account_id": "account_internal", "chatgpt_account_id": None}
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,7 @@
 
 ## 3. Tap points
 
-- [x] 3.1 HTTP/SSE: publish header snapshots when upstream response headers arrive and event snapshots on `codex.rate_limits` blocks in `_stream_responses_with_session`.
+- [x] 3.1 HTTP/SSE: publish header snapshots for error responses and event snapshots on `codex.rate_limits` blocks in `_stream_responses_with_session`.
 - [x] 3.2 WS bridge: publish event snapshots for `codex.rate_limits` frames in the upstream relay.
 
 ## 4. Validation
@@ -18,3 +18,9 @@
 - [x] 4.1 Unit: parser edge cases including header and raw event-text numeric overflow; throttle fingerprint/interval; queue overflow drop-oldest; hub no-op; snapshots capture observation time before enqueue and sibling rows share it.
 - [x] 4.2 Integration: SSE stream with rate-limit event writes rows for the serving account; kill switch produces no writes.
 - [x] 4.3 `openspec validate live-rate-limit-ingestion --strict`; targeted proxy/usage suites.
+
+## 5. Successful-stream snapshot precedence
+
+- [x] 5.1 Restrict HTTP/SSE response-header ingestion to upstream errors so successful headers cannot overwrite terminal event snapshots.
+- [x] 5.2 Add routed-stream regressions for conflicting successful headers/event precedence and error-header persistence.
+- [x] 5.3 Run strict OpenSpec validation, focused tests, static checks, and final diff inspection.

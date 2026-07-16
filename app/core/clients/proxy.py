@@ -2725,10 +2725,10 @@ async def _stream_responses_with_session(
                 resp = _CodexSSEResponse(raw_resp)
                 status_code = resp.status
                 last_stream_activity_at = time.monotonic()
-                # Error responses (429/403) carry the saturated-window
-                # snapshot — exactly when freshness matters most — so headers
-                # are ingested regardless of status.
-                if not suppress_live_usage:
+                # Successful streams publish their terminal codex.rate_limits
+                # event below. Persist headers only for errors, where no event
+                # may follow and the saturated-window snapshot matters most.
+                if resp.status >= 400 and not suppress_live_usage:
                     publish_live_usage(
                         parse_rate_limit_headers(getattr(raw_resp, "headers", None)),
                         account_id=codex_lb_account_id,
@@ -2822,7 +2822,9 @@ async def _stream_responses_with_session(
         ) as resp:
             status_code = resp.status
             last_stream_activity_at = time.monotonic()
-            if not suppress_live_usage:
+            # Successful streams publish their terminal codex.rate_limits
+            # event below; error responses may have only header quota data.
+            if resp.status >= 400 and not suppress_live_usage:
                 publish_live_usage(
                     parse_rate_limit_headers(getattr(resp, "headers", None)),
                     account_id=codex_lb_account_id,
