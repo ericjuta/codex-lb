@@ -3366,7 +3366,7 @@ def _normalized_compaction_output_item(
         "encrypted_content": encrypted_content,
     }
     item_id = item.get("id")
-    if isinstance(item_id, str) and item_id:
+    if isinstance(item_id, str) and item_id.strip():
         normalized["id"] = item_id
     return normalized
 
