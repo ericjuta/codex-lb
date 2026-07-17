@@ -67,7 +67,6 @@ from app.core.exceptions import (
     ProxyUpstreamError,
 )
 from app.core.metrics.prometheus import PROMETHEUS_AVAILABLE, bridge_public_contract_error_total
-from app.core.middleware.api_firewall import _parse_trusted_proxy_networks, resolve_connection_client_ip
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.chat_responses import (
     ChatCompletion,
@@ -92,7 +91,12 @@ from app.core.openai.models import (
 from app.core.openai.parsing import parse_response_payload
 from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
 from app.core.openai.v1_requests import V1ResponsesCompactRequest, V1ResponsesRequest
-from app.core.request_locality import resolve_request_client_host
+from app.core.request_locality import (
+    FORWARDED_CHAIN_HEADER_NAMES,
+    parse_trusted_proxy_networks,
+    resolve_connection_client_ip,
+    resolve_request_client_host,
+)
 from app.core.resilience.overload import is_local_overload_error_code, merge_retry_after_headers
 from app.core.runtime_logging import log_error_response
 from app.core.types import JsonValue
@@ -4321,7 +4325,8 @@ async def _websocket_firewall_denial_response(websocket: WebSocket) -> JSONRespo
         websocket.headers,
         websocket.client.host if websocket.client else None,
         trust_proxy_headers=settings.firewall_trust_proxy_headers,
-        trusted_proxy_networks=_parse_trusted_proxy_networks(settings.firewall_trusted_proxy_cidrs),
+        trusted_proxy_networks=parse_trusted_proxy_networks(settings.firewall_trusted_proxy_cidrs),
+        allowed_proxy_header_names=FORWARDED_CHAIN_HEADER_NAMES,
     )
     async with get_background_session() as session:
         repository = cast(FirewallRepositoryPort, FirewallRepository(session))
