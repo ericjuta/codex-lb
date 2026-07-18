@@ -9,8 +9,9 @@ from datetime import timedelta
 from typing import Protocol, cast
 
 from app.core import startup as startup_module
-from app.core.config.settings import get_settings
+from app.core.config.settings import Settings, get_settings
 from app.core.utils.time import utcnow
+from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.proxy.continuity_repository import WebsocketContinuityStatesRepository
 from app.modules.proxy.durable_bridge_repository import DurableBridgeRepository, missing_durable_bridge_tables
@@ -20,6 +21,27 @@ from app.modules.settings.repository import SettingsRepository
 logger = logging.getLogger(__name__)
 
 _WEBSOCKET_CONTINUITY_STATE_MAX_AGE_HOURS = 48
+
+
+def _abandoned_bridge_retention_seconds(
+    dashboard_settings: DashboardSettings,
+    app_settings: Settings,
+) -> float:
+    """Retention for abandoned durable bridge rows.
+
+    An idle local bridge session stays reusable until its effective idle TTL —
+    up to the prompt-cache reuse TTL for prompt-cache sessions — which can
+    exceed the prompt-cache affinity max age. Purging the ACTIVE durable row
+    earlier would strip a still-reusable session of its durable ownership and
+    continuity aliases, so retention must cover the longest reuse window.
+    """
+
+    return max(
+        float(dashboard_settings.openai_cache_affinity_max_age_seconds),
+        float(dashboard_settings.http_responses_session_bridge_prompt_cache_idle_ttl_seconds),
+        float(app_settings.http_responses_session_bridge_idle_ttl_seconds),
+        float(app_settings.http_responses_session_bridge_codex_idle_ttl_seconds),
+    )
 
 
 class _LeaderElectionLike(Protocol):
