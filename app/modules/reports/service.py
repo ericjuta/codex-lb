@@ -36,13 +36,14 @@ class ReportsService:
             end_date = now.date()
         if start_date is None:
             start_date = end_date - timedelta(days=6)
+        if start_date > end_date:
+            raise InvalidReportDateRangeError("start_date must be on or before end_date")
         window_days = (end_date - start_date).days + 1
         if window_days > MAX_DAILY_REPORT_DAYS:
             raise DailyReportRangeTooLargeError(f"report date range must be {MAX_DAILY_REPORT_DAYS} days or less")
 
         start_at = _local_midnight_to_utc_naive(start_date, timezone_info)
         end_at = _local_midnight_to_utc_naive(end_date + timedelta(days=1), timezone_info)
-        window_days = max(window_days, 1)
         previous_end_date = start_date - timedelta(days=1)
         previous_start_date = previous_end_date - timedelta(days=window_days - 1)
         previous_start_at = _local_midnight_to_utc_naive(previous_start_date, timezone_info)
@@ -156,3 +157,6 @@ def _resolve_timezone(timezone_name: str | None) -> ZoneInfo | timezone:
 
 def _local_midnight_to_utc_naive(value: date, timezone_info: ZoneInfo | timezone) -> datetime:
     return to_utc_naive(datetime.combine(value, datetime.min.time(), tzinfo=timezone_info))
+
+class InvalidReportDateRangeError(ValueError):
+    """Raised when a report starts after it ends."""
