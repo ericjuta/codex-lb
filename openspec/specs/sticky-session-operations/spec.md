@@ -141,34 +141,29 @@ prevent the loop's other cleanup steps from running.
 - **AND** the prompt-cache and bridge-session purges in the same loop still
   run
 
-### Requirement: Transient websocket open timeouts retry the same account before breaking stickiness
+### Requirement: Retryable websocket open timeouts fail over without rewriting stickiness
 
-When a websocket upstream connect attempt fails with a retryable open-handshake timeout (`websocket_open_timeout` with a same-contract retryable classification), the proxy MUST retry the same account once before excluding it and reallocating sticky affinity, provided the request budget allows another attempt. The retry MUST NOT mark the account excluded and MUST NOT reallocate the sticky mapping. At most one same-account retry SHALL be performed per account per request; a second open timeout on the same account MUST fall back to the existing failover ladder (exclude and reallocate). The failover decision log line MUST record the same-account retry with a distinct action value (`retry_same_account`) alongside the existing request id, transport, account id, attempt, and failure class fields.
+When a movable websocket upstream connect attempt fails with a retryable open-handshake timeout (`websocket_open_timeout` with a same-contract retryable classification), the proxy MUST exclude the failed account for the current request and invoke the existing failover ladder without first retrying that account. The exclusion MUST NOT delete or rebind the durable sticky mapping. Requests pinned by file ownership or previous-response continuity MUST NOT cross accounts. The failover decision log line MUST record action `failover_next` alongside the existing request id, transport, account id, attempt, and failure class fields.
 
-#### Scenario: Open timeout retries same account and preserves sticky affinity
+#### Scenario: Open timeout moves the current request and preserves sticky affinity
 
-- **GIVEN** a websocket request selected its sticky prompt-cache account
-- **WHEN** the upstream open handshake times out once
-- **AND** the retry against the same account connects successfully
-- **THEN** the request proceeds on the original sticky account
+- **GIVEN** a movable websocket request selected its sticky prompt-cache account
+- **WHEN** the upstream open handshake times out with a retryable classification
+- **THEN** the current request excludes that account and attempts another eligible account
 - **AND** the sticky mapping is not reallocated
-- **AND** a failover decision with action `retry_same_account` is logged
+- **AND** a failover decision with action `failover_next` is logged
 
-#### Scenario: Repeated open timeout falls back to failover
+#### Scenario: Subsequent request can return to the sticky account
 
-- **GIVEN** a websocket request already consumed its same-account retry for the selected account
-- **WHEN** the retry attempt also times out during the open handshake
-- **THEN** the proxy excludes the account and reallocates using the existing failover ladder
+- **GIVEN** a request excluded its sticky account after a transient open timeout
+- **WHEN** a subsequent request resolves the same sticky key without that request-scoped exclusion
+- **THEN** the original sticky account remains the mapped account
 
-#### Scenario: Non-timeout failures do not get a same-account retry
+#### Scenario: Continuity owner is not replaced after open timeout
 
-- **WHEN** a websocket upstream connect attempt fails with a non-timeout retryable failure (for example an upstream 403 or close code)
-- **THEN** the proxy applies the existing failover ladder without a same-account retry
-
-#### Scenario: Exhausted budget skips the same-account retry
-
-- **WHEN** the open handshake times out and the remaining request budget cannot cover another connect attempt
-- **THEN** the proxy does not retry the same account and follows the existing failover/surface behavior
+- **GIVEN** a websocket request is pinned to an account by a file reference or `previous_response_id`
+- **WHEN** the owner's upstream open handshake times out
+- **THEN** the proxy surfaces the terminal connection failure without selecting another account
 
 ### Requirement: Per-request account exclusion preserves sticky mappings
 

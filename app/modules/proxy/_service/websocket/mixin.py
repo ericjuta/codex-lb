@@ -477,6 +477,8 @@ from app.modules.proxy.tool_call_dedupe import (
     response_id_from_payload as tool_call_response_id_from_payload,
 )
 
+_WEBSOCKET_ADMISSION_TIMEOUT_MARGIN_SECONDS = 0.1
+
 
 def _facade() -> Any:
     return sys.modules["app.modules.proxy.service"]
@@ -2105,8 +2107,13 @@ class _WebSocketMixin:
         _ = proxy
         if request_state.useragent is None and request_state.useragent_group is None:
             request_state.useragent, request_state.useragent_group = _request_log_useragent_fields(headers)
-        deadline = _websocket_connect_deadline(request_state, _facade().get_settings().proxy_request_budget_seconds)
         base_settings = _facade().get_settings()
+        request_deadline = _websocket_connect_deadline(request_state, base_settings.proxy_request_budget_seconds)
+        connect_deadline = _websocket_connect_deadline(
+            request_state,
+            base_settings.proxy_websocket_connect_budget_seconds,
+        )
+        deadline = min(request_deadline, connect_deadline)
         max_attempts = _facade()._WEBSOCKET_MAX_ACCOUNT_ATTEMPTS
         excluded_account_ids: set[str] = set(request_state.excluded_account_ids)
         excluded_account_ids.update(request_state.replay_excluded_account_ids)
@@ -2179,7 +2186,6 @@ class _WebSocketMixin:
                 _clear_websocket_precreated_replay_fallback(request_state)
 
             failover_to_next_account = False
-            same_account_retry_used = False
             while True:
                 try:
                     connect_result = await proxy._try_open_websocket_connect_attempt(
@@ -2190,6 +2196,7 @@ class _WebSocketMixin:
                         request_state=request_state,
                         client_send_lock=client_send_lock,
                         websocket=websocket,
+                        attempt_timeout_seconds=base_settings.proxy_websocket_connect_attempt_timeout_seconds,
                         force_refresh=forced_refresh_account_id == account.id,
                     )
                 except _WebSocketTransientRefreshFailover as failover:
@@ -2247,13 +2254,7 @@ class _WebSocketMixin:
                             deterministic_failover_enabled=getattr(
                                 base_settings, "deterministic_failover_enabled", True
                             ),
-                            same_account_retry_available=(
-                                not same_account_retry_used and _facade()._remaining_budget_seconds(deadline) > 0
-                            ),
                         )
-                    if action == "retry_same_account":
-                        same_account_retry_used = True
-                        continue
                     if action == "failover_next":
                         await proxy._load_balancer.release_account_lease(selected_stream_lease)
                         last_failover_exc = exc
@@ -2598,6 +2599,7 @@ class _WebSocketMixin:
         request_state: _WebSocketRequestState,
         client_send_lock: anyio.Lock,
         websocket: WebSocket,
+        attempt_timeout_seconds: float,
         force_refresh: bool = False,
         can_transient_failover: bool = False,
     ) -> tuple[Account, UpstreamResponsesWebSocket] | None:
@@ -2616,6 +2618,7 @@ class _WebSocketMixin:
                     request_state=request_state,
                     client_send_lock=client_send_lock,
                     websocket=websocket,
+                    attempt_timeout_seconds=attempt_timeout_seconds,
                     force_refresh=force_refresh,
                     can_transient_failover=can_transient_failover,
                 )
@@ -2643,6 +2646,7 @@ class _WebSocketMixin:
         request_state: _WebSocketRequestState,
         client_send_lock: anyio.Lock,
         websocket: WebSocket,
+        attempt_timeout_seconds: float,
         force_refresh: bool = False,
         can_transient_failover: bool = False,
     ) -> tuple[Account, UpstreamResponsesWebSocket] | None:
@@ -2682,7 +2686,7 @@ class _WebSocketMixin:
                 account,
                 headers,
                 optional_kwargs={"request_state": request_state},
-                timeout_seconds=remaining_budget,
+                timeout_seconds=min(remaining_budget, attempt_timeout_seconds),
             )
             return account, upstream
         except ProxyResponseError as exc:
@@ -2834,22 +2838,18 @@ class _WebSocketMixin:
         attempt: int,
         max_attempts: int,
         deterministic_failover_enabled: bool,
-        same_account_retry_available: bool = False,
     ) -> str:
         proxy = cast(_WebSocketServiceProtocol, self)
         _ = proxy
         classified = await proxy._handle_websocket_connect_error(account, exc)
         failure_class = classified["failure_class"] if isinstance(classified, dict) else "non_retryable"
         candidates_remaining = max_attempts - attempt
-        if (
-            same_account_retry_available
-            and exc.failure_phase == "websocket_open_timeout"
-            and exc.retryable_same_contract
-        ):
-            # Transient open-handshake timeouts are usually network-side, not
-            # account-side: retry the same account once before breaking sticky
-            # affinity via exclude-and-reallocate.
-            action = "retry_same_account"
+        error = _parse_openai_error(exc.payload)
+        error_code = _normalize_error_code(error.code if error else None, error.type if error else None)
+        if is_local_overload_error_code(error_code):
+            action = "surface"
+        elif exc.failure_phase == "websocket_open_timeout" and exc.retryable_same_contract and candidates_remaining > 0:
+            action = "failover_next"
         elif exc.status_code == 401 and candidates_remaining > 0:
             action = "failover_next"
         elif deterministic_failover_enabled:
@@ -2912,7 +2912,18 @@ class _WebSocketMixin:
                 _raise_proxy_budget_exhausted()
             try:
                 with anyio.fail_after(remaining_seconds):
-                    upstream = await proxy._open_upstream_websocket(account, headers, request_state=request_state)
+                    upstream = await _facade()._call_with_supported_optional_kwargs(
+                        proxy._open_upstream_websocket,
+                        account,
+                        headers,
+                        optional_kwargs={
+                            "request_state": request_state,
+                            "admission_timeout_seconds": max(
+                                0.0,
+                                remaining_seconds - _WEBSOCKET_ADMISSION_TIMEOUT_MARGIN_SECONDS,
+                            ),
+                        },
+                    )
                 recovery.log_recovered()
                 return upstream
             except ProxyResponseError as exc:
@@ -2937,13 +2948,18 @@ class _WebSocketMixin:
         headers: dict[str, str],
         *,
         request_state: "_WebSocketRequestState | None" = None,
+        admission_timeout_seconds: float | None = None,
     ) -> UpstreamResponsesWebSocket:
         proxy = cast(_WebSocketServiceProtocol, self)
         _ = proxy
         access_token = proxy._encryptor.decrypt(account.access_token_encrypted)
         headers = apply_codex_installation_headers(headers, getattr(account, "codex_installation_id", None))
         account_id = _header_account_id(account.chatgpt_account_id)
-        connect_lease = await proxy._get_work_admission().acquire_websocket_connect()
+        work_admission = proxy._get_work_admission()
+        if admission_timeout_seconds is None:
+            connect_lease = await work_admission.acquire_websocket_connect()
+        else:
+            connect_lease = await work_admission.acquire_websocket_connect(timeout_seconds=admission_timeout_seconds)
         try:
             try:
                 route = await proxy._resolve_upstream_route_for_account(account, operation="responses_websocket")

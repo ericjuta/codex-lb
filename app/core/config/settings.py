@@ -158,6 +158,8 @@ class Settings(BaseSettings):
     upstream_stream_transport: Literal["http", "websocket", "auto"] = "auto"
     http_downstream_transport_policy: Literal["smart", "always_http", "always_websocket", "pinned"] = "smart"
     upstream_connect_timeout_seconds: float = 8.0
+    proxy_websocket_connect_attempt_timeout_seconds: float = Field(default=10.0, gt=0)
+    proxy_websocket_connect_budget_seconds: float = Field(default=20.0, gt=0)
     upstream_compact_timeout_seconds: float | None = None
     upstream_websocket_trust_env: bool = Field(default_factory=_default_upstream_websocket_trust_env)
     codex_continuation_enabled: bool = True

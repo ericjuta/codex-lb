@@ -69,19 +69,34 @@ class WorkAdmissionController:
     async def acquire_token_refresh(self) -> AdmissionLease:
         return await self._acquire(self._token_refresh, stage="token_refresh")
 
-    async def acquire_websocket_connect(self) -> AdmissionLease:
-        return await self._acquire(self._websocket_connect, stage="upstream_websocket_connect")
+    async def acquire_websocket_connect(self, *, timeout_seconds: float | None = None) -> AdmissionLease:
+        return await self._acquire(
+            self._websocket_connect,
+            stage="upstream_websocket_connect",
+            timeout_seconds=timeout_seconds,
+        )
 
     async def acquire_response_create(self, *, compact: bool = False) -> AdmissionLease:
         semaphore = self._compact_response_create if compact else self._response_create
         stage = "compact_response_create" if compact else "response_create"
         return await self._acquire(semaphore, stage=stage)
 
-    async def _acquire(self, gate: _AdmissionGate | None, *, stage: str) -> AdmissionLease:
+    async def _acquire(
+        self,
+        gate: _AdmissionGate | None,
+        *,
+        stage: str,
+        timeout_seconds: float | None = None,
+    ) -> AdmissionLease:
         if gate is None:
             return AdmissionLease(None, stage=stage, request_id=get_request_id())
+        wait_timeout_seconds = (
+            gate.wait_timeout_seconds
+            if timeout_seconds is None
+            else max(0.0, min(gate.wait_timeout_seconds, timeout_seconds))
+        )
         try:
-            await asyncio.wait_for(gate.semaphore.acquire(), timeout=gate.wait_timeout_seconds)
+            await asyncio.wait_for(gate.semaphore.acquire(), timeout=wait_timeout_seconds)
         except asyncio.TimeoutError:
             available = gate.semaphore._value  # noqa: SLF001
             message = f"codex-lb is temporarily overloaded during {stage}"
@@ -91,7 +106,7 @@ class WorkAdmissionController:
                 get_request_id(),
                 stage,
                 available,
-                gate.wait_timeout_seconds,
+                wait_timeout_seconds,
                 message,
             )
             raise ProxyResponseError(429, local_overload_error(message, code="global_admission_timeout"))
