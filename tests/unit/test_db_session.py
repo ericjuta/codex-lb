@@ -326,7 +326,7 @@ def test_postgres_engine_kwargs_forward_utc_connect_args(monkeypatch) -> None:
         _FakeSettings(database_url="postgresql+asyncpg://u:p@h/db"),
     )
 
-    kwargs = session_module._postgres_async_engine_kwargs("postgresql+asyncpg://u:p@h/db")
+    kwargs = session_module._postgres_async_engine_kwargs("postgresql+asyncpg://u:p@h/db", background=False)
 
     assert kwargs["connect_args"] == {"server_settings": {"timezone": "UTC"}}
 @pytest.mark.asyncio
