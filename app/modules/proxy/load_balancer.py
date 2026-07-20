@@ -1174,6 +1174,48 @@ class LoadBalancer:
             elif eligibility == "quota_exhausted":
                 blocked_by_exhaustion = True
 
+        if not eligible_accounts and blocked_by_data:
+            # Stale-data fail-open: no account has fresh quota data (upstream
+            # quota feed stalled), so re-evaluate against last-known entries
+            # instead of blocking the gated model entirely. Accounts whose
+            # last-known usage is exhausted with an unexpired reset stay
+            # blocked; fresh-data accounts always win in the first pass above.
+            stale_fallback_accounts: list[Account] = []
+            stale_fallback_exhausted = False
+            for account in accounts:
+                fallback_eligibility = _additional_quota_eligibility(
+                    account_id=account.id,
+                    account_plan_type=account.plan_type,
+                    quota_key=limit_name,
+                    explicit_limit=explicit_limit,
+                    latest_primary=latest_primary,
+                    latest_secondary=latest_secondary,
+                    fresh_primary=latest_primary,
+                    fresh_secondary=latest_secondary,
+                )
+                if fallback_eligibility == "eligible":
+                    stale_fallback_accounts.append(account)
+                elif fallback_eligibility == "quota_exhausted":
+                    stale_fallback_exhausted = True
+            if stale_fallback_accounts:
+                logger.warning(
+                    (
+                        "Gated model routing failing open on stale quota data "
+                        "model=%s limit_name=%s freshness_since=%s "
+                        "stale_fallback_accounts=%s"
+                    ),
+                    model,
+                    limit_name,
+                    fresh_since.isoformat(),
+                    len(stale_fallback_accounts),
+                )
+                eligible_accounts = stale_fallback_accounts
+            elif stale_fallback_exhausted:
+                # Every account with last-known data is exhausted: the
+                # exhaustion verdict is more actionable than data-unavailable.
+                blocked_by_data = False
+                blocked_by_exhaustion = True
+
         if not eligible_accounts:
             if blocked_by_data:
                 error_code = ADDITIONAL_QUOTA_DATA_UNAVAILABLE

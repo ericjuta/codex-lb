@@ -2938,7 +2938,7 @@ async def test_select_account_retries_no_accounts_after_runtime_recovery(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_select_account_returns_data_unavailable_error_for_mapped_model(monkeypatch) -> None:
+async def test_select_account_fails_open_on_stale_non_exhausted_quota_data(monkeypatch) -> None:
     account = _make_account("acc-gated-stale", "gated-stale@example.com")
     account.plan_type = "pro"
     now = utcnow()
@@ -2982,8 +2982,63 @@ async def test_select_account_returns_data_unavailable_error_for_mapped_model(mo
     )
     selection = await balancer.select_account(model="gpt-5.3-codex-spark")
 
+    # Stale-but-known quota data fails open: last-known 20% usage keeps the
+    # account routable while the upstream quota feed is stalled.
+    assert selection.account is not None
+    assert selection.account.id == account.id
+    assert selection.error_code is None
+
+
+@pytest.mark.asyncio
+async def test_select_account_blocks_stale_exhausted_quota_data(monkeypatch) -> None:
+    account = _make_account("acc-gated-stale-exhausted", "gated-stale-exhausted@example.com")
+    account.plan_type = "pro"
+    now = utcnow()
+    now_epoch = int(now.replace(tzinfo=timezone.utc).timestamp())
+    primary_entry = UsageHistory(
+        id=1,
+        account_id=account.id,
+        recorded_at=now,
+        window="primary",
+        used_percent=5.0,
+        reset_at=now_epoch + 300,
+        window_minutes=5,
+    )
+    accounts_repo = StubAccountsRepository([account])
+    usage_repo = StubUsageRepository(primary={account.id: primary_entry}, secondary={})
+    sticky_repo = StubStickySessionsRepository()
+    additional_usage_repo = StubAdditionalUsageRepository(
+        primary={
+            account.id: _additional_entry(
+                2,
+                account_id=account.id,
+                window="primary",
+                used_percent=100.0,
+                reset_at=now_epoch + 3600,
+                recorded_at=now - timedelta(seconds=181),
+            )
+        }
+    )
+
+    monkeypatch.setattr(
+        "app.modules.proxy.load_balancer.get_model_registry",
+        lambda: SimpleNamespace(plan_types_for_model=lambda _model: frozenset({"pro"})),
+    )
+
+    balancer = LoadBalancer(
+        lambda: _repo_factory(
+            accounts_repo,
+            usage_repo,
+            sticky_repo,
+            additional_usage_repo,
+        )
+    )
+    selection = await balancer.select_account(model="gpt-5.3-codex-spark")
+
+    # Fail-open must not resurrect exhausted accounts: last-known 100% with an
+    # unexpired reset stays blocked.
     assert selection.account is None
-    assert selection.error_code == ADDITIONAL_QUOTA_DATA_UNAVAILABLE
+    assert selection.error_code == ADDITIONAL_QUOTA_EXHAUSTED
 
 
 @pytest.mark.asyncio
@@ -3171,7 +3226,7 @@ async def test_select_account_fails_closed_for_unmapped_plan_without_additional_
 
 
 @pytest.mark.asyncio
-async def test_select_account_returns_data_unavailable_when_secondary_window_is_stale(monkeypatch) -> None:
+async def test_select_account_fails_open_when_secondary_window_is_stale(monkeypatch) -> None:
     account = _make_account("acc-gated-stale-secondary", "gated-stale-secondary@example.com")
     account.plan_type = "pro"
     now = utcnow()
@@ -3226,8 +3281,10 @@ async def test_select_account_returns_data_unavailable_when_secondary_window_is_
     )
     selection = await balancer.select_account(model="gpt-5.3-codex-spark")
 
-    assert selection.account is None
-    assert selection.error_code == ADDITIONAL_QUOTA_DATA_UNAVAILABLE
+    # Secondary window stale but last-known usage is 20%: fail open.
+    assert selection.account is not None
+    assert selection.account.id == account.id
+    assert selection.error_code is None
 
 
 @pytest.mark.asyncio
