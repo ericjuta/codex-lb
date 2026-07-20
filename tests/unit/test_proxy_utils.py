@@ -17099,19 +17099,26 @@ async def test_connect_proxy_websocket_maps_handshake_budget_exhaustion_to_timeo
         AsyncMock(return_value=AccountSelection(account=account, error_message=None)),
     )
     monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(return_value=account))
+    # The failed open consumes the entire connect budget: advance the clock
+    # past the connect deadline so the budget-exhausted mapping is genuinely
+    # terminal (attempt timeouts with budget left now fail over instead).
+    clock = {"now": 100.0}
+
+    async def _open_consuming_budget(*_args: object, **_kwargs: object) -> None:
+        clock["now"] = 200.0
+        raise proxy_module.ProxyResponseError(
+            502,
+            openai_error("upstream_unavailable", "Proxy request budget exhausted"),
+        )
+
     monkeypatch.setattr(
         service,
         "_open_upstream_websocket",
-        AsyncMock(
-            side_effect=proxy_module.ProxyResponseError(
-                502,
-                openai_error("upstream_unavailable", "Proxy request budget exhausted"),
-            )
-        ),
+        AsyncMock(side_effect=_open_consuming_budget),
     )
     monkeypatch.setattr(service, "_handle_websocket_connect_error", handle_connect_error)
     monkeypatch.setattr(service, "_release_websocket_reservation", AsyncMock())
-    monkeypatch.setattr(proxy_service.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(proxy_service.time, "monotonic", lambda: clock["now"])
 
     request_state = proxy_service._WebSocketRequestState(
         request_id="ws_req_handshake_budget",
@@ -31227,6 +31234,105 @@ async def test_try_open_websocket_connect_attempt_does_not_refresh_twice_after_f
     open_upstream.assert_awaited_once()
     retry_after_401.assert_not_called()
     assert request_state.force_refresh_account_id is None
+
+
+@pytest.mark.asyncio
+async def test_try_open_websocket_connect_attempt_timeout_is_retryable_with_budget_left(monkeypatch):
+    settings = _make_proxy_settings(log_proxy_service_tier_trace=False)
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    account = _make_account("acc_ws_attempt_timeout_budget_left")
+    budget_exhausted_error = proxy_module.ProxyResponseError(
+        502,
+        openai_error("upstream_request_timeout", "Proxy request budget exhausted"),
+    )
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(proxy_service.time, "monotonic", lambda: 10.0)
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(return_value=account))
+    monkeypatch.setattr(
+        service,
+        "_open_upstream_websocket_with_budget",
+        AsyncMock(side_effect=budget_exhausted_error),
+    )
+    emit_timeout = AsyncMock()
+    monkeypatch.setattr(service, "_emit_websocket_connect_timeout", emit_timeout)
+
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req_ws_attempt_timeout_budget_left",
+        model="gpt-5.5",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=10.0,
+    )
+
+    # Deadline is 50s away: an attempt-level timeout must surface as a
+    # retryable open-timeout, not a terminal budget-exhausted emit.
+    with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
+        await service._try_open_websocket_connect_attempt(
+            account,
+            {},
+            deadline=60.0,
+            api_key=None,
+            request_state=request_state,
+            client_send_lock=anyio.Lock(),
+            websocket=cast(WebSocket, SimpleNamespace()),
+            attempt_timeout_seconds=10.0,
+        )
+
+    assert exc_info.value.failure_phase == "websocket_open_timeout"
+    assert exc_info.value.retryable_same_contract is True
+    emit_timeout.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_try_open_websocket_connect_attempt_timeout_terminal_when_budget_exhausted(monkeypatch):
+    settings = _make_proxy_settings(log_proxy_service_tier_trace=False)
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    account = _make_account("acc_ws_attempt_timeout_no_budget")
+    budget_exhausted_error = proxy_module.ProxyResponseError(
+        502,
+        openai_error("upstream_request_timeout", "Proxy request budget exhausted"),
+    )
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    # Two pre-open budget checks at t=10, then the post-timeout check at t=60
+    # (deadline reached) so the attempt timeout is treated as terminal.
+    monotonic_values = iter([10.0, 10.0, 60.0])
+    monkeypatch.setattr(proxy_service.time, "monotonic", lambda: next(monotonic_values, 60.0))
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(return_value=account))
+    monkeypatch.setattr(
+        service,
+        "_open_upstream_websocket_with_budget",
+        AsyncMock(side_effect=budget_exhausted_error),
+    )
+    emit_timeout = AsyncMock()
+    monkeypatch.setattr(service, "_emit_websocket_connect_timeout", emit_timeout)
+
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req_ws_attempt_timeout_no_budget",
+        model="gpt-5.5",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=10.0,
+    )
+
+    result = await service._try_open_websocket_connect_attempt(
+        account,
+        {},
+        deadline=60.0,
+        api_key=None,
+        request_state=request_state,
+        client_send_lock=anyio.Lock(),
+        websocket=cast(WebSocket, SimpleNamespace()),
+        attempt_timeout_seconds=10.0,
+    )
+
+    assert result is None
+    emit_timeout.assert_awaited_once()
 
 
 @pytest.mark.asyncio

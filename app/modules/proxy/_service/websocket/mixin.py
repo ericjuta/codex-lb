@@ -2691,6 +2691,23 @@ class _WebSocketMixin:
             return account, upstream
         except ProxyResponseError as exc:
             if _facade()._is_proxy_budget_exhausted_error(exc):
+                # An attempt-level timeout is only terminal when the request's
+                # connect deadline is actually exhausted. Otherwise surface it
+                # as a retryable open-timeout so the outer account-attempt loop
+                # can fail over instead of reporting budget exhaustion with
+                # most of the budget still remaining.
+                if _facade()._remaining_budget_seconds(deadline) > 0:
+                    raise ProxyResponseError(
+                        502,
+                        openai_error(
+                            "upstream_unavailable",
+                            "Upstream websocket connect attempt timed out",
+                        ),
+                        failure_phase="websocket_open_timeout",
+                        retryable_same_contract=True,
+                        failure_detail="websocket_connect_attempt_timeout",
+                        failure_exception_type=type(exc).__name__,
+                    ) from exc
                 await proxy._emit_websocket_connect_timeout(
                     websocket=websocket,
                     client_send_lock=client_send_lock,
