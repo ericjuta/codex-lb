@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator, Callable
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import delete, update, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -12,10 +12,10 @@ from app.core.utils.time import utcnow
 from app.db.models import (
     Base,
     HttpBridgeSessionAlias,
-    StickySessionKind,
     HttpBridgeSessionRecord,
-    StickySession,
     HttpBridgeSessionState,
+    StickySession,
+    StickySessionKind,
 )
 from app.modules.proxy.durable_bridge_coordinator import DurableBridgeSessionCoordinator
 from app.modules.proxy.durable_bridge_repository import DurableBridgeRepository
@@ -23,7 +23,6 @@ from app.modules.proxy.durable_bridge_repository import DurableBridgeRepository
 pytestmark = pytest.mark.unit
 
 
-from app.core.clients.proxy import ProxyResponseError
 
 pytestmark = pytest.mark.unit
 
