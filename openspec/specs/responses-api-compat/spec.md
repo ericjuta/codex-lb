@@ -1471,7 +1471,6 @@ exemption.
 ### Requirement: Proxy-injected continuity anchors preserve reasoning pairing
 When the service rewrites a client's self-contained websocket full replay into a proxy-injected `previous_response_id` plus a sliced input delta, it MUST verify that the sliced delta is reasoning-consistent before using it. A delta is reasoning-consistent unless it contains an assistant `message` item that is not preceded by a `reasoning` item within the same delta; re-sent `reasoning` items without a following message and complete `reasoning`-then-`message` groups are consistent because upstream accepts and dedupes them on anchored turns. If the delta would not be reasoning-consistent, the service MUST skip anchor injection for that request and forward the client's original full replay unchanged, and it MUST log a distinct skip reason for observability.
 
-
 #### Scenario: slice boundary would orphan an assistant message from its reasoning item
 - **WHEN** a websocket `/backend-api/codex/responses` request has no `previous_response_id` and its input prefix matches the stored continuity fingerprint
 - **AND** the sliced delta `input[stored_count:]` begins with or contains an assistant `message` item whose paired `reasoning` item lies before the slice boundary
@@ -1491,7 +1490,6 @@ When the service rewrites a client's self-contained websocket full replay into a
 
 ### Requirement: Orphaned-reasoning rejections of proxy-injected anchors recover via full replay
 When upstream rejects a websocket turn with an `invalid_request_error` stating that an item was provided without its required `reasoning` item, and the service injected the `previous_response_id` for that turn while retaining a retry-safe self-contained full replay body, the service MUST treat the failure like a stale-anchor continuity loss: reconnect and replay the retained full payload as a fresh turn without `previous_response_id` instead of forwarding the raw upstream error. If no retry-safe full replay body was retained, the service MUST surface a retryable continuity failure rather than the raw upstream invalid-request error. Client-authored payloads whose anchors were not proxy-injected MUST NOT trigger this recovery and continue to receive the upstream error unchanged.
-
 
 #### Scenario: proxy-injected anchor turn hits the orphaned-reasoning 400
 - **WHEN** the service injected `previous_response_id` into a websocket turn and retained a retry-safe full replay body
@@ -1583,3 +1581,24 @@ The sole numeric-sequence exception MUST require `request_kind = "prewarm"`, a l
 - **WHEN** codex-lb suppresses an upstream frame before downstream emission
 - **AND** the suppressed frame contains a numeric `sequence_number`
 - **THEN** that frame does not establish the downstream sequence watermark
+
+### Requirement: Opaque-context detection tolerates arbitrary JSON
+
+When deciding whether a Responses request contains opaque context that prevents local input estimation, the proxy MUST classify a mapping as an opaque `input_file` or `input_image` content item only when the mapping's `type` value is a string equal to one of those identifiers. A mapping containing a `file_id` key MUST still be treated as opaque. All other JSON values, including JSON Schema fragments where a `type` key maps to an object or array (for example `{"properties": {"type": {"const": "preview"}}}`), MUST be traversed recursively without raising an error.
+
+#### Scenario: Tool schema with object-valued type key does not crash the guard
+
+- **GIVEN** a Responses request whose function-tool JSON Schema contains
+  `{"properties": {"type": {"const": "preview"}}}`
+- **WHEN** context-window enforcement estimates the request
+- **THEN** estimation completes without error
+- **AND** the schema fragment is not classified as opaque context
+
+#### Scenario: Opaque file and image items still skip estimation
+
+- **GIVEN** a Responses request containing an `input_file` or `input_image`
+  content item, or any mapping with a `file_id` key
+- **WHEN** the proxy attempts local input estimation
+- **THEN** the request is treated as opaque and preserved on the existing
+  upstream handling path
+
