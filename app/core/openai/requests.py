@@ -1314,7 +1314,7 @@ def estimate_responses_input_tokens(payload: ResponsesRequest | ResponsesCompact
 def _contains_opaque_context(value: JsonValue) -> bool:
     if is_json_mapping(value):
         item_type = value.get("type")
-        if item_type in {"input_file", "input_image"} or "file_id" in value:
+        if (isinstance(item_type, str) and item_type in {"input_file", "input_image"}) or "file_id" in value:
             return True
         return any(_contains_opaque_context(child) for child in value.values())
     if is_json_list(value):

@@ -75,6 +75,87 @@ def test_context_guard_skips_opaque_context(monkeypatch: pytest.MonkeyPatch) -> 
     request_policy.enforce_context_window(payload, registry=_registry())
 
 
+def _additional_tools_item_with_schema_typed_object() -> dict[str, object]:
+    # Function-tool JSON Schema legitimately nests objects under a "type" key
+    # (e.g. a discriminated-union property named "type"). The guard walker must
+    # traverse these without classifying them as opaque content items.
+    return {
+        "type": "additional_tools",
+        "role": "developer",
+        "tools": [
+            {
+                "type": "function",
+                "name": "hashline__transaction",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "oneOf": [
+                                {"properties": {"type": {"const": "preview"}}},
+                                {"properties": {"type": {"const": "commit"}}},
+                            ]
+                        }
+                    },
+                },
+            }
+        ],
+    }
+
+
+def test_context_guard_tolerates_schema_typed_objects_in_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(request_policy, "get_settings", _settings)
+    payload = ResponsesRequest(
+        model="gpt-5.3-codex-spark",
+        instructions="",
+        input=[
+            _additional_tools_item_with_schema_typed_object(),
+            {"role": "user", "content": "hello"},
+        ],
+    )
+
+    request_policy.enforce_context_window(payload, registry=_registry())
+
+
+def test_context_guard_rejects_oversized_input_alongside_schema_typed_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(request_policy, "get_settings", _settings)
+    payload = ResponsesRequest(
+        model="gpt-5.3-codex-spark",
+        instructions="",
+        input=[
+            _additional_tools_item_with_schema_typed_object(),
+            {"role": "user", "content": "x" * 500_000},
+        ],
+    )
+
+    with pytest.raises(ContextWindowExceededError, match="context window"):
+        request_policy.enforce_context_window(payload, registry=_registry())
+
+
+def test_context_guard_still_skips_opaque_file_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(request_policy, "get_settings", _settings)
+    payload = ResponsesRequest(
+        model="gpt-5.3-codex-spark",
+        instructions="",
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_file", "file_id": "file-123"},
+                    {"type": "input_text", "text": "x" * 500_000},
+                ],
+            }
+        ],
+    )
+
+    request_policy.enforce_context_window(payload, registry=_registry())
+
+
 def _oversized_input_items() -> list[dict[str, object]]:
     return [{"role": "user", "content": "x" * 500_000}]
 
