@@ -195,8 +195,6 @@ _SECURITY_WORK_NO_AUTHORIZED_ACCOUNTS_MESSAGE = (
 _HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS = 5.0
 _HTTP_BRIDGE_BACKGROUND_CLEANUP_WARN_THRESHOLD = 100
 
-from app.modules.proxy.load_balancer import effective_account_concurrency_caps
-
 
 async def _send_http_bridge_request_text_with_archive_id(
     session: "_HTTPBridgeSession",
