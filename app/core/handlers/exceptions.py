@@ -32,6 +32,11 @@ from app.core.exceptions import (
     ProxyRateLimitError,
     ProxyUpstreamError,
 )
+from app.core.middleware.request_body_limit import (
+    REQUEST_BODY_TOO_LARGE_MESSAGE,
+    request_body_limit_was_exceeded,
+    request_ingress_error_response,
+)
 from app.core.runtime_logging import log_error_response
 from app.modules.proxy.images_observability import ImageRoute, record_images_route_observability
 
@@ -58,18 +63,6 @@ _DASHBOARD_EXCEPTION_TYPES: tuple[type[AppError], ...] = (
     DashboardServiceUnavailableError,
     DashboardUpstreamError,
 )
-
-
-from app.core.middleware.request_body_limit import (
-    REQUEST_BODY_TOO_LARGE_MESSAGE,
-    request_body_limit_was_exceeded,
-    request_ingress_error_response,
-)
-
-logger = logging.getLogger(__name__)
-_IMAGE_ROUTE_STARTED_AT_STATE = "_codex_lb_image_route_started_at"
-_OPENAI_EXCEPTION_TYPES: tuple[type[AppError], ...] = (
-_DASHBOARD_EXCEPTION_TYPES: tuple[type[AppError], ...] = (
 
 
 def _error_format(request: Request) -> str | None:
