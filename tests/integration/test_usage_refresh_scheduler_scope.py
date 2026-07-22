@@ -102,8 +102,8 @@ async def test_scheduler_repository_path_scopes_selected_account_history_and_fol
         return await original_latest_by_account(self, window, account_ids=account_ids)
 
     class _Leader:
-        async def run_if_leader(self, fn: Callable[[], Awaitable[object]]) -> object:
-            return await fn()
+        async def try_acquire(self) -> bool:
+            return True
 
     class _Updater:
         async def refresh_accounts(

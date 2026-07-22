@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config.settings import get_settings
 from app.core.usage.types import UsageAggregateRow, UsageTrendBucket
 from app.core.utils.time import utcnow
+from app.db.session import sqlite_writer_section
 from app.db.models import Account, AdditionalUsageHistory, UsageHistory
 from app.db.sqlite_retry import retry_sqlite_write as retry_session_sqlite_write
 from app.db.sqlite_utils import sqlite_db_path_from_url
