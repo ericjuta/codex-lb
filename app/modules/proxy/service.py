@@ -78,7 +78,7 @@ from app.core.errors import (
 from app.core.metrics.prometheus import (
     PROMETHEUS_AVAILABLE,
     bridge_same_account_takeover_total,
-    service_tier_mismatch_total,  # noqa: F401
+    service_tier_mismatch_total,  # noqa: F401,
 )
 from app.core.openai.models import CompactResponsePayload, OpenAIResponsePayload
 from app.core.openai.requests import (
@@ -101,7 +101,7 @@ from app.core.utils.sse import format_sse_event, parse_sse_data_json  # noqa: F4
 from app.core.utils.time import utcnow as utcnow
 from app.db.models import (
     Account,
-    AccountStatus,  # noqa: F401
+    AccountStatus,  # noqa: F401,
     DashboardSettings,
     StickySessionKind,
 )
@@ -113,7 +113,7 @@ from app.modules.api_keys.service import (
     API_KEY_USAGE_RESERVATION_MAX_TOKEN_BUDGET,
     ApiKeyData,
     ApiKeyRequestUsageBudget,
-    ApiKeyUsageReservationData,  # noqa: F401
+    ApiKeyUsageReservationData,  # noqa: F401,
 )
 from app.modules.api_keys.service import (
     ApiKeysService as ApiKeysService,
@@ -168,7 +168,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
 )
 from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_admission_timeout_seconds,
-    _http_bridge_should_attempt_local_previous_response_recovery,  # noqa: F401
+    _http_bridge_should_attempt_local_previous_response_recovery,  # noqa: F401,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_allow_durable_takeover as _http_bridge_allow_durable_takeover,
@@ -373,135 +373,179 @@ from app.modules.proxy._service.request_log import (
 )
 from app.modules.proxy._service.response_create import (
     _OVERSIZED_RESPONSE_CREATE_DUMP_DIR as _OVERSIZED_RESPONSE_CREATE_DUMP_DIR,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _OVERSIZED_RESPONSE_CREATE_LARGEST_ITEMS as _OVERSIZED_RESPONSE_CREATE_LARGEST_ITEMS,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _RESPONSE_CREATE_COMPATIBILITY_METADATA_HEADERS as _RESPONSE_CREATE_COMPATIBILITY_METADATA_HEADERS,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _RESPONSE_CREATE_HISTORY_OMISSION_NOTICE as _RESPONSE_CREATE_HISTORY_OMISSION_NOTICE,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _RESPONSE_CREATE_IMAGE_OMISSION_NOTICE as _RESPONSE_CREATE_IMAGE_OMISSION_NOTICE,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE as _RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _UPSTREAM_RESPONSE_CREATE_MAX_BYTES as _UPSTREAM_RESPONSE_CREATE_MAX_BYTES,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _UPSTREAM_RESPONSE_CREATE_WARN_BYTES as _UPSTREAM_RESPONSE_CREATE_WARN_BYTES,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _count_external_image_urls as _count_external_image_urls,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _enforce_response_create_size_limit as _enforce_response_create_size_limit,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _fingerprint_input_items as _fingerprint_input_items,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _function_call_output_call_ids as _function_call_output_call_ids,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _inject_missing_interrupted_function_call_outputs as _inject_missing_interrupted_function_call_outputs,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _inline_top_level_input_image_urls as _inline_top_level_input_image_urls,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _input_part_is_image as _input_part_is_image,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _is_inline_image_reference as _is_inline_image_reference,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _json_size_bytes as _json_size_bytes,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _json_value_contains_input_image_part as _json_value_contains_input_image_part,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _maybe_dump_oversized_response_create_request as _maybe_dump_oversized_response_create_request,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _missing_function_call_outputs_for_previous_response as _missing_function_call_outputs_for_previous_response,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _oversized_response_create_dump_dir as _oversized_response_create_dump_dir,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_client_metadata as _response_create_client_metadata,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_history_omission_notice_item as _response_create_history_omission_notice_item,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_inline_image_notice_item as _response_create_inline_image_notice_item,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_inline_image_notice_part as _response_create_inline_image_notice_part,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_recent_suffix_start as _response_create_recent_suffix_start,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_text as _response_create_text,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_text_with_account_installation_id as _response_create_text_with_account_installation_id,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_text_with_size_guard as _response_create_text_with_size_guard,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_too_large_error_envelope as _response_create_too_large_error_envelope,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_output_item_done_tool_call as _response_output_item_done_tool_call,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _responses_request_contains_input_image as _responses_request_contains_input_image,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _responses_request_uses_image_generation as _responses_request_uses_image_generation,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _safe_dump_slug as _safe_dump_slug,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _should_dump_oversized_response_create as _should_dump_oversized_response_create,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _should_slim_historical_tool_output as _should_slim_historical_tool_output,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _slim_historical_response_content as _slim_historical_response_content,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _slim_historical_response_content_part as _slim_historical_response_content_part,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _slim_historical_response_input_item as _slim_historical_response_input_item,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _slim_response_create_payload_for_upstream as _slim_response_create_payload_for_upstream,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _summarize_response_create_input as _summarize_response_create_input,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _summarize_response_create_payload as _summarize_response_create_payload,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _synthetic_interrupted_function_call_output as _synthetic_interrupted_function_call_output,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _write_response_create_dump as _write_response_create_dump,
+    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.streaming import (
     _StreamingMixin,
@@ -558,36 +602,36 @@ from app.modules.proxy._service.streaming.retry import (
     _resolve_http_downstream_transport as _resolve_http_downstream_transport,
 )
 from app.modules.proxy._service.support import (
-    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
-    _REQUEST_TRANSPORT_WEBSOCKET,  # noqa: F401
-    _WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS,  # noqa: F401
-    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
-    _ApiKeyReservationTouchState,  # noqa: F401
-    _clear_websocket_request_error_overrides,  # noqa: F401
-    _DownstreamWebSocketActivity,  # noqa: F401
-    _event_type_from_payload,  # noqa: F401
+    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401,
+    _REQUEST_TRANSPORT_WEBSOCKET,  # noqa: F401,
+    _WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS,  # noqa: F401,
+    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401,
+    _ApiKeyReservationTouchState,  # noqa: F401,
+    _clear_websocket_request_error_overrides,  # noqa: F401,
+    _DownstreamWebSocketActivity,  # noqa: F401,
+    _event_type_from_payload,  # noqa: F401,
     _FilePinEntry,
     _HTTPBridgeSession,
     _HTTPBridgeSessionKey,
-    _PreparedWebSocketRequest,  # noqa: F401
-    _record_response_event,  # noqa: F401
-    _record_websocket_route_metadata,  # noqa: F401
+    _PreparedWebSocketRequest,  # noqa: F401,
+    _record_response_event,  # noqa: F401,
+    _record_websocket_route_metadata,  # noqa: F401,
     _request_log_useragent_fields,
     _RequestLogFailureMetadata,
-    _RetryableStreamError,  # noqa: F401
-    _stream_settlement_error_payload,  # noqa: F401
-    _StreamSettlement,  # noqa: F401
-    _TerminalStreamError,  # noqa: F401
-    _TransientStreamError,  # noqa: F401
-    _wait_for_websocket_continuity_gap,  # noqa: F401
-    _websocket_full_replay_should_wait_for_continuity,  # noqa: F401
-    _websocket_request_can_replay_before_visible_output,  # noqa: F401
-    _WebSocketConnectFailureEmitted,  # noqa: F401
-    _WebSocketContinuityAnchor,  # noqa: F401
+    _RetryableStreamError,  # noqa: F401,
+    _stream_settlement_error_payload,  # noqa: F401,
+    _StreamSettlement,  # noqa: F401,
+    _TerminalStreamError,  # noqa: F401,
+    _TransientStreamError,  # noqa: F401,
+    _wait_for_websocket_continuity_gap,  # noqa: F401,
+    _websocket_full_replay_should_wait_for_continuity,  # noqa: F401,
+    _websocket_request_can_replay_before_visible_output,  # noqa: F401,
+    _WebSocketConnectFailureEmitted,  # noqa: F401,
+    _WebSocketContinuityAnchor,  # noqa: F401,
     _WebSocketContinuityState,
-    _WebSocketReceiveTimeout,  # noqa: F401
+    _WebSocketReceiveTimeout,  # noqa: F401,
     _WebSocketRequestState,
-    _WebSocketUpstreamControl,  # noqa: F401
+    _WebSocketUpstreamControl,  # noqa: F401,
 )
 from app.modules.proxy._service.support import (
     _call_with_supported_optional_kwargs as _support_call_with_supported_optional_kwargs,
@@ -641,6 +685,151 @@ from app.modules.proxy._service.websocket import (
     _WebSocketMixin,
 )
 from app.modules.proxy._service.websocket.helpers import (
+    _app_error_to_websocket_event,  # noqa: F401,
+    _assign_websocket_response_id,  # noqa: F401,
+    _draining_websocket_request_states,  # noqa: F401,
+    _find_websocket_request_state_by_response_id,  # noqa: F401,
+    _is_websocket_previous_response_output_item,  # noqa: F401,
+    _is_websocket_response_create,  # noqa: F401,
+    _match_websocket_request_state_for_anonymous_event,  # noqa: F401,
+    _match_websocket_request_state_for_precreated_terminal_event,  # noqa: F401,
+    _match_websocket_request_state_for_previous_response_error,  # noqa: F401,
+    _matching_websocket_request_states_for_missing_tool_output_error,  # noqa: F401,
+    _matching_websocket_request_states_for_previous_response_error,  # noqa: F401,
+    _maybe_rewrite_websocket_previous_response_not_found_event,  # noqa: F401,
+    _parse_websocket_payload,  # noqa: F401,
+    _pop_matching_websocket_request_states,  # noqa: F401,
+    _pop_replayable_precreated_websocket_request_state,  # noqa: F401,
+    _pop_terminal_websocket_request_state,  # noqa: F401,
+    _prepare_websocket_request_state_for_account_switch,  # noqa: F401,
+    _prepare_websocket_request_state_for_auth_replay,  # noqa: F401,
+    _prepare_websocket_request_state_for_visible_output_replay,  # noqa: F401,
+    _record_websocket_continuity_completion,  # noqa: F401,
+    _record_websocket_responses_lite_acceptance,  # noqa: F401,
+    _refresh_websocket_request_input_fingerprint_from_text,  # noqa: F401,
+    _release_websocket_response_create_gate,  # noqa: F401,
+    _rewrite_websocket_continuity_corruption_event,  # noqa: F401,
+    _rewrite_websocket_downstream_response_id,  # noqa: F401,
+    _rewrite_websocket_previous_response_owner_unavailable_event,  # noqa: F401,
+    _rewrite_websocket_suppressed_duplicate_tool_call_completion_event,  # noqa: F401,
+    _sanitize_websocket_connect_failure,  # noqa: F401,
+    _sanitize_websocket_previous_response_error,  # noqa: F401,
+    _sanitize_websocket_terminal_error_fields,  # noqa: F401,
+    _serialize_websocket_error_event,  # noqa: F401,
+    _trim_websocket_previous_response_input_items,  # noqa: F401,
+    _upstream_websocket_disconnect_message,  # noqa: F401,
+    _websocket_auth_failure_permanent_code,  # noqa: F401,
+    _websocket_auth_failure_requires_reauth,  # noqa: F401,
+    _websocket_auth_request_can_switch_account,  # noqa: F401,
+    _websocket_client_previous_response_full_resend_is_retry_safe,  # noqa: F401,
+    _websocket_connect_deadline,  # noqa: F401,
+    _websocket_continuity_anchor_for_payload,  # noqa: F401,
+    _websocket_continuity_error_fields,  # noqa: F401,
+    _websocket_continuity_response_ids,  # noqa: F401,
+    _websocket_downstream_response_id,  # noqa: F401,
+    _websocket_event_error_code,  # noqa: F401,
+    _websocket_event_error_message,  # noqa: F401,
+    _websocket_event_error_param,  # noqa: F401,
+    _websocket_event_error_payload,  # noqa: F401,
+    _websocket_event_error_type,  # noqa: F401,
+    _websocket_full_resend_conflicts_with_visible_pending,  # noqa: F401,
+    _websocket_input_item_type,  # noqa: F401,
+    _websocket_owner_pinned_quota_error_code,  # noqa: F401,
+    _websocket_precreated_auth_error_code,  # noqa: F401,
+    _websocket_precreated_retry_error_code,  # noqa: F401,
+    _websocket_receive_timeout_for_pending_requests,  # noqa: F401,
+    _websocket_response_id,  # noqa: F401,
+    _websocket_top_level_error_payload,  # noqa: F401,
+    _wrapped_websocket_error_event,  # noqa: F401,
+)
+from app.modules.proxy.affinity import (
+    _AffinityPolicy,
+    _sticky_key_for_codex_control_request,
+    _sticky_key_from_session_header,  # noqa: F401,
+)
+from app.modules.proxy.affinity import (
+    _owner_lookup_session_id_from_headers as _owner_lookup_session_id_from_headers,
+)
+from app.modules.proxy.affinity import (
+    _sticky_key_for_responses_request as _sticky_key_for_responses_request,
+)
+from app.modules.proxy.continuity_repository import (
+    WebsocketContinuityStatesRepository as WebsocketContinuityStatesRepository,
+)
+from app.modules.proxy.durable_bridge_coordinator import (
+    DurableBridgeLookup as DurableBridgeLookup,
+)
+from app.modules.proxy.durable_bridge_coordinator import (
+    DurableBridgeSessionCoordinator,
+)
+from app.modules.proxy.helpers import (
+    _apply_error_metadata,
+    _header_account_id,
+    _normalize_error_code,
+    _parse_openai_error,
+    _upstream_error_from_openai,
+)
+from app.modules.proxy.helpers import (
+    classify_upstream_failure as classify_upstream_failure,
+)
+from app.modules.proxy.http_bridge_forwarding import (
+    HTTPBridgeForwardContext as HTTPBridgeForwardContext,
+)
+from app.modules.proxy.http_bridge_forwarding import (
+    HTTPBridgeOwnerClient,
+)
+from app.modules.proxy.http_bridge_forwarding import (
+    OwnerForwardRelayFailure as OwnerForwardRelayFailure,
+)
+from app.modules.proxy.load_balancer import AccountLease, AccountLeaseKind, AccountSelection, LoadBalancer
+from app.modules.proxy.repo_bundle import ProxyRepoFactory
+from app.modules.proxy.ring_membership import (
+    RingMembershipService,
+)
+from app.modules.proxy.work_admission import WorkAdmissionController
+
+logger = logging.getLogger(__name__)
+
+
+_TASK_CANCEL_TIMEOUT_SECONDS = 1.0
+_TaskResultT = TypeVar("_TaskResultT")
+_ResponsesPayloadT = TypeVar("_ResponsesPayloadT", ResponsesRequest, ResponsesCompactRequest)
+_DOWNSTREAM_WEBSOCKET_IDLE_CLOSE_REASON = "Idle downstream websocket timeout"
+_DOWNSTREAM_WEBSOCKET_RECEIVE_POLL_SECONDS = 1.0
+# Keep the first HTTP bridge liveness frame behind the API layer's startup
+# error probe window. If a keepalive becomes the first yielded chunk, the HTTP
+# status is committed as 200 and startup ProxyResponseError handling is masked.
+_HTTP_BRIDGE_STARTUP_KEEPALIVE_GRACE_SECONDS = 0.5
+_DEFAULT_PROXY_ADMISSION_WAIT_TIMEOUT_SECONDS = 10.0
+
+
+    service_tier_mismatch_total,  # noqa: F401
+    AccountStatus,  # noqa: F401
+    ApiKeyUsageReservationData,  # noqa: F401
+    _http_bridge_should_attempt_local_previous_response_recovery,  # noqa: F401
+    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
+    _REQUEST_TRANSPORT_WEBSOCKET,  # noqa: F401
+    _WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS,  # noqa: F401
+    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
+    _ApiKeyReservationTouchState,  # noqa: F401
+    _clear_websocket_request_error_overrides,  # noqa: F401
+    _DownstreamWebSocketActivity,  # noqa: F401
+    _event_type_from_payload,  # noqa: F401
+    _PreparedWebSocketRequest,  # noqa: F401
+    _record_response_event,  # noqa: F401
+    _record_websocket_route_metadata,  # noqa: F401
+    _RetryableStreamError,  # noqa: F401
+    _stream_settlement_error_payload,  # noqa: F401
+    _StreamSettlement,  # noqa: F401
+    _TerminalStreamError,  # noqa: F401
+    _TransientStreamError,  # noqa: F401
+    _wait_for_websocket_continuity_gap,  # noqa: F401
+    _websocket_full_replay_should_wait_for_continuity,  # noqa: F401
+    _websocket_request_can_replay_before_visible_output,  # noqa: F401
+    _WebSocketConnectFailureEmitted,  # noqa: F401
+    _WebSocketContinuityAnchor,  # noqa: F401
+    _WebSocketReceiveTimeout,  # noqa: F401
+    _WebSocketUpstreamControl,  # noqa: F401
     _app_error_to_websocket_event,  # noqa: F401
     _assign_websocket_response_id,  # noqa: F401
     _draining_websocket_request_states,  # noqa: F401
@@ -697,56 +886,8 @@ from app.modules.proxy._service.websocket.helpers import (
     _websocket_response_id,  # noqa: F401
     _websocket_top_level_error_payload,  # noqa: F401
     _wrapped_websocket_error_event,  # noqa: F401
-)
-from app.modules.proxy.affinity import (
-    _AffinityPolicy,
-    _sticky_key_for_codex_control_request,
     _sticky_key_from_session_header,  # noqa: F401
-)
-from app.modules.proxy.affinity import (
-    _owner_lookup_session_id_from_headers as _owner_lookup_session_id_from_headers,
-)
-from app.modules.proxy.affinity import (
-    _sticky_key_for_responses_request as _sticky_key_for_responses_request,
-)
-from app.modules.proxy.continuity_repository import (
-    WebsocketContinuityStatesRepository as WebsocketContinuityStatesRepository,
-)
-from app.modules.proxy.durable_bridge_coordinator import (
-    DurableBridgeLookup as DurableBridgeLookup,
-)
-from app.modules.proxy.durable_bridge_coordinator import (
-    DurableBridgeSessionCoordinator,
-)
-from app.modules.proxy.helpers import (
-    _apply_error_metadata,
-    _header_account_id,
-    _normalize_error_code,
-    _parse_openai_error,
-    _upstream_error_from_openai,
-)
-from app.modules.proxy.helpers import (
-    classify_upstream_failure as classify_upstream_failure,
-)
-from app.modules.proxy.http_bridge_forwarding import (
-    HTTPBridgeForwardContext as HTTPBridgeForwardContext,
-)
-from app.modules.proxy.http_bridge_forwarding import (
-    HTTPBridgeOwnerClient,
-)
-from app.modules.proxy.http_bridge_forwarding import (
-    OwnerForwardRelayFailure as OwnerForwardRelayFailure,
-)
-from app.modules.proxy.load_balancer import AccountLease, AccountLeaseKind, AccountSelection, LoadBalancer
-from app.modules.proxy.repo_bundle import ProxyRepoFactory
-from app.modules.proxy.ring_membership import (
-    RingMembershipService,
-)
-from app.modules.proxy.work_admission import WorkAdmissionController
-
 logger = logging.getLogger(__name__)
-
-
 _TASK_CANCEL_TIMEOUT_SECONDS = 1.0
 _TaskResultT = TypeVar("_TaskResultT")
 _ResponsesPayloadT = TypeVar("_ResponsesPayloadT", ResponsesRequest, ResponsesCompactRequest)
