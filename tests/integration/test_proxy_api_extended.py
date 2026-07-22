@@ -1,18 +1,16 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import cast
 import asyncio
 import base64
 import json
-from types import SimpleNamespace
-from typing import cast
 
-import pytest
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from starlette.requests import Request
+import pytest
 
-import app.modules.proxy.api as proxy_api_module
-import app.modules.proxy.service as proxy_module
 from app.core.auth import generate_unique_account_id
 from app.core.clients import proxy as core_proxy
 from app.core.clients.proxy import ProxyResponseError
@@ -21,6 +19,9 @@ from app.db.models import Account, AccountStatus, RequestLog
 from app.db.session import SessionLocal
 from app.dependencies import ProxyContext
 from app.modules.proxy._service.support import _signal_propagated_capacity_startup_ready
+from collections import Counter
+import app.modules.proxy.api as proxy_api_module
+import app.modules.proxy.service as proxy_module
 
 pytestmark = pytest.mark.integration
 
@@ -146,7 +147,28 @@ async def _request_idle_heartbeat_stream(
         assert response.status_code == 200
         return [line async for line in response.aiter_lines() if line]
 
+@pytest.mark.asyncio
+async def test_openapi_operation_ids_are_unique_and_thread_goal_methods_stable(async_client):
+    response = await async_client.get("/openapi.json")
 
+    assert response.status_code == 200
+    schema = response.json()
+    operation_ids: list[str] = []
+    http_methods = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+    for path, path_item in schema["paths"].items():
+        for method, operation in path_item.items():
+            if method not in http_methods:
+                continue
+            operation_id = operation.get("operationId")
+            assert isinstance(operation_id, str), f"{method.upper()} {path} has no operationId"
+            operation_ids.append(operation_id)
+
+    duplicate_ids = {operation_id: count for operation_id, count in Counter(operation_ids).items() if count > 1}
+    assert duplicate_ids == {}
+
+    thread_goal = schema["paths"]["/backend-api/codex/thread/goal/get"]
+    assert thread_goal["get"]["operationId"] == "thread_goal_get_backend_api_codex_thread_goal_get_get"
+    assert thread_goal["post"]["operationId"] == "thread_goal_get_backend_api_codex_thread_goal_get_post"
 @pytest.mark.asyncio
 async def test_proxy_compact_not_implemented(async_client, monkeypatch):
     await _import_account(async_client, "acc_compact_ni", "ni@example.com")
