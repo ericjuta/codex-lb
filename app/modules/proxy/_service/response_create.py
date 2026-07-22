@@ -47,30 +47,16 @@ _RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE = (
 )
 _RESPONSE_CREATE_IMAGE_OMISSION_NOTICE = "[codex-lb omitted historical inline image to fit upstream websocket budget]"
 _OVERSIZED_RESPONSE_CREATE_DUMP_DIR: Path | None = None
+_RESPONSE_CREATE_DUMP_SUFFIX = ".response-create.json.gz"
+_RESPONSE_CREATE_META_SUFFIX = ".meta.json"
+_RESPONSE_CREATE_DUMP_SHA_SLUG_LEN = 16
+_RESPONSE_CREATE_DUMP_MAX_PAIRS = 20
 _RESPONSE_CREATE_COMPATIBILITY_METADATA_HEADERS = (
     "x-codex-turn-metadata",
     "x-openai-subagent",
     "x-codex-parent-thread-id",
     "x-codex-window-id",
 )
-
-
-logger = logging.getLogger("app.modules.proxy.service")
-T = TypeVar("T")
-_UPSTREAM_RESPONSE_CREATE_MAX_BYTES = get_settings().upstream_response_create_max_bytes
-_UPSTREAM_RESPONSE_CREATE_WARN_BYTES = int(_UPSTREAM_RESPONSE_CREATE_MAX_BYTES * 0.8)
-_OVERSIZED_RESPONSE_CREATE_LARGEST_ITEMS = 10
-_RESPONSE_CREATE_HISTORY_OMISSION_NOTICE = (
-    "[codex-lb omitted {count} historical input items to fit upstream websocket budget]"
-_RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE = (
-    "[codex-lb omitted historical tool output ({bytes} bytes) to fit upstream websocket budget]"
-_RESPONSE_CREATE_IMAGE_OMISSION_NOTICE = "[codex-lb omitted historical inline image to fit upstream websocket budget]"
-_OVERSIZED_RESPONSE_CREATE_DUMP_DIR: Path | None = None
-_RESPONSE_CREATE_DUMP_SUFFIX = ".response-create.json.gz"
-_RESPONSE_CREATE_META_SUFFIX = ".meta.json"
-_RESPONSE_CREATE_DUMP_SHA_SLUG_LEN = 16
-_RESPONSE_CREATE_DUMP_MAX_PAIRS = 20
-_RESPONSE_CREATE_COMPATIBILITY_METADATA_HEADERS = (
 
 
 def _service_module() -> Any | None:
