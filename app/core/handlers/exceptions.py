@@ -60,6 +60,18 @@ _DASHBOARD_EXCEPTION_TYPES: tuple[type[AppError], ...] = (
 )
 
 
+from app.core.middleware.request_body_limit import (
+    REQUEST_BODY_TOO_LARGE_MESSAGE,
+    request_body_limit_was_exceeded,
+    request_ingress_error_response,
+)
+
+logger = logging.getLogger(__name__)
+_IMAGE_ROUTE_STARTED_AT_STATE = "_codex_lb_image_route_started_at"
+_OPENAI_EXCEPTION_TYPES: tuple[type[AppError], ...] = (
+_DASHBOARD_EXCEPTION_TYPES: tuple[type[AppError], ...] = (
+
+
 def _error_format(request: Request) -> str | None:
     fmt = getattr(request.state, "error_format", None)
     if fmt is not None:
@@ -250,6 +262,13 @@ def add_exception_handlers(app: FastAPI) -> None:
         request: Request,
         exc: StarletteHTTPException,
     ) -> Response:
+        if request_body_limit_was_exceeded(request):
+            return request_ingress_error_response(
+                request,
+                status_code=413,
+                code="payload_too_large",
+                message=REQUEST_BODY_TOO_LARGE_MESSAGE,
+            )
         fmt = _error_format(request)
         detail = exc.detail if isinstance(exc.detail, str) else "Request failed"
         if fmt == "dashboard":
