@@ -41,7 +41,7 @@ from app.core.auth.dependencies import (
 )
 from app.core.auth.refresh import RefreshError
 from app.core.clients.files import FileProxyError
-from app.core.clients.proxy import ProxyResponseError
+from app.core.clients.proxy import ProxyResponseError, _is_native_codex_request
 from app.core.clients.rate_limit_reset_credits import (
     ConsumeResetCreditError,
     ResetCreditItem,
@@ -190,6 +190,41 @@ from app.modules.rate_limit_reset_credits.store import get_rate_limit_reset_cred
 from app.modules.usage.mappers import usage_history_to_window_row
 from app.modules.usage.repository import AdditionalUsageRepository, UsageRepository
 from app.modules.usage.updater import UsageUpdater
+
+logger = logging.getLogger(__name__)
+
+
+from app.core.cache.invalidation import NAMESPACE_RESET_CREDITS, bump_cache_invalidation_local
+from app.modules.model_sources.catalog import (
+    source_model_audio_cost_usd,
+    source_model_cost_usd,
+    source_model_request_overrides,
+    source_model_supported_tool_types,
+    source_model_supports_reasoning,
+    source_models_to_upstream_models,
+)
+from app.modules.model_sources.forwarding import (
+    ModelSourceForwardingError,
+    SourceTimings,
+    SourceUsage,
+    SourceUsageHolder,
+    forward_chat_completion,
+)
+from app.modules.model_sources.forwarding import (
+    forward_audio_transcription as forward_source_audio_transcription,
+)
+from app.modules.model_sources.forwarding import (
+    forward_responses as forward_source_responses,
+)
+from app.modules.model_sources.forwarding import (
+    stream_chat_completion as stream_source_chat_completion,
+)
+from app.modules.model_sources.forwarding import (
+    stream_responses as stream_source_responses,
+)
+from app.modules.model_sources.repository import ModelSourcesRepository
+from app.modules.rate_limit_reset_credits.redeem_coordination import RedeemClaimTimeoutError
+from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
 
@@ -379,17 +414,18 @@ def _has_openai_responses_shape(payload: V1ResponsesRequest | ResponsesRequest |
         ("input" in explicit_fields and instructions is None) or messages is not None or "truncation" in explicit_fields
     )
 
-
-def _is_openai_sdk_request(
-    request: Request,
-    payload: V1ResponsesRequest | Mapping[str, JsonValue] | None = None,
-) -> bool:
+def _has_explicit_openai_sdk_marker(request: Request) -> bool:
     for header_name in request.headers:
         normalized_header = header_name.lower()
         if normalized_header.startswith("x-stainless-"):
             return True
     user_agent = request.headers.get("user-agent", "").lower()
-    if "openai" in user_agent:
+    return "openai" in user_agent
+def _is_openai_sdk_request(
+    request: Request,
+    payload: V1ResponsesRequest | Mapping[str, JsonValue] | None = None,
+) -> bool:
+    if _has_explicit_openai_sdk_marker(request):
         return True
     if payload is None or not _has_openai_responses_shape(payload):
         return False
@@ -585,7 +621,9 @@ async def responses(
     context: ProxyContext = Depends(get_proxy_context),
     api_key: ApiKeyData | None = Security(validate_proxy_api_key),
 ) -> Response:
+    explicit_openai_sdk_marker = _has_explicit_openai_sdk_marker(request)
     openai_sdk_request = _is_openai_sdk_request(request, payload)
+    native_codex_heartbeat = _is_native_codex_request(request.headers) and not explicit_openai_sdk_marker
     responses_payload = _validate_backend_responses_payload(request, payload)
     if isinstance(responses_payload, JSONResponse):
         return responses_payload
@@ -601,6 +639,7 @@ async def responses(
         # native event ordering, while OpenAI-style callers pointed at this
         # compatibility route need the same SSE contract enforcement as /v1.
         enforce_openai_sdk_contract=openai_sdk_request,
+        native_codex_heartbeat=native_codex_heartbeat,
     )
 
 
@@ -2879,6 +2918,7 @@ async def _stream_responses(
     forwarded_affinity_key: str | None = None,
     forwarded_client_ip: str | None = None,
     enforce_openai_sdk_contract: bool = True,
+    native_codex_heartbeat: bool = False,
 ) -> Response:
     apply_api_key_enforcement(payload, api_key)
     validate_model_access(api_key, payload.model)
@@ -3076,8 +3116,9 @@ async def _stream_responses(
         enforce_openai_sdk_contract=enforce_openai_sdk_contract,
         previous_response_id=payload.previous_response_id,
     )
-    keepalive_frame = CODEX_KEEPALIVE_FRAME if not enforce_openai_sdk_contract else SSE_KEEPALIVE_FRAME
-    if not enforce_openai_sdk_contract:
+    use_codex_keepalive = native_codex_heartbeat or not enforce_openai_sdk_contract
+    keepalive_frame = CODEX_KEEPALIVE_FRAME if use_codex_keepalive else SSE_KEEPALIVE_FRAME
+    if use_codex_keepalive:
         stream = _prepend_initial_sse_heartbeat(
             stream,
             keepalive_frame,

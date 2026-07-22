@@ -49,6 +49,9 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_request_counts_against_queue,
     _log_http_bridge_event,
     _normalize_http_bridge_error_event,
+    _record_http_bridge_stuck_retire,
+    _http_bridge_eventless_precreated_deadline,
+    _HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL,
 )
 from app.modules.proxy._service.http_bridge.service_stubs import (
     _assign_websocket_response_id,
@@ -86,6 +89,7 @@ from app.modules.proxy._service.http_bridge.service_stubs import (
     _websocket_precreated_auth_error_code,
     _websocket_precreated_retry_error_code,
     _websocket_response_id,
+    _await_cancelled_task,
 )
 from app.modules.proxy._service.observability import (
     _hash_identifier as _hash_identifier,
@@ -107,16 +111,18 @@ from app.modules.proxy._service.observability import (
 )
 from app.modules.proxy._service.support import (
     _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE,
-    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
-    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
+    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401,
+    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401,
     _clear_websocket_precreated_replay_fallback,
     _event_type_from_payload,
     _HTTPBridgeSession,
     _record_response_event,
     _WebSocketRequestState,
+    _WebSocketReceiveTimeout,
 )
 from app.modules.proxy._service.support import (
     _websocket_route_log_kwargs as _websocket_route_log_kwargs,
+    _WebSocketReceiveTimeout,
 )
 from app.modules.proxy._service.warmup import (
     WarmupExecutionData as WarmupExecutionData,
@@ -184,6 +190,27 @@ _HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS = 5.0
 _HTTP_BRIDGE_BACKGROUND_CLEANUP_WARN_THRESHOLD = 100
 
 
+    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
+    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
+logger = logging.getLogger("app.modules.proxy.service")
+T = TypeVar("T")
+_TEXT_DELTA_EVENT_TYPES = frozenset({"response.output_text.delta", "response.refusal.delta"})
+_REQUEST_TRANSPORT_HTTP = "http"
+_UPSTREAM_CLOSE_CODES_SKIP_SAME_ACCOUNT_RETRY = frozenset({1011})
+_WEBSOCKET_AUTH_INVALIDATED_FAILURE_CODE = "account_auth_invalidated"
+_SECURITY_WORK_AUTHORIZATION_REQUIRED_CODE = "security_work_authorization_required"
+_NO_SECURITY_WORK_AUTHORIZED_ACCOUNTS_CODE = "no_security_work_authorized_accounts"
+_SECURITY_WORK_RETRY_MESSAGE = (
+    "Upstream flagged this request as possible cybersecurity work. "
+    "codex-lb is retrying on an account marked as authorized for security work."
+_SECURITY_WORK_NO_AUTHORIZED_ACCOUNTS_MESSAGE = (
+    "Upstream flagged this request as possible cybersecurity work, but no account is marked as authorized for "
+    "security work. codex-lb is continuing with normal account selection; the upstream request may still fail until "
+    "an account with Trusted Access for Cyber is marked as security-work-authorized."
+_HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS = 5.0
+_HTTP_BRIDGE_BACKGROUND_CLEANUP_WARN_THRESHOLD = 100
+
+
 def _archive_http_bridge_upstream_text(
     session: "_HTTPBridgeSession",
     text: str,
@@ -214,7 +241,55 @@ def _archive_http_bridge_upstream_message(
     finally:
         reset_request_id(token)
 
+async def _http_bridge_receive_timeout_with_eventless_deadline(
+    session: "_HTTPBridgeSession",
+    receive_timeout: _WebSocketReceiveTimeout | None,
+    *,
+    now: float,
+    stuck_gate_retire_after_seconds: float,
+) -> _WebSocketReceiveTimeout | None:
+    if session.closed:
+        return receive_timeout
+    async with session.pending_lock:
+        deadlines = [
+            deadline
+            for request_state in session.pending_requests
+            if (
+                deadline := _http_bridge_eventless_precreated_deadline(
+                    request_state,
+                    stuck_gate_retire_after_seconds=stuck_gate_retire_after_seconds,
+                )
+            )
+            is not None
+        ]
+    if not deadlines:
+        return receive_timeout
+    eventless_timeout = _WebSocketReceiveTimeout(
+        timeout_seconds=max(0.0, min(deadlines) - now),
+        error_code=_HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL,
+        error_message="Upstream did not acknowledge response.create before the client-safe deadline",
+        fail_all_pending=True,
+    )
+    if receive_timeout is None or eventless_timeout.timeout_seconds <= receive_timeout.timeout_seconds:
+        return eventless_timeout
+    return receive_timeout
 
+async def _cancel_http_bridge_reader_child(task: asyncio.Task[Any] | None, *, label: str) -> bool:
+    if task is None:
+        return True
+    if task.done():
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.debug("HTTP bridge reader child already failed during cleanup label=%s", label, exc_info=True)
+        return True
+    try:
+        return bool(await _await_cancelled_task(task, label=label))
+    except Exception:
+        logger.debug("Failed to cancel HTTP bridge reader child label=%s", label, exc_info=True)
+        return task.done()
 class _HTTPBridgeUpstreamEventsMixin:
     async def _fail_http_bridge_reader_and_maybe_retire(
         self: Any,
@@ -223,6 +298,8 @@ class _HTTPBridgeUpstreamEventsMixin:
         error_code: str,
         error_message: str,
         penalize_account: bool = True,
+        retire_detail: str | None = None,
+        force_retire: bool = False,
     ) -> bool:
         session.closed = True
         async with session.pending_lock:
@@ -245,7 +322,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                 penalize_account=penalize_account,
             )
         finally:
-            if session.admission_waiter_count > 0:
+            if session.admission_waiter_count > 0 and not force_retire:
                 _log_http_bridge_event(
                     "retire_deferred_for_admission_waiter",
                     session.key,
@@ -257,8 +334,11 @@ class _HTTPBridgeUpstreamEventsMixin:
                     model_class=_extract_model_class(session.request_model) if session.request_model else None,
                 )
             else:
-                await self._retire_stale_pending_http_bridge_session(session, detail=error_code)
-        return session.admission_waiter_count == 0
+                await self._retire_stale_pending_http_bridge_session(
+                    session,
+                    detail=retire_detail or error_code,
+                )
+        return force_retire or session.admission_waiter_count == 0
 
     async def _relay_http_bridge_upstream_messages(
         self: Any,
@@ -266,27 +346,147 @@ class _HTTPBridgeUpstreamEventsMixin:
     ) -> None:
         runtime_settings = _service_get_settings()
         relay_upstream = session.upstream
+        receive_task: asyncio.Task[UpstreamWebSocketMessage] | None = None
+        wakeup_task: asyncio.Task[bool] | None = None
         try:
             while True:
+                # Clear before taking the deadline snapshot. A send before the
+                # clear is represented by its timestamp; a send after it leaves
+                # the event set and wakes the persistent receive wait below.
+                session.upstream_reader_wakeup.clear()
                 receive_timeout = await self._next_websocket_receive_timeout(
                     session.pending_requests,
                     pending_lock=session.pending_lock,
                     proxy_request_budget_seconds=_http_bridge_request_budget_seconds(runtime_settings),
                     stream_idle_timeout_seconds=runtime_settings.stream_idle_timeout_seconds,
                 )
-                try:
-                    if receive_timeout is None:
-                        message = await session.upstream.receive()
-                    elif receive_timeout.timeout_seconds <= 0:
-                        raise asyncio.TimeoutError()
+                stuck_gate_retire_after_seconds = float(
+                    getattr(
+                        runtime_settings,
+                        "http_responses_session_bridge_stuck_gate_retire_after_seconds",
+                        300.0,
+                    )
+                )
+                receive_timeout = await _http_bridge_receive_timeout_with_eventless_deadline(
+                    session,
+                    receive_timeout,
+                    now=_service_time().monotonic(),
+                    stuck_gate_retire_after_seconds=stuck_gate_retire_after_seconds,
+                )
+                if receive_task is None:
+                    receive_task = asyncio.create_task(session.upstream.receive())
+
+                message: UpstreamWebSocketMessage | None = None
+                timed_out = False
+                if receive_task.done():
+                    message = receive_task.result()
+                    receive_task = None
+                elif receive_timeout is not None and receive_timeout.timeout_seconds <= 0:
+                    timed_out = True
+                else:
+                    wakeup_task = asyncio.create_task(session.upstream_reader_wakeup.wait())
+                    done, _pending = await asyncio.wait(
+                        (receive_task, wakeup_task),
+                        timeout=receive_timeout.timeout_seconds if receive_timeout is not None else None,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if receive_task in done:
+                        message = receive_task.result()
+                        receive_task = None
+                    elif wakeup_task in done:
+                        wakeup_task.result()
+                        wakeup_task = None
+                        continue
                     else:
-                        message = await asyncio.wait_for(
-                            session.upstream.receive(),
-                            timeout=receive_timeout.timeout_seconds,
+                        timed_out = True
+                    if wakeup_task is not None:
+                        await _cancel_http_bridge_reader_child(
+                            wakeup_task,
+                            label="HTTP bridge reader wakeup wait",
                         )
-                except asyncio.TimeoutError:
+                        wakeup_task = None
+
+                if timed_out:
                     if receive_timeout is None:
-                        raise
+                        raise RuntimeError("HTTP bridge reader timed out without a timeout contract")
+                    if receive_timeout.error_code == _HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL:
+                        if receive_task is not None and receive_task.done():
+                            continue
+                        async with session.lifecycle_lock:
+                            # Send-failure cleanup marks the session closed and
+                            # disarms the timestamp while holding this lock.
+                            # Do not race that caller's terminal settlement.
+                            if session.closed:
+                                continue
+                            now = _service_time().monotonic()
+                            async with session.pending_lock:
+                                if receive_task is not None and receive_task.done():
+                                    continue
+                                expired_owner = any(
+                                    deadline is not None and deadline <= now
+                                    for request_state in session.pending_requests
+                                    if (
+                                        deadline := _http_bridge_eventless_precreated_deadline(
+                                            request_state,
+                                            stuck_gate_retire_after_seconds=stuck_gate_retire_after_seconds,
+                                        )
+                                    )
+                                    is not None
+                                )
+                                if not expired_owner:
+                                    continue
+                                pending_count = len(session.pending_requests)
+                                for request_state in session.pending_requests:
+                                    if request_state.failure_phase_override is None:
+                                        request_state.failure_phase_override = "upstream"
+                                    if request_state.failure_detail_override is None:
+                                        request_state.failure_detail_override = (
+                                            _HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL
+                                        )
+                            # Claim the session before cancelling receive so a
+                            # gate waiter cannot reopen this ambiguous socket.
+                            session.closed = True
+                            if receive_task is not None:
+                                receive_cancelled = await _cancel_http_bridge_reader_child(
+                                    receive_task,
+                                    label="HTTP bridge upstream receive after missing response.created",
+                                )
+                                if receive_cancelled:
+                                    receive_task = None
+                            _record_http_bridge_stuck_retire(
+                                reason=_HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL,
+                                session=session,
+                            )
+                            _log_http_bridge_event(
+                                "missing_response_created_timeout",
+                                session.key,
+                                account_id=session.account.id,
+                                model=session.request_model,
+                                pending_count=pending_count,
+                                detail=_HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL,
+                                cache_key_family=session.key.affinity_kind,
+                                model_class=(
+                                    _extract_model_class(session.request_model) if session.request_model else None
+                                ),
+                            )
+                            await self._fail_http_bridge_reader_and_maybe_retire(
+                                session,
+                                error_code="upstream_request_timeout",
+                                error_message=receive_timeout.error_message,
+                                penalize_account=False,
+                                retire_detail=_HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL,
+                                force_retire=True,
+                            )
+                        break
+
+                    if receive_task is not None:
+                        receive_cancelled = await _cancel_http_bridge_reader_child(
+                            receive_task,
+                            label="HTTP bridge upstream receive after timeout",
+                        )
+                        if not receive_cancelled:
+                            raise RuntimeError("HTTP bridge upstream receive did not cancel after timeout")
+                        receive_task = None
                     retried = await self._retry_http_bridge_precreated_request(session)
                     if retried:
                         continue
@@ -298,6 +498,8 @@ class _HTTPBridgeUpstreamEventsMixin:
                         )
                     break
 
+                if message is None:
+                    raise RuntimeError("HTTP bridge upstream receive completed without a message")
                 if message.kind == "text" and message.text is not None:
                     session.last_upstream_close_code = None
                     if (
@@ -355,6 +557,14 @@ class _HTTPBridgeUpstreamEventsMixin:
                     penalize_account=not account_neutral,
                 )
         finally:
+            await _cancel_http_bridge_reader_child(
+                wakeup_task,
+                label="HTTP bridge reader wakeup wait",
+            )
+            await _cancel_http_bridge_reader_child(
+                receive_task,
+                label="HTTP bridge upstream receive",
+            )
             if session.upstream is relay_upstream:
                 session.closed = True
 

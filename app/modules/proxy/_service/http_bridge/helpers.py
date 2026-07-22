@@ -118,8 +118,8 @@ from app.modules.proxy._service.observability import (
     _truncate_identifier as _truncate_identifier,
 )
 from app.modules.proxy._service.support import (
-    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
-    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
+    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401,
+    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401,
     _HTTPBridgeSession,
     _HTTPBridgeSessionKey,
     _WebSocketRequestState,
@@ -180,6 +180,18 @@ logger = logging.getLogger("app.modules.proxy.service")
 _HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS = 5.0
 T = TypeVar("T")
 
+_HTTP_BRIDGE_INFLIGHT_STARTED_AT_ATTR = "_codex_lb_started_at"
+_HTTP_BRIDGE_STALE_INFLIGHT_MIN_SECONDS = 120.0
+_HTTP_BRIDGE_STALE_INFLIGHT_TIMEOUT_MULTIPLIER = 6.0
+
+
+    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
+    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
+logger = logging.getLogger("app.modules.proxy.service")
+_HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS = 5.0
+_HTTP_BRIDGE_EVENTLESS_RESPONSE_CREATED_MAX_SECONDS = 240.0
+_HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL = "missing_response_created_timeout"
+T = TypeVar("T")
 _HTTP_BRIDGE_INFLIGHT_STARTED_AT_ATTR = "_codex_lb_started_at"
 _HTTP_BRIDGE_STALE_INFLIGHT_MIN_SECONDS = 120.0
 _HTTP_BRIDGE_STALE_INFLIGHT_TIMEOUT_MULTIPLIER = 6.0
@@ -610,7 +622,30 @@ def _normalize_http_bridge_error_event(
 def _http_bridge_request_counts_against_queue(request_state: _WebSocketRequestState) -> bool:
     return not request_state.draining_until_terminal
 
-
+def _http_bridge_eventless_precreated_deadline(
+    request_state: _WebSocketRequestState,
+    *,
+    stuck_gate_retire_after_seconds: float,
+) -> float | None:
+    sent_at = request_state.response_create_sent_at
+    if (
+        request_state.transport != "http"
+        or request_state.skip_request_log
+        or not request_state.response_create_gate_acquired
+        or request_state.response_create_gate is None
+        or not request_state.awaiting_response_created
+        or sent_at is None
+        or request_state.response_id is not None
+        or request_state.latency_response_created_ms is not None
+        or request_state.response_event_count != 0
+        or request_state.downstream_visible
+        or request_state.last_downstream_sequence_number is not None
+    ):
+        return None
+    return sent_at + min(
+        float(stuck_gate_retire_after_seconds),
+        _HTTP_BRIDGE_EVENTLESS_RESPONSE_CREATED_MAX_SECONDS,
+    )
 def _http_bridge_session_has_admission_waiter(session: object | None) -> bool:
     """Keep a closed bridge registered while an unsent request owns its handoff."""
     return session is not None and bool(getattr(session, "admission_waiter_count", 0))
@@ -1844,6 +1879,7 @@ def _log_http_bridge_event(
         "prompt_cache_locality_miss",
         "reallocation_orphan",
         "context_overflow_rollover",
+        "missing_response_created_timeout",
     }:
         level = logging.WARNING
     logger.log(
