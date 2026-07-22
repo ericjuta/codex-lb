@@ -194,41 +194,6 @@ from app.modules.usage.updater import UsageUpdater
 logger = logging.getLogger(__name__)
 
 
-from app.core.cache.invalidation import NAMESPACE_RESET_CREDITS, bump_cache_invalidation_local
-from app.modules.model_sources.catalog import (
-    source_model_audio_cost_usd,
-    source_model_cost_usd,
-    source_model_request_overrides,
-    source_model_supported_tool_types,
-    source_model_supports_reasoning,
-    source_models_to_upstream_models,
-)
-from app.modules.model_sources.forwarding import (
-    ModelSourceForwardingError,
-    SourceTimings,
-    SourceUsage,
-    SourceUsageHolder,
-    forward_chat_completion,
-)
-from app.modules.model_sources.forwarding import (
-    forward_audio_transcription as forward_source_audio_transcription,
-)
-from app.modules.model_sources.forwarding import (
-    forward_responses as forward_source_responses,
-)
-from app.modules.model_sources.forwarding import (
-    stream_chat_completion as stream_source_chat_completion,
-)
-from app.modules.model_sources.forwarding import (
-    stream_responses as stream_source_responses,
-)
-from app.modules.model_sources.repository import ModelSourcesRepository
-from app.modules.rate_limit_reset_credits.redeem_coordination import RedeemClaimTimeoutError
-from app.modules.request_logs.repository import RequestLogsRepository
-
-logger = logging.getLogger(__name__)
-
-
 def _validate_backend_responses_payload(
     request: Request,
     payload: ResponsesRequest | dict[str, JsonValue],

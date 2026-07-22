@@ -90,18 +90,6 @@ from app.modules.usage import api as usage_api
 from app.modules.usage.additional_quota_keys import reload_additional_quota_registry
 from app.modules.usage.live_ingest import start_live_usage_ingestor, stop_live_usage_ingestor
 
-logger = logging.getLogger(__name__)
-
-
-from app.core.balancer import configure_replica_salt
-from app.core.config.key_fingerprint import verify_encryption_key_fingerprint
-from app.core.scheduling.leader_election import get_leader_election
-from app.modules.model_sources import api as model_sources_api
-from app.modules.proxy.cap_partitioning import refresh_cap_partition
-
-logger = logging.getLogger(__name__)
-
-
 from app.core.audit.service import drain_audit_log_tasks
 from app.core.shutdown import close_control_plane_task_admission
 
