@@ -373,179 +373,138 @@ from app.modules.proxy._service.request_log import (
 )
 from app.modules.proxy._service.response_create import (
     _OVERSIZED_RESPONSE_CREATE_DUMP_DIR as _OVERSIZED_RESPONSE_CREATE_DUMP_DIR,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _OVERSIZED_RESPONSE_CREATE_LARGEST_ITEMS as _OVERSIZED_RESPONSE_CREATE_LARGEST_ITEMS,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _RESPONSE_CREATE_COMPATIBILITY_METADATA_HEADERS as _RESPONSE_CREATE_COMPATIBILITY_METADATA_HEADERS,
+)
+from app.modules.proxy._service.response_create import (
     _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _RESPONSE_CREATE_HISTORY_OMISSION_NOTICE as _RESPONSE_CREATE_HISTORY_OMISSION_NOTICE,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _RESPONSE_CREATE_IMAGE_OMISSION_NOTICE as _RESPONSE_CREATE_IMAGE_OMISSION_NOTICE,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE as _RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _UPSTREAM_RESPONSE_CREATE_MAX_BYTES as _UPSTREAM_RESPONSE_CREATE_MAX_BYTES,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _UPSTREAM_RESPONSE_CREATE_WARN_BYTES as _UPSTREAM_RESPONSE_CREATE_WARN_BYTES,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _count_external_image_urls as _count_external_image_urls,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _enforce_response_create_size_limit as _enforce_response_create_size_limit,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _fingerprint_input_items as _fingerprint_input_items,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _function_call_output_call_ids as _function_call_output_call_ids,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _inject_missing_interrupted_function_call_outputs as _inject_missing_interrupted_function_call_outputs,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _inline_top_level_input_image_urls as _inline_top_level_input_image_urls,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _input_part_is_image as _input_part_is_image,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _is_inline_image_reference as _is_inline_image_reference,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _json_size_bytes as _json_size_bytes,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _json_value_contains_input_image_part as _json_value_contains_input_image_part,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _maybe_dump_oversized_response_create_request as _maybe_dump_oversized_response_create_request,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _missing_function_call_outputs_for_previous_response as _missing_function_call_outputs_for_previous_response,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _oversized_response_create_dump_dir as _oversized_response_create_dump_dir,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_client_metadata as _response_create_client_metadata,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_history_omission_notice_item as _response_create_history_omission_notice_item,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_inline_image_notice_item as _response_create_inline_image_notice_item,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_inline_image_notice_part as _response_create_inline_image_notice_part,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_recent_suffix_start as _response_create_recent_suffix_start,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_text as _response_create_text,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_text_with_account_installation_id as _response_create_text_with_account_installation_id,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_text_with_size_guard as _response_create_text_with_size_guard,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_create_too_large_error_envelope as _response_create_too_large_error_envelope,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _response_output_item_done_tool_call as _response_output_item_done_tool_call,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _responses_request_contains_input_image as _responses_request_contains_input_image,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _responses_request_uses_image_generation as _responses_request_uses_image_generation,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _safe_dump_slug as _safe_dump_slug,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _should_dump_oversized_response_create as _should_dump_oversized_response_create,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _should_slim_historical_tool_output as _should_slim_historical_tool_output,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _slim_historical_response_content as _slim_historical_response_content,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _slim_historical_response_content_part as _slim_historical_response_content_part,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _slim_historical_response_input_item as _slim_historical_response_input_item,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _slim_response_create_payload_for_upstream as _slim_response_create_payload_for_upstream,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _summarize_response_create_input as _summarize_response_create_input,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _summarize_response_create_payload as _summarize_response_create_payload,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _synthetic_interrupted_function_call_output as _synthetic_interrupted_function_call_output,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.response_create import (
     _write_response_create_dump as _write_response_create_dump,
-    _RESPONSE_CREATE_DUMP_MAX_PAIRS as _RESPONSE_CREATE_DUMP_MAX_PAIRS,
 )
 from app.modules.proxy._service.streaming import (
     _StreamingMixin,
@@ -801,8 +760,6 @@ _DOWNSTREAM_WEBSOCKET_RECEIVE_POLL_SECONDS = 1.0
 # status is committed as 200 and startup ProxyResponseError handling is masked.
 _HTTP_BRIDGE_STARTUP_KEEPALIVE_GRACE_SECONDS = 0.5
 _DEFAULT_PROXY_ADMISSION_WAIT_TIMEOUT_SECONDS = 10.0
-
-
 
 
 def _proxy_admission_wait_timeout_seconds(settings: Any | None = None) -> float:

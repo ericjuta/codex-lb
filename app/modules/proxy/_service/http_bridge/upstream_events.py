@@ -45,16 +45,17 @@ from app.modules.proxy._service.compact import (
     _sticky_key_from_compact_payload as _sticky_key_from_compact_payload,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
+    _HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL,
+    _http_bridge_eventless_precreated_deadline,
     _http_bridge_request_budget_seconds,
     _http_bridge_request_counts_against_queue,
     _log_http_bridge_event,
     _normalize_http_bridge_error_event,
     _record_http_bridge_stuck_retire,
-    _http_bridge_eventless_precreated_deadline,
-    _HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL,
 )
 from app.modules.proxy._service.http_bridge.service_stubs import (
     _assign_websocket_response_id,
+    _await_cancelled_task,
     _build_stream_incomplete_terminal_event_for_request,
     _find_websocket_request_state_by_response_id,
     _http_error_status_from_payload,
@@ -89,7 +90,6 @@ from app.modules.proxy._service.http_bridge.service_stubs import (
     _websocket_precreated_auth_error_code,
     _websocket_precreated_retry_error_code,
     _websocket_response_id,
-    _await_cancelled_task,
 )
 from app.modules.proxy._service.observability import (
     _hash_identifier as _hash_identifier,
@@ -117,12 +117,11 @@ from app.modules.proxy._service.support import (
     _event_type_from_payload,
     _HTTPBridgeSession,
     _record_response_event,
-    _WebSocketRequestState,
     _WebSocketReceiveTimeout,
+    _WebSocketRequestState,
 )
 from app.modules.proxy._service.support import (
     _websocket_route_log_kwargs as _websocket_route_log_kwargs,
-    _WebSocketReceiveTimeout,
 )
 from app.modules.proxy._service.warmup import (
     WarmupExecutionData as WarmupExecutionData,
@@ -220,6 +219,7 @@ def _archive_http_bridge_upstream_message(
     finally:
         reset_request_id(token)
 
+
 async def _http_bridge_receive_timeout_with_eventless_deadline(
     session: "_HTTPBridgeSession",
     receive_timeout: _WebSocketReceiveTimeout | None,
@@ -253,6 +253,7 @@ async def _http_bridge_receive_timeout_with_eventless_deadline(
         return eventless_timeout
     return receive_timeout
 
+
 async def _cancel_http_bridge_reader_child(task: asyncio.Task[Any] | None, *, label: str) -> bool:
     if task is None:
         return True
@@ -269,6 +270,8 @@ async def _cancel_http_bridge_reader_child(task: asyncio.Task[Any] | None, *, la
     except Exception:
         logger.debug("Failed to cancel HTTP bridge reader child label=%s", label, exc_info=True)
         return task.done()
+
+
 class _HTTPBridgeUpstreamEventsMixin:
     async def _fail_http_bridge_reader_and_maybe_retire(
         self: Any,

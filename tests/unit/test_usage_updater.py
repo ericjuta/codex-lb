@@ -399,11 +399,14 @@ class UsageEntry:
     credits_unlimited: bool | None
     credits_balance: float | None
 
+
 @dataclass(frozen=True, slots=True)
 class UsageSnapshotCall:
     account_id: str
     windows: tuple[UsageWindowWrite, ...]
     recorded_at: datetime
+
+
 class StubUsageRepository:
     def __init__(self, *, return_rows: bool = False) -> None:
         self.entries: list[UsageEntry] = []

@@ -26,12 +26,15 @@ def test_set_draining_updates_shutdown_state() -> None:
 
     assert shutdown_state._draining is True
 
+
 def test_reset_reopens_control_plane_task_admission() -> None:
     shutdown_state.close_control_plane_task_admission()
 
     shutdown_state.reset()
 
     assert shutdown_state.is_control_plane_task_admission_open() is True
+
+
 @pytest.mark.asyncio
 async def test_wait_for_in_flight_drain_waits_until_zero() -> None:
     shutdown_state.increment_in_flight()
@@ -301,6 +304,7 @@ async def test_in_flight_middleware_allows_drain_stop_during_drain() -> None:
     assert app_called is True
     assert sent_messages[0]["status"] == 200
 
+
 @pytest.mark.asyncio
 async def test_wait_for_tasks_to_drain_rechecks_tasks_added_by_done_callback() -> None:
     tasks: set[asyncio.Task[None]] = set()
@@ -334,6 +338,7 @@ async def test_wait_for_tasks_to_drain_rechecks_tasks_added_by_done_callback() -
     assert await drain == set()
     assert tasks == set()
 
+
 @pytest.mark.asyncio
 async def test_wait_for_tasks_to_drain_returns_pending_at_deadline() -> None:
     gate = asyncio.Event()
@@ -345,6 +350,7 @@ async def test_wait_for_tasks_to_drain_returns_pending_at_deadline() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
 
 @pytest.mark.asyncio
 async def test_wait_for_tasks_to_drain_resnapshots_registry_at_deadline(
@@ -382,6 +388,7 @@ async def test_wait_for_tasks_to_drain_resnapshots_registry_at_deadline(
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
 
+
 @pytest.mark.asyncio
 async def test_control_plane_drains_are_failure_isolated(
     monkeypatch: pytest.MonkeyPatch,
@@ -404,6 +411,7 @@ async def test_control_plane_drains_are_failure_isolated(
 
     assert fleet_drained.is_set()
     assert "Failed to drain audit log tasks during shutdown" in caplog.text
+
 
 @pytest.mark.asyncio
 async def test_control_plane_drain_requires_stable_clean_pass(

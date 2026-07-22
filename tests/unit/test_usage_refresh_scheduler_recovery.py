@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable, Collection
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, cast
-import asyncio
 
 import pytest
 
 from app.core.usage import refresh_scheduler as refresh_scheduler_module
 from app.db.models import Account, AccountStatus, UsageHistory
-from collections.abc import Awaitable, Callable, Collection
 
 pytestmark = pytest.mark.unit
 _UNSET = object()
@@ -147,6 +147,7 @@ class MutatingAccountsRepository(StubAccountsRepository):
         account.reset_at = 42
         return await super().update_status_if_current(*args, **kwargs)
 
+
 @pytest.mark.asyncio
 async def test_reconcile_recoverable_account_statuses_scopes_latest_usage_to_candidates(
     monkeypatch: pytest.MonkeyPatch,
@@ -190,6 +191,8 @@ async def test_reconcile_recoverable_account_statuses_scopes_latest_usage_to_can
         ("secondary", (selected.id,)),
         ("monthly", (selected.id,)),
     ]
+
+
 @pytest.mark.asyncio
 async def test_reconcile_recoverable_account_statuses_keeps_rate_limited_until_reset_elapses(
     monkeypatch: pytest.MonkeyPatch,
@@ -950,6 +953,7 @@ async def test_refresh_once_cancellation_closes_read_session(monkeypatch: pytest
 
     await asyncio.wait_for(session_closed.wait(), timeout=1)
 
+
 @pytest.mark.asyncio
 async def test_refresh_slices_scope_queries_and_followups_to_selected_account(
     monkeypatch: pytest.MonkeyPatch,
@@ -977,8 +981,8 @@ async def test_refresh_slices_scope_queries_and_followups_to_selected_account(
     invalidations = 0
 
     class _Leader:
-        async def run_if_leader(self, fn: Callable[[], Awaitable[object]]) -> object:
-            return await fn()
+        async def try_acquire(self) -> bool:
+            return True
 
     class _UsageRepo:
         def __init__(self, _session: object) -> None:

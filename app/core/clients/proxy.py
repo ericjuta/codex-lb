@@ -1518,6 +1518,7 @@ def _payload_has_responses_lite_websocket_marker(payload: Mapping[str, JsonValue
     raw_metadata = payload.get("client_metadata")
     return is_json_mapping(raw_metadata) and _client_metadata_uses_responses_lite(raw_metadata)
 
+
 def _finalize_responses_lite_reasoning_context(
     payload: dict[str, JsonValue],
     *,
@@ -1531,6 +1532,8 @@ def _finalize_responses_lite_reasoning_context(
     reasoning = dict(raw_reasoning) if is_json_mapping(raw_reasoning) else {}
     reasoning["context"] = "all_turns"
     payload["reasoning"] = reasoning
+
+
 def _normalize_responses_lite_websocket_client_metadata(
     payload: Mapping[str, JsonValue],
     client_metadata: Mapping[str, JsonValue],

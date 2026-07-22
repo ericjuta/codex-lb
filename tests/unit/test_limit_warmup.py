@@ -1057,6 +1057,7 @@ async def test_staggered_idle_warmup_prestarts_once_per_cycle(monkeypatch) -> No
     assert repo.rows[0].reset_at == 18_000
     assert repo.rows[0].status == "succeeded"
 
+
 @pytest.mark.asyncio
 async def test_staggered_idle_cohort_does_not_widen_candidate_evaluation(monkeypatch) -> None:
     now = datetime.fromtimestamp(6000, tz=timezone.utc).replace(tzinfo=None)
@@ -1088,6 +1089,8 @@ async def test_staggered_idle_cohort_does_not_widen_candidate_evaluation(monkeyp
     assert repo.latest_requests == [[selected.id]]
     assert sender.calls == [(selected.id, "gpt-5.1-codex-mini")]
     assert [row.account_id for row in repo.rows] == [selected.id]
+
+
 @pytest.mark.asyncio
 async def test_staggered_idle_warmup_skips_when_reset_at_is_missing(monkeypatch) -> None:
     monkeypatch.setattr(

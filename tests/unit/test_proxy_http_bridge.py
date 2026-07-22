@@ -34,16 +34,15 @@ from app.core.errors import openai_error
 from app.core.utils.request_id import get_request_id, reset_request_scope_id, set_request_scope_id
 from app.db.models import AccountStatus, HttpBridgeSessionState
 from app.modules.proxy import service as proxy_service
-from app.modules.proxy._service.http_bridge import helpers as http_bridge_helpers_module, request_submit as http_bridge_request_submit_module
-from app.modules.proxy._service.http_bridge import mixin as http_bridge_mixin_module, request_submit as http_bridge_request_submit_module
-from app.modules.proxy._service.http_bridge import streaming as http_bridge_streaming_module, request_submit as http_bridge_request_submit_module
+from app.modules.proxy._service.http_bridge import helpers as http_bridge_helpers_module
+from app.modules.proxy._service.http_bridge import mixin as http_bridge_mixin_module
+from app.modules.proxy._service.http_bridge import request_submit as http_bridge_request_submit_module
+from app.modules.proxy._service.http_bridge import streaming as http_bridge_streaming_module
 from app.modules.proxy.account_cache import clear_account_routing_unavailable, mark_account_routing_unavailable
 from app.modules.proxy.http_bridge_forwarding import OwnerForwardRelayFailure
 
 pytestmark = pytest.mark.unit
 
-
-from app.modules.proxy._service import support as proxy_support_module
 
 pytestmark = pytest.mark.unit
 
@@ -90,6 +89,7 @@ def _make_bridge_session(
         idle_ttl_seconds=120.0,
     )
 
+
 def _make_eventless_http_bridge_owner(
     *,
     request_id: str = "req-eventless-owner",
@@ -109,6 +109,7 @@ def _make_eventless_http_bridge_owner(
         response_create_sent_at=sent_at,
         event_queue=asyncio.Queue(),
     )
+
 
 def test_http_bridge_eventless_precreated_deadline_uses_current_send_and_client_safe_cap() -> None:
     request_state = _make_eventless_http_bridge_owner()
@@ -136,6 +137,7 @@ def test_http_bridge_eventless_precreated_deadline_uses_current_send_and_client_
         )
         == 340.0
     )
+
 
 @pytest.mark.parametrize(
     ("field_name", "field_value"),
@@ -165,6 +167,7 @@ def test_http_bridge_eventless_precreated_deadline_requires_narrow_owner_evidenc
         )
         is None
     )
+
 
 @pytest.mark.asyncio
 async def test_http_bridge_send_replaces_timestamp_and_wakes_existing_reader(
@@ -204,6 +207,7 @@ async def test_http_bridge_send_replaces_timestamp_and_wakes_existing_reader(
     assert seen_sent_ats == [100.0, 200.0]
     assert request_state.response_create_sent_at == 200.0
     assert session.upstream_reader_wakeup.is_set() is True
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [RuntimeError("send failed"), asyncio.CancelledError()])
@@ -15329,6 +15333,7 @@ async def test_get_or_create_http_bridge_session_replaces_live_session_when_scop
     assert stale_session.closed is True
     await _wait_for_close_await(close_session, stale_session)
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("leading_telemetry", [False, True], ids=["silent", "leading-telemetry"])
 async def test_http_bridge_reader_wakes_and_retires_lone_eventless_owner_without_keepalives(
@@ -15484,6 +15489,7 @@ async def test_http_bridge_reader_wakes_and_retires_lone_eventless_owner_without
     )
     assert "http_bridge_event event=missing_response_created_timeout" in caplog.text
 
+
 @pytest.mark.asyncio
 async def test_http_bridge_eventless_timeout_yields_to_locked_send_failure_cleanup(
     monkeypatch: pytest.MonkeyPatch,
@@ -15579,6 +15585,8 @@ async def test_http_bridge_eventless_timeout_yields_to_locked_send_failure_clean
     fail_reader_await_args = fail_reader.await_args
     assert fail_reader_await_args is not None
     assert fail_reader_await_args.kwargs.get("force_retire") is not True
+
+
 @pytest.mark.asyncio
 async def test_http_bridge_reader_marks_session_closed_before_reconnect_close(
     monkeypatch: pytest.MonkeyPatch,
@@ -16141,6 +16149,7 @@ async def test_http_bridge_reader_failure_keeps_waiter_count_when_draining_reque
     assert retired is False
     assert session.queued_request_count == 1
 
+
 @pytest.mark.asyncio
 async def test_http_bridge_eventless_timeout_force_retires_with_admission_waiter(
     monkeypatch: pytest.MonkeyPatch,
@@ -16168,6 +16177,8 @@ async def test_http_bridge_eventless_timeout_force_retires_with_admission_waiter
     fail_pending_await_args = fail_pending.await_args
     assert fail_pending_await_args is not None
     assert fail_pending_await_args.kwargs["penalize_account"] is False
+
+
 @pytest.mark.asyncio
 async def test_http_bridge_reader_failure_retires_without_waiters_when_notification_raises(
     monkeypatch: pytest.MonkeyPatch,

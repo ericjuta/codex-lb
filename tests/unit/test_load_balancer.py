@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import random
 import time
 from datetime import datetime
@@ -37,12 +38,6 @@ from app.modules.proxy.load_balancer import (
     _state_from_account,
     background_recovery_state_from_account,
 )
-
-pytestmark = pytest.mark.unit
-
-
-import asyncio
-from app.core.balancer.logic import DRAIN_PRIMARY_THRESHOLD_PCT, PROBE_QUIET_SECONDS
 
 pytestmark = pytest.mark.unit
 
@@ -3646,6 +3641,7 @@ def test_error_backoff_expired_account_does_not_immediately_relock():
     assert result2.account is not None
     assert result2.account.account_id == "a"
 
+
 @pytest.mark.asyncio
 async def test_load_selection_inputs_serializes_usage_queries_on_shared_session():
     """Usage reads sharing one repository context must never overlap."""
@@ -3692,6 +3688,8 @@ async def test_load_selection_inputs_serializes_usage_queries_on_shared_session(
     assert result.latest_primary["a"].window == "primary"
     assert result.latest_secondary["a"].window == "secondary"
     assert result.latest_monthly["a"].window == "monthly"
+
+
 @pytest.mark.asyncio
 async def test_load_selection_inputs_sets_burn_first_override_for_additional_quota():
     from app.modules.proxy.load_balancer import ROUTING_POLICY_BURN_FIRST, LoadBalancer

@@ -379,6 +379,7 @@ def _has_openai_responses_shape(payload: V1ResponsesRequest | ResponsesRequest |
         ("input" in explicit_fields and instructions is None) or messages is not None or "truncation" in explicit_fields
     )
 
+
 def _has_explicit_openai_sdk_marker(request: Request) -> bool:
     for header_name in request.headers:
         normalized_header = header_name.lower()
@@ -386,6 +387,8 @@ def _has_explicit_openai_sdk_marker(request: Request) -> bool:
             return True
     user_agent = request.headers.get("user-agent", "").lower()
     return "openai" in user_agent
+
+
 def _is_openai_sdk_request(
     request: Request,
     payload: V1ResponsesRequest | Mapping[str, JsonValue] | None = None,

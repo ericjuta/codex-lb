@@ -18,8 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config.settings import get_settings
 from app.core.usage.types import UsageAggregateRow, UsageTrendBucket
 from app.core.utils.time import utcnow
-from app.db.session import sqlite_writer_section
 from app.db.models import Account, AdditionalUsageHistory, UsageHistory
+from app.db.session import sqlite_writer_section
 from app.db.sqlite_retry import retry_sqlite_write as retry_session_sqlite_write
 from app.db.sqlite_utils import sqlite_db_path_from_url
 from app.modules.usage.additional_quota_keys import (
@@ -43,6 +43,7 @@ class UsageHistorySnapshot:
     reset_at: float | None
     window_minutes: int | None
 
+
 @dataclass(frozen=True, slots=True)
 class UsageWindowWrite:
     window: str
@@ -52,6 +53,8 @@ class UsageWindowWrite:
     credits_has: bool | None = None
     credits_unlimited: bool | None = None
     credits_balance: float | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class _BulkHistoryCacheMetadata:
     row_count: int

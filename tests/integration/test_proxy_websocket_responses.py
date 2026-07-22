@@ -1068,6 +1068,7 @@ def test_backend_responses_websocket_forwards_client_tools_byte_identical(app_in
     expected_tools_bytes = '"tools":' + json.dumps(client_tools, ensure_ascii=True, separators=(",", ":"))
     assert expected_tools_bytes in frame
 
+
 def test_backend_responses_websocket_lite_marker_requires_previous_response_linkage(app_instance, monkeypatch):
     def _response_batch(response_id: str) -> list[_FakeUpstreamMessage]:
         return [
@@ -1220,6 +1221,7 @@ def test_backend_responses_websocket_lite_marker_requires_previous_response_link
     assert cast(dict[str, object], sent_payloads[4]["client_metadata"])[marker] == "true"
     assert sent_payloads[4]["reasoning"] == {"context": "all_turns", "effort": "high"}
     assert sent_payloads[4]["previous_response_id"] == "resp_ws_lite_2"
+
 
 def test_backend_responses_websocket_lite_fresh_replay_drops_marker_after_previous_response_miss(
     app_instance,
@@ -1420,6 +1422,7 @@ def test_backend_responses_websocket_lite_fresh_replay_drops_marker_after_previo
     assert after_replay_payload["previous_response_id"] == "resp_ws_lite_replay"
     assert marker not in cast(dict[str, object], after_replay_payload.get("client_metadata", {}))
     assert "reasoning" not in after_replay_payload
+
 
 def test_backend_responses_websocket_body_lite_fresh_replay_keeps_marker_and_continuity(
     app_instance,

@@ -5,6 +5,7 @@ import contextlib
 import importlib
 import logging
 import time
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, AsyncIterator, Protocol, cast
@@ -33,12 +34,6 @@ from app.modules.usage.updater import build_background_usage_updater
 
 logger = logging.getLogger(__name__)
 
-_RECOVERABLE_ACCOUNT_STATUSES = frozenset({AccountStatus.RATE_LIMITED, AccountStatus.QUOTA_EXCEEDED})
-
-
-from collections.abc import Awaitable, Callable, Collection
-
-logger = logging.getLogger(__name__)
 _RECOVERABLE_ACCOUNT_STATUSES = frozenset({AccountStatus.RATE_LIMITED, AccountStatus.QUOTA_EXCEEDED})
 
 

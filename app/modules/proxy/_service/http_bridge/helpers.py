@@ -612,6 +612,7 @@ def _normalize_http_bridge_error_event(
 def _http_bridge_request_counts_against_queue(request_state: _WebSocketRequestState) -> bool:
     return not request_state.draining_until_terminal
 
+
 def _http_bridge_eventless_precreated_deadline(
     request_state: _WebSocketRequestState,
     *,
@@ -636,6 +637,8 @@ def _http_bridge_eventless_precreated_deadline(
         float(stuck_gate_retire_after_seconds),
         _HTTP_BRIDGE_EVENTLESS_RESPONSE_CREATED_MAX_SECONDS,
     )
+
+
 def _http_bridge_session_has_admission_waiter(session: object | None) -> bool:
     """Keep a closed bridge registered while an unsent request owns its handoff."""
     return session is not None and bool(getattr(session, "admission_waiter_count", 0))

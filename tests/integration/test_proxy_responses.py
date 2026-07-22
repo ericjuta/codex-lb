@@ -16,6 +16,7 @@ import app.modules.proxy.service as proxy_module
 from app.core.auth import generate_unique_account_id
 from app.core.config.settings import Settings
 from app.core.openai.models import CompactResponsePayload
+from app.core.types import JsonValue
 from app.db.models import Account, DashboardSettings, RequestLog
 from app.db.session import SessionLocal
 from app.modules.proxy._service.streaming import retry as streaming_retry_module
@@ -246,11 +247,10 @@ async def test_backend_responses_preserves_responses_lite_tools_and_outputs(asyn
         custom_tool_output,
         {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "inspect"}]},
     ]
-    # Catalog-advertised ``ultra`` must be aliased to ``max`` on the wire,
-    # exactly like the reference Codex client (codex-rs core/src/client.rs
-    # ``reasoning_effort_for_request`` at rust-v0.144.1).
+    # This fork carries no ultra->max wire aliasing (upstream catalog change
+    # not picked); the requested effort passes through unchanged.
     reasoning = cast("dict[str, JsonValue]", seen_payload["reasoning"])
-    assert reasoning["effort"] == "max"
+    assert reasoning["effort"] == "ultra"
     # This monkeypatch observes the validated request model before core egress;
     # Lite context is a wire-only finalization and must not leak back into it.
     assert "context" not in reasoning
@@ -263,6 +263,7 @@ async def test_backend_responses_preserves_responses_lite_tools_and_outputs(asyn
         cast("Mapping[str, JsonValue]", seen_payload),
     )
     assert upstream_headers == {proxy_client_module.CODEX_RESPONSES_LITE_HEADER: "true"}
+
 
 @pytest.mark.asyncio
 async def test_backend_responses_rejects_non_object_reasoning(async_client):
@@ -289,6 +290,8 @@ async def test_backend_responses_rejects_non_object_reasoning(async_client):
     assert error["code"] == "invalid_request_error"
     assert error["type"] == "invalid_request_error"
     assert error["param"] == "reasoning"
+
+
 @pytest.mark.asyncio
 async def test_backend_responses_forwards_explicit_empty_tools(async_client, monkeypatch):
     # An explicit client-sent ``"tools": []`` is a real request field and must

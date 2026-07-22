@@ -12,14 +12,17 @@ import anyio
 from app.core import shutdown as shutdown_state
 from app.core.clients.files import create_file as core_create_file  # noqa: F401
 from app.core.clients.files import finalize_file as core_finalize_file  # noqa: F401
-from app.core.clients.proxy import CodexControlResponse as CodexControlResponse, _payload_uses_responses_lite, _finalize_responses_lite_reasoning_context, _payload_has_responses_lite_websocket_marker
+from app.core.clients.proxy import CodexControlResponse as CodexControlResponse
 from app.core.clients.proxy import (  # noqa: F401  # noqa: F401
     ImageFetchSession,
     ProxyResponseError,
     UpstreamProxyRouteTrace,
     _as_image_fetch_session,
+    _finalize_responses_lite_reasoning_context,
     _inline_content_images,
     _inline_input_image_urls,
+    _payload_has_responses_lite_websocket_marker,
+    _payload_uses_responses_lite,
     _ws_transport_payload_budget_bytes,
     apply_codex_installation_metadata,
     filter_inbound_headers,
@@ -29,13 +32,16 @@ from app.core.clients.proxy import (  # noqa: F401  # noqa: F401
     push_compact_timeout_overrides,
     push_stream_timeout_overrides,
     push_transcribe_timeout_overrides,
-    _finalize_responses_lite_reasoning_context,
-    _payload_has_responses_lite_websocket_marker,
-    _payload_uses_responses_lite,
 )
-from app.core.clients.proxy import codex_control_request as core_codex_control_request  # noqa: F401, _payload_uses_responses_lite, _payload_has_responses_lite_websocket_marker, _finalize_responses_lite_reasoning_context
-from app.core.clients.proxy import compact_responses as core_compact_responses  # noqa: F401, _payload_has_responses_lite_websocket_marker, _finalize_responses_lite_reasoning_context, _payload_uses_responses_lite
-from app.core.clients.proxy import transcribe_audio as core_transcribe_audio  # noqa: F401, _payload_has_responses_lite_websocket_marker, _payload_uses_responses_lite, _finalize_responses_lite_reasoning_context
+from app.core.clients.proxy import (
+    codex_control_request as core_codex_control_request,  # noqa: F401, _payload_uses_responses_lite, _payload_has_responses_lite_websocket_marker, _finalize_responses_lite_reasoning_context
+)
+from app.core.clients.proxy import (
+    compact_responses as core_compact_responses,  # noqa: F401, _payload_has_responses_lite_websocket_marker, _finalize_responses_lite_reasoning_context, _payload_uses_responses_lite
+)
+from app.core.clients.proxy import (
+    transcribe_audio as core_transcribe_audio,  # noqa: F401, _payload_has_responses_lite_websocket_marker, _payload_uses_responses_lite, _finalize_responses_lite_reasoning_context
+)
 from app.core.clients.proxy_websocket import UpstreamWebSocketTransportError
 from app.core.errors import (
     openai_error,

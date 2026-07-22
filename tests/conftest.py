@@ -206,6 +206,7 @@ def _reset_hot_path_caches():
     yield
     _reset_global_state()
 
+
 @pytest.fixture(autouse=True)
 def _reset_shutdown_task_admission():
     """Keep the process-global shutdown admission barrier test-local."""

@@ -96,8 +96,10 @@ def _oversized_response_create_dump_dir() -> Path:
     data_dir = getattr(settings_factory(), "data_dir", DEFAULT_HOME_DIR)
     return data_dir / "debug" / "response-create-dumps"
 
+
 def _response_create_dump_max_pairs() -> int:
     return int(_service_global_or("_RESPONSE_CREATE_DUMP_MAX_PAIRS", _RESPONSE_CREATE_DUMP_MAX_PAIRS))
+
 
 def _existing_response_create_dump(dump_dir: Path, sha_slug: str) -> Path | None:
     """Return an existing *complete* dump for the same payload fingerprint.
@@ -119,6 +121,7 @@ def _existing_response_create_dump(dump_dir: Path, sha_slug: str) -> Path | None
             return dump_path
     return None
 
+
 def _prune_response_create_dumps(dump_dir: Path, *, max_pairs: int) -> None:
     """Drop the oldest dump pairs so at most ``max_pairs`` remain.
 
@@ -138,6 +141,8 @@ def _prune_response_create_dumps(dump_dir: Path, *, max_pairs: int) -> None:
                 stale_path.unlink(missing_ok=True)
             except OSError:
                 logger.warning("Failed to prune response.create dump path=%s", stale_path, exc_info=True)
+
+
 def _fingerprint_input_items(items: Sequence[JsonValue]) -> str:
     """Return stable SHA-256 fingerprint for input list canonical JSON."""
     canonical = json.dumps(list(items), ensure_ascii=True, separators=(",", ":"), sort_keys=True)

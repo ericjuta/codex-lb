@@ -88,8 +88,10 @@ async def _import_account(async_client, account_id: str, email: str) -> str:
     assert response.status_code == 200
     return generate_unique_account_id(account_id, email)
 
+
 def _sse_data_events(lines: list[str]) -> list[dict]:
     return [json.loads(line[6:]) for line in lines if line.startswith("data: ") and not line.startswith("data: [DONE]")]
+
 
 async def _request_idle_heartbeat_stream(
     async_client,
@@ -143,6 +145,8 @@ async def _request_idle_heartbeat_stream(
     ) as response:
         assert response.status_code == 200
         return [line async for line in response.aiter_lines() if line]
+
+
 @pytest.mark.asyncio
 async def test_proxy_compact_not_implemented(async_client, monkeypatch):
     await _import_account(async_client, "acc_compact_ni", "ni@example.com")
@@ -1122,6 +1126,7 @@ async def test_stream_responses_starts_sse_keepalive_before_first_upstream_event
     assert any("response.completed" in chunk for chunk in chunks)
     assert seen_client_ip == ["203.0.113.7"]
 
+
 @pytest.mark.asyncio
 async def test_backend_desktop_openai_shape_uses_codex_heartbeat_with_sdk_normalization(
     async_client,
@@ -1144,6 +1149,7 @@ async def test_backend_desktop_openai_shape_uses_codex_heartbeat_with_sdk_normal
     assert standard_event_types[0] == "response.created"
     assert "codex.rate_limits" not in event_types
     assert "response.completed" in standard_event_types
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -1189,6 +1195,7 @@ async def test_backend_explicit_sdk_marker_uses_comment_heartbeat(
     assert "codex.rate_limits" not in event_types
     assert "response.completed" in event_types
 
+
 @pytest.mark.asyncio
 async def test_v1_desktop_identity_uses_comment_heartbeat_and_sdk_event_order(
     async_client,
@@ -1211,6 +1218,8 @@ async def test_v1_desktop_identity_uses_comment_heartbeat_and_sdk_event_order(
     assert event_types[0] == "response.created"
     assert "codex.rate_limits" not in event_types
     assert "response.completed" in event_types
+
+
 @pytest.mark.asyncio
 async def test_compact_responses_passes_client_ip_to_service(monkeypatch):
     seen_client_ip: list[str | None] = []

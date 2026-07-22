@@ -975,11 +975,12 @@ class LoadBalancer:
                 )
                 return selection_inputs
 
-            standard_latest_primary, standard_latest_secondary, latest_monthly = await asyncio.gather(
-                repos.usage.latest_by_account(),
-                repos.usage.latest_by_account(window="secondary"),
-                repos.usage.latest_by_account(window="monthly"),
-            )
+            # One repos bundle means one AsyncSession owner: run the
+            # multi-window usage reads sequentially instead of overlapping
+            # statements on the shared session (#1432).
+            standard_latest_primary = await repos.usage.latest_by_account()
+            standard_latest_secondary = await repos.usage.latest_by_account(window="secondary")
+            latest_monthly = await repos.usage.latest_by_account(window="monthly")
             if effective_limit_name:
                 model_allowed_plans = get_model_registry().plan_types_for_model(model) if model else None
                 latest_primary = additional_filter.latest_primary
