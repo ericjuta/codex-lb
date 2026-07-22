@@ -821,21 +821,37 @@ When an upstream websocket or HTTP bridge session has multiple pending Responses
 - **AND** the younger request remains pending
 
 ### Requirement: HTTP bridge streams emit downstream liveness frames while pending
-When an HTTP bridge Responses request is waiting for upstream queue events, the system MUST emit a downstream SSE liveness frame at the configured `sse_keepalive_interval_seconds` interval so downstream clients do not disconnect before the upstream terminal frame arrives. The first generated liveness frame MUST be delayed until after the HTTP bridge startup-error probe window so a local startup `ProxyResponseError` can still be surfaced as a non-2xx HTTP response. Once a generated liveness frame is emitted, the stream MUST be considered started for later HTTP-error propagation decisions, so a subsequent upstream `response.failed` is forwarded in-stream instead of being raised as a startup HTTP error. If the pending request already has a response id, the liveness frame MAY be a `response.in_progress` SSE event for that response id. If no response id is known yet, the Codex CLI route MUST emit an ignored `codex.keepalive` SSE data event because comment-only frames do not reset the CLI's EventSource idle timer. Public `/v1/responses` stream normalization MUST preserve SSE comment keepalives instead of treating them as malformed data, and MUST drop `codex.*` liveness events from the public OpenAI SDK contract surface.
 
-#### Scenario: HTTP bridge emits response in-progress keepalive after response id is known
-- **GIVEN** an HTTP bridge request has a known response id
-- **WHEN** no upstream event arrives before the SSE keepalive interval elapses
-- **THEN** the downstream stream emits a `response.in_progress` event for that response id
-- **AND** the request remains pending
+When an HTTP bridge Responses request is waiting for upstream queue events, the system MUST emit a downstream SSE liveness frame at the configured `sse_keepalive_interval_seconds` interval so downstream clients do not disconnect before the upstream terminal frame arrives. The first generated liveness frame MUST be delayed until after the HTTP bridge startup-error probe window so a local startup `ProxyResponseError` can still be surfaced as a non-2xx HTTP response. Once a generated liveness frame is emitted, the stream MUST be considered started for later HTTP-error propagation decisions, so a subsequent upstream `response.failed` is forwarded in-stream instead of being raised as a startup HTTP error.
 
-#### Scenario: HTTP bridge emits Codex keepalive before response id is known
-- **GIVEN** an HTTP bridge request does not yet have a response id
-- **WHEN** no upstream event arrives before the SSE keepalive interval elapses
-- **THEN** the downstream stream emits a `codex.keepalive` SSE data event
-- **AND** the request remains pending
+If the pending request already has a response id, the liveness frame MAY be a `response.in_progress` SSE event for that response id. Before a response id exists, a verified native Codex client on `/backend-api/codex/responses` MUST receive an event-bearing `codex.keepalive` JSON SSE frame even when payload-shape heuristics also require OpenAI-compatible response normalization, because comment-only frames do not reset the native client's parsed-event idle timer. Native identity MUST come from the existing native User-Agent or originator allowlist and MUST NOT be inferred from continuity headers.
+
+Explicit OpenAI SDK fingerprint markers, including `x-stainless-*` headers or an OpenAI User-Agent, MUST retain precedence for heartbeat framing and MUST receive comment liveness. Public `/v1/responses` and other non-native OpenAI SDK streams MUST retain comment heartbeats before `response.created`; public stream normalization MUST preserve those comments and MUST drop `codex.*` liveness events from the OpenAI contract surface. Heartbeat selection MUST NOT disable authentication, payload validation, event normalization, fingerprint normalization, or routing policy.
+
+#### Scenario: Native Desktop shape receives parsed-event liveness
+
+- **GIVEN** Codex Desktop sends `POST /backend-api/codex/responses` with a verified native User-Agent or originator
+- **AND** its OpenAI-compatible payload and `Accept` header also trigger SDK-compatible event normalization
+- **WHEN** no upstream event arrives before a response id is known
+- **THEN** the proxy emits an event-bearing `codex.keepalive` JSON SSE frame
+- **AND** it preserves any required response-event normalization
+
+#### Scenario: Explicit SDK marker retains comment liveness
+
+- **GIVEN** a request to `/backend-api/codex/responses` carries an `x-stainless-*` header or OpenAI User-Agent
+- **WHEN** its payload also resembles a native Codex request
+- **THEN** the proxy emits an SSE comment heartbeat before `response.created`
+- **AND** it does not expose `codex.*` vendor events to the SDK stream
+
+#### Scenario: Public v1 route never exposes native vendor heartbeat
+
+- **GIVEN** a request targets public `/v1/responses`
+- **WHEN** the request is pending before `response.created`
+- **THEN** periodic liveness uses OpenAI-contract-safe comment frames
+- **AND** the first data event remains `response.created`
 
 #### Scenario: First HTTP bridge keepalive is delayed past startup probe
+
 - **GIVEN** an HTTP bridge request is waiting for upstream queue events
 - **AND** `sse_keepalive_interval_seconds` is shorter than the bridge startup-error probe window
 - **WHEN** no upstream event arrives before the configured keepalive interval
@@ -843,12 +859,14 @@ When an HTTP bridge Responses request is waiting for upstream queue events, the 
 - **AND** a startup `ProxyResponseError` can still be surfaced as a non-2xx HTTP response before any keepalive commits the stream
 
 #### Scenario: HTTP bridge keepalive commits stream for later response-failed events
+
 - **GIVEN** an HTTP bridge request emits a generated keepalive as its first downstream chunk
 - **WHEN** the next upstream event is a `response.failed` with an HTTP status override
 - **THEN** the `response.failed` event is forwarded on the SSE stream
 - **AND** it is not raised as a startup HTTP error after bytes have already been emitted
 
 #### Scenario: Public Responses normalizer preserves comment keepalive blocks
+
 - **WHEN** the public `/v1/responses` stream normalizer receives an SSE comment keepalive block before a terminal event
 - **THEN** it forwards the comment keepalive block unchanged
 - **AND** it continues normalizing the subsequent Responses events normally
@@ -1602,3 +1620,116 @@ When deciding whether a Responses request contains opaque context that prevents 
 - **THEN** the request is treated as opaque and preserved on the existing
   upstream handling path
 
+### Requirement: Oversized response.create payloads are slimmed or rejected fail-fast before upstream send
+
+When the service prepares a Responses `response.create` request for the upstream websocket, it MUST measure the serialized outbound request size before sending it upstream. If the payload exceeds the upstream websocket budget, the service MUST first attempt to slim only the historical portion of `input` that precedes the most recent user turn: historical inline images MUST be replaced with textual omission notices, and oversized historical tool outputs MUST be replaced with textual omission notices that preserve the item in sequence. Historical slimming MUST cover tool-call output items of every supported type — `function_call_output`, `custom_tool_call_output`, and `apply_patch_call_output` — including inline images nested inside list- or mapping-valued `output` content parts, which MUST be replaced with the image omission notice while non-image parts, item order, `call_id`, and `status` fields are preserved. If the request still exceeds budget after slimming, the service MUST fail locally with status `400` — not `413` — carrying `error.code = "payload_too_large"`, `error.type = "invalid_request_error"`, and `error.param = "input"`, because the official Codex client treats `400` as a non-retryable invalid-request error surfaced immediately while `413` triggers five full-payload retries followed by a sticky session-wide websocket-to-HTTP transport downgrade.
+
+#### Scenario: Inline images nested in historical tool-call outputs are slimmed
+
+- **GIVEN** an oversized `response.create` whose historical `input` contains a
+  `custom_tool_call_output` (or `function_call_output` /
+  `apply_patch_call_output`) whose `output` is a list of content parts
+  including `data:image/` inline images
+- **WHEN** the size guard triggers historical slimming
+- **THEN** each nested inline image part is replaced with the image omission
+  notice part
+- **AND** non-image parts, item order, `call_id`, and `status` are preserved
+- **AND** the slimmed request is forwarded upstream when it fits the budget
+
+#### Scenario: Oversized string outputs are slimmed for all tool-call output types
+
+- **GIVEN** a historical `custom_tool_call_output` or `apply_patch_call_output`
+  whose string `output` exceeds the oversized-tool-output threshold
+- **WHEN** the size guard triggers historical slimming
+- **THEN** the string output is replaced with the tool-output omission notice,
+  matching the existing `function_call_output` behavior
+
+### Requirement: Responses Lite signaling enforces all-turns reasoning context
+
+Every final upstream Responses payload that codex-lb advertises as Responses Lite—by the canonical HTTP header or the canonical per-request websocket client-metadata marker, whether body-derived, bridge-preserved, or continuity-trusted—MUST contain the exact JSON string `reasoning.context = "all_turns"`. Before upstream serialization, the service MUST create a reasoning object when it is omitted or null and MUST replace an absent, null, blank, differently-cased, otherwise different-string, or non-string context value with `"all_turns"`. It MUST preserve `reasoning.effort`, `reasoning.summary`, and every unrelated reasoning member.
+
+This normalization MUST be idempotent, MUST NOT establish Lite classification or continuity trust, MUST NOT reject an otherwise-valid Lite request solely for a context mismatch, and MUST NOT remove the Lite signal. For requests not advertised as Lite, this normalization MUST leave the client-supplied reasoning shape unchanged. An invalid non-object reasoning container remains subject to the existing client-payload validation contract.
+
+#### Scenario: Body-derived Lite HTTP request omits reasoning
+
+- **WHEN** a normalized HTTP Responses body contains an `additional_tools` input item and omits or nulls `reasoning`
+- **THEN** the final upstream HTTP body contains `reasoning.context = "all_turns"`
+- **AND** the request carries the canonical Responses Lite HTTP header
+
+#### Scenario: Existing Lite reasoning members survive normalization
+
+- **WHEN** a Responses Lite body includes reasoning effort, summary, or extension members and its context is absent, null, blank, differently cased, another string, or a non-string value
+- **THEN** the final upstream body contains the exact string `reasoning.context = "all_turns"`
+- **AND** every unrelated reasoning member retains its client-supplied value
+
+#### Scenario: Compact Lite request uses the same invariant
+
+- **WHEN** a compact request is advertised upstream as Responses Lite
+- **THEN** its final upstream POST body contains `reasoning.context = "all_turns"`
+- **AND** it carries the canonical Responses Lite HTTP header
+
+#### Scenario: Websocket and HTTP fallback agree on Lite reasoning
+
+- **WHEN** a body-derived Lite request is prepared for upstream websocket transport
+- **THEN** its `response.create` body contains both the canonical Lite client-metadata marker and `reasoning.context = "all_turns"`
+- **BUT WHEN** the websocket handshake falls back to upstream HTTP
+- **THEN** the HTTP body retains `reasoning.context = "all_turns"`, the marker is absent, and the canonical Lite HTTP header is present
+
+#### Scenario: HTTP bridge transformations preserve the invariant
+
+- **GIVEN** an HTTP bridge request established Lite mode from an `additional_tools` prefix
+- **WHEN** bridge trimming or retry builds a final `response.create` body whose input delta no longer contains that prefix
+- **THEN** the body retains the internally derived canonical Lite marker
+- **AND** it contains `reasoning.context = "all_turns"`
+
+#### Scenario: Trusted marker-only continuation is normalized
+
+- **GIVEN** a same-model websocket continuation has trusted Lite continuity to its referenced previous response
+- **WHEN** its incremental body carries the canonical marker but omits the original `additional_tools` prefix
+- **THEN** the final upstream body contains `reasoning.context = "all_turns"`
+- **AND** the canonical marker remains present
+
+#### Scenario: Untrusted and non-Lite requests are not normalized
+
+- **WHEN** a non-Lite request supplies arbitrary reasoning context, an inbound Lite header, or a stale or otherwise untrusted websocket marker
+- **THEN** the existing signal rules omit or strip the untrusted Lite signal
+- **AND** this normalization does not alter the request's client-supplied reasoning shape
+
+### Requirement: Responses HTTP ingress uses the expanded bounded budget
+
+HTTP requests to `/v1/responses` and `/backend-api/codex/responses`, including trailing-slash variants, MUST use the larger of `max_decompressed_body_bytes` and `max_decompressed_responses_body_bytes` as both the raw-body and decompressed-body ingress budget. The Responses-specific default MUST remain 128 MiB.
+
+The trailing-slash variants MUST be hidden aliases of the canonical HTTP handlers rather than redirects, so streamed bodies receive the same admission, authorization, and route behavior.
+
+If either representation exceeds that budget, the service MUST stop before route logic or upstream forwarding and return HTTP 413 with an OpenAI-compatible error envelope carrying `error.code = payload_too_large` and `error.type = invalid_request_error`.
+
+This transport-ingress 413 applies before parsing and is distinct from the existing application-level oversized-`response.create` guard. A request that fits the 128 MiB transport budget but still exceeds the upstream websocket budget after historical slimming MUST retain the existing HTTP 400 `payload_too_large` behavior and `param = input`.
+
+#### Scenario: Larger Responses request fits both ingress checks
+
+- **WHEN** a Responses HTTP request is larger than the general budget but no larger than the Responses budget in either raw or decompressed form
+- **THEN** the ingress guards allow the request to continue to Responses route handling
+
+#### Scenario: Trailing-slash Responses request is admitted without redirect
+
+- **WHEN** a client sends a chunked HTTP request to `/v1/responses/` or `/backend-api/codex/responses/`
+- **THEN** the service applies the same ingress budget and handler as the corresponding canonical path
+- **AND** it does not return a trailing-slash redirect before consuming the guarded body
+
+#### Scenario: Responses raw body exceeds its budget
+
+- **WHEN** a Responses HTTP request's raw body exceeds the Responses budget
+- **THEN** the service returns HTTP 413 with `error.code = payload_too_large` and `error.type = invalid_request_error`
+- **AND** the service does not invoke Responses route logic or forward the request upstream
+
+#### Scenario: Responses expanded body exceeds its budget
+
+- **WHEN** an encoded Responses HTTP request fits the raw budget but expands beyond the Responses budget
+- **THEN** the service returns HTTP 413 with `error.code = payload_too_large` and `error.type = invalid_request_error`
+- **AND** the service does not invoke Responses route logic or forward the request upstream
+
+#### Scenario: Post-slimming application rejection remains 400
+
+- **WHEN** a Responses HTTP request fits the raw and decompressed transport-ingress budget
+- **AND** its serialized `response.create` still exceeds the upstream websocket budget after historical slimming
+- **THEN** the existing application-level guard returns HTTP 400 with `error.code = payload_too_large`, `error.type = invalid_request_error`, and `error.param = input`
