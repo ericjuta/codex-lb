@@ -824,11 +824,15 @@ def wait_for_head(
             )
         time.sleep(min(interval_seconds, timeout_seconds - elapsed))
 
-
+def _non_empty_database_url(value: str) -> str:
+    if value == "":
+        raise argparse.ArgumentTypeError("database URL must not be empty")
+    return value
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Database migration utility for codex-lb.")
     parser.add_argument(
         "--db-url",
+        type=_non_empty_database_url,
         default=None,
         help="Database URL to migrate. Defaults to CODEX_LB_DATABASE_URL from settings.",
     )
@@ -895,7 +899,6 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-
     if args.command == "check-policy":
         policy_violations = check_migration_policy(args.db_url or _POLICY_CHECK_DATABASE_URL)
         if policy_violations:
