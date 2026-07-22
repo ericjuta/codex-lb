@@ -145,6 +145,7 @@ from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
 from app.modules.proxy.images_observability import record_images_route_observability
 from app.modules.proxy.request_policy import (
     apply_api_key_enforcement,
+    apply_enforced_service_tier_model_fallback,
     enforce_context_window,
     enforce_strict_function_tools_format,
     enforce_strict_text_format,
@@ -2764,7 +2765,11 @@ async def v1_chat_completions(
     except ValidationError as exc:
         error = openai_validation_error(exc)
         return _logged_error_json_response(request, 400, error, headers=rate_limit_headers)
-    apply_api_key_enforcement(responses_payload, api_key)
+    service_tier_was_enforced = apply_api_key_enforcement(responses_payload, api_key)
+    apply_enforced_service_tier_model_fallback(
+        responses_payload,
+        service_tier_was_enforced=service_tier_was_enforced,
+    )
     admission_denial = await _opportunistic_admission_denial(request, context, api_key, model=responses_payload.model)
     if admission_denial is not None:
         return admission_denial
@@ -2889,7 +2894,17 @@ async def _stream_responses(
     enforce_openai_sdk_contract: bool = True,
     native_codex_heartbeat: bool = False,
 ) -> Response:
-    apply_api_key_enforcement(payload, api_key)
+    # Owner-forwarded payloads already passed enforcement and tier fallback
+    # on the origin instance; retain the signed effective tier.
+    forwarded_effective_service_tier = payload.service_tier if forwarded_request else None
+    service_tier_was_enforced = apply_api_key_enforcement(payload, api_key)
+    if forwarded_request:
+        payload.service_tier = forwarded_effective_service_tier
+    else:
+        apply_enforced_service_tier_model_fallback(
+            payload,
+            service_tier_was_enforced=service_tier_was_enforced,
+        )
     validate_model_access(api_key, payload.model)
     enforce_context_window(payload)
     compact_payload: ResponsesCompactRequest | None = None
@@ -3125,7 +3140,11 @@ async def _collect_responses(
     suppress_text_done_events: bool = False,
     prefer_http_bridge: bool = False,
 ) -> Response:
-    apply_api_key_enforcement(payload, api_key)
+    service_tier_was_enforced = apply_api_key_enforcement(payload, api_key)
+    apply_enforced_service_tier_model_fallback(
+        payload,
+        service_tier_was_enforced=service_tier_was_enforced,
+    )
     validate_model_access(api_key, payload.model)
     enforce_context_window(payload)
     admission_denial = await _opportunistic_admission_denial(request, context, api_key, model=payload.model)
@@ -3268,7 +3287,11 @@ async def _compact_responses(
     codex_session_affinity: bool = False,
     openai_cache_affinity: bool = False,
 ) -> JSONResponse:
-    apply_api_key_enforcement(payload, api_key)
+    service_tier_was_enforced = apply_api_key_enforcement(payload, api_key)
+    apply_enforced_service_tier_model_fallback(
+        payload,
+        service_tier_was_enforced=service_tier_was_enforced,
+    )
     validate_model_access(api_key, payload.model)
     try:
         request_usage_budget = estimate_api_key_request_usage(payload)
