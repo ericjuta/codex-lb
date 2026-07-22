@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+from importlib import import_module
 import asyncio
 import logging
-from importlib import import_module
 
 import pytest
 
 from app.core.shutdown import wait_for_tasks_to_drain
 from app.main import InFlightMiddleware, _drain_detached_control_plane_tasks
+from collections.abc import Iterator
 
 app_main = import_module("app.main")
 shutdown_state = import_module("app.core.shutdown")
@@ -15,7 +16,7 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def reset_shutdown_state():  # noqa: ANN201
+def reset_shutdown_state() -> Iterator[None]:
     shutdown_state.reset()
     yield
     shutdown_state.reset()
