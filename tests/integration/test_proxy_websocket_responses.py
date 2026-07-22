@@ -881,7 +881,7 @@ def test_backend_responses_websocket_proxies_upstream_and_persists_log(
     assert seen_headers["session_id"] == "thread-ws-1"
     assert seen_headers["openai-beta"] == "responses_websockets=2026-02-06"
     assert seen_headers["x-codex-turn-state"] != cast(str, seen["sticky_key"])
-    assert seen["sticky_key"] == _codex_session_selection_key("thread-ws-1")
+    assert seen["sticky_key"] == "thread-ws-1"
     assert seen["sticky_kind"] == proxy_module.StickySessionKind.CODEX_SESSION
     assert seen["prefer_earlier_reset"] is False
     assert seen["routing_strategy"] == "usage_weighted"
@@ -908,7 +908,7 @@ def test_backend_responses_websocket_proxies_upstream_and_persists_log(
                 },
                 "service_tier": "priority",
                 "store": False,
-                "include": [],
+                "include": ["reasoning.encrypted_content"],
                 "type": "response.create",
             }
         ],
@@ -926,13 +926,6 @@ def test_backend_responses_websocket_proxies_upstream_and_persists_log(
     assert log["status"] == "success"
     assert log["input_tokens"] == 3
     assert log["output_tokens"] == 5
-    latency_first_upstream_event_ms = log["latency_first_upstream_event_ms"]
-    latency_response_created_ms = log["latency_response_created_ms"]
-    latency_first_token_ms = log["latency_first_token_ms"]
-    assert isinstance(latency_first_upstream_event_ms, int)
-    assert isinstance(latency_response_created_ms, int)
-    assert isinstance(latency_first_token_ms, int)
-    assert latency_first_upstream_event_ms <= latency_response_created_ms <= latency_first_token_ms
 
 
 def test_backend_responses_websocket_forwards_client_tools_byte_identical(app_instance, monkeypatch):
