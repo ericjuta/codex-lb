@@ -1,21 +1,24 @@
 from __future__ import annotations
 
-import asyncio
 from importlib import import_module
+import asyncio
 
 import pytest
 
+from app.core.shutdown import wait_for_tasks_to_drain
 from app.main import InFlightMiddleware
+from app.main import InFlightMiddleware, _drain_detached_control_plane_tasks, _release_leader_lease_within
+import logging
 
 shutdown_state = import_module("app.core.shutdown")
-
 pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def reset_shutdown_state() -> None:
-    setattr(shutdown_state, "_draining", False)
-    setattr(shutdown_state, "_in_flight", 0)
+def reset_shutdown_state():  # noqa: ANN201
+    shutdown_state.reset()
+    yield
+    shutdown_state.reset()
 
 
 def test_set_draining_updates_shutdown_state() -> None:
@@ -23,7 +26,12 @@ def test_set_draining_updates_shutdown_state() -> None:
 
     assert shutdown_state._draining is True
 
+def test_reset_reopens_control_plane_task_admission() -> None:
+    shutdown_state.close_control_plane_task_admission()
 
+    shutdown_state.reset()
+
+    assert shutdown_state.is_control_plane_task_admission_open() is True
 @pytest.mark.asyncio
 async def test_wait_for_in_flight_drain_waits_until_zero() -> None:
     shutdown_state.increment_in_flight()
@@ -292,3 +300,138 @@ async def test_in_flight_middleware_allows_drain_stop_during_drain() -> None:
 
     assert app_called is True
     assert sent_messages[0]["status"] == 200
+
+@pytest.mark.asyncio
+async def test_wait_for_tasks_to_drain_rechecks_tasks_added_by_done_callback() -> None:
+    tasks: set[asyncio.Task[None]] = set()
+    followup_started = asyncio.Event()
+    allow_followup_finish = asyncio.Event()
+
+    async def finish_immediately() -> None:
+        return None
+
+    async def followup() -> None:
+        followup_started.set()
+        await allow_followup_finish.wait()
+
+    first = asyncio.create_task(finish_immediately())
+    tasks.add(first)
+
+    def spawn_followup(_: asyncio.Task[None]) -> None:
+        task = asyncio.create_task(followup())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    first.add_done_callback(spawn_followup)
+    first.add_done_callback(tasks.discard)
+
+    drain = asyncio.create_task(wait_for_tasks_to_drain(tasks, timeout_seconds=1))
+    await asyncio.wait_for(followup_started.wait(), timeout=1)
+    await asyncio.sleep(0)
+    assert not drain.done()
+
+    allow_followup_finish.set()
+    assert await drain == set()
+    assert tasks == set()
+
+@pytest.mark.asyncio
+async def test_wait_for_tasks_to_drain_returns_pending_at_deadline() -> None:
+    gate = asyncio.Event()
+    task = asyncio.create_task(gate.wait(), name="deadline-test-task")
+
+    pending = await wait_for_tasks_to_drain({task}, timeout_seconds=0)
+
+    assert pending == {task}
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+@pytest.mark.asyncio
+async def test_wait_for_tasks_to_drain_resnapshots_registry_at_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial_gate = asyncio.Event()
+    late_gate = asyncio.Event()
+
+    async def wait_for_gate(gate: asyncio.Event) -> None:
+        await gate.wait()
+
+    initial_task = asyncio.create_task(wait_for_gate(initial_gate), name="initial-task")
+    tasks = {initial_task}
+    late_task: asyncio.Task[None] | None = None
+
+    async def add_late_task_then_timeout(
+        pending: set[asyncio.Task[None]],
+        *,
+        timeout: float,
+    ) -> tuple[set[asyncio.Task[None]], set[asyncio.Task[None]]]:
+        nonlocal late_task
+        assert timeout > 0
+        late_task = asyncio.create_task(wait_for_gate(late_gate), name="late-task")
+        tasks.add(late_task)
+        return set(), pending
+
+    monkeypatch.setattr(shutdown_state.asyncio, "wait", add_late_task_then_timeout)
+
+    overdue = await wait_for_tasks_to_drain(tasks, timeout_seconds=1)
+
+    assert late_task is not None
+    assert overdue == {initial_task, late_task}
+
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+@pytest.mark.asyncio
+async def test_control_plane_drains_are_failure_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fleet_drained = asyncio.Event()
+
+    async def fail_audit_drain(_: float) -> bool:
+        raise RuntimeError("audit drain failed")
+
+    async def drain_fleet(_: float) -> bool:
+        fleet_drained.set()
+        return True
+
+    monkeypatch.setattr(app_main, "drain_audit_log_tasks", fail_audit_drain)
+    monkeypatch.setattr(app_main.fleet_api, "drain_background_refresh_tasks", drain_fleet)
+
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        await _drain_detached_control_plane_tasks(1)
+
+    assert fleet_drained.is_set()
+    assert "Failed to drain audit log tasks during shutdown" in caplog.text
+
+@pytest.mark.asyncio
+async def test_control_plane_drain_requires_stable_clean_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    audit_calls = 0
+    fleet_calls = 0
+    late_fleet_seen = False
+
+    async def drain_audit(_: float) -> bool:
+        nonlocal audit_calls
+        audit_calls += 1
+        return True
+
+    async def drain_fleet(_: float) -> bool:
+        nonlocal fleet_calls, late_fleet_seen
+        fleet_calls += 1
+        if fleet_calls == 1:
+            await asyncio.sleep(0)
+            return True
+        late_fleet_seen = True
+        return True
+
+    monkeypatch.setattr(app_main, "drain_audit_log_tasks", drain_audit)
+    monkeypatch.setattr(app_main.fleet_api, "drain_background_refresh_tasks", drain_fleet)
+
+    await _drain_detached_control_plane_tasks(1)
+
+    assert audit_calls == 2
+    assert fleet_calls == 2
+    assert late_fleet_seen is True

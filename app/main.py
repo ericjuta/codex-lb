@@ -102,6 +102,13 @@ from app.modules.proxy.cap_partitioning import refresh_cap_partition
 logger = logging.getLogger(__name__)
 
 
+from app.core.audit.service import drain_audit_log_tasks
+from app.core.shutdown import close_control_plane_task_admission
+
+logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
+
+
 class _MetricsServer(Protocol):
     should_exit: bool
 
@@ -326,6 +333,10 @@ async def lifespan(app: FastAPI):
         shutdown_state.set_bridge_drain_active(True)
         shutdown_state.set_draining(True)
         drained = await shutdown_state.wait_for_in_flight_drain(timeout_seconds=settings.shutdown_drain_timeout_seconds)
+        # No await separates the timeout result from this cutoff. A slow
+        # request therefore either registered its task before the barrier or
+        # is prevented from starting new audit/fleet database work afterward.
+        shutdown_state.close_control_plane_task_admission()
         if not drained:
             logger.warning("Drain timeout reached, proceeding with shutdown")
 
@@ -369,6 +380,10 @@ async def lifespan(app: FastAPI):
         if metrics_server is not None:
             metrics_server.should_exit = True
 
+        # Detached control-plane work must finish while usage singleflight,
+        # shared HTTP clients, and both database engines are still available.
+        await _drain_detached_control_plane_tasks(settings.shutdown_drain_timeout_seconds)
+
         await cache_poller.stop()
         await quota_planner_scheduler.stop()
         await auth_guardian_scheduler.stop()
@@ -393,7 +408,6 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.exception("Metrics server stopped with an error")
             finally:
-                shutdown_state.reset()
                 mark_process_dead()
                 await close_db()
 
@@ -649,3 +663,42 @@ async def _validate_bridge_advertise_endpoint_for_multi_replica(
 
 
 app = create_app()
+
+async def _drain_detached_control_plane_tasks(timeout_seconds: float) -> None:
+    # Closing admission is synchronous with producer checks on the event loop,
+    # so no task can appear after the stable drain passes complete.
+    close_control_plane_task_admission()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    clean_passes = 0
+
+    while clean_passes < 2:
+        remaining = max(0.0, deadline - loop.time())
+        results = await asyncio.gather(
+            drain_audit_log_tasks(remaining),
+            fleet_api.drain_background_refresh_tasks(remaining),
+            return_exceptions=True,
+        )
+
+        clean_pass = True
+        for task_kind, result in zip(("audit log", "fleet refresh"), results, strict=True):
+            if isinstance(result, BaseException):
+                clean_pass = False
+                logger.warning(
+                    "Failed to drain %s tasks during shutdown",
+                    task_kind,
+                    exc_info=(type(result), result, result.__traceback__),
+                )
+            elif result is False:
+                clean_pass = False
+
+        if not clean_pass:
+            return
+
+        clean_passes += 1
+
+        # A done callback may enqueue sibling audit/fleet work after both
+        # registries looked empty. One extra stable pass catches that before
+        # HTTP clients and DB engines are torn down.
+        if clean_passes < 2:
+            await asyncio.sleep(0)
