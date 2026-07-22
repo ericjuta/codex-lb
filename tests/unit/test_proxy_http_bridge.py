@@ -21,7 +21,7 @@ from websockets.frames import Close
 
 from app.core.auth.refresh import RefreshError
 from app.core.balancer.types import ClassifiedFailure
-from app.core.clients.proxy import ProxyResponseError
+from app.core.clients.proxy import CODEX_RESPONSES_LITE_WEBSOCKET_METADATA_KEY, ProxyResponseError
 from app.core.clients.proxy_websocket import (
     CodexResponsesWebSocket,
     UpstreamResponsesWebSocket,
@@ -44,7 +44,6 @@ pytestmark = pytest.mark.unit
 
 
 from app.modules.proxy._service import support as proxy_support_module
-from app.modules.proxy.load_balancer import CatalogOmissionQuotaAdmission
 
 pytestmark = pytest.mark.unit
 

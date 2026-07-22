@@ -539,6 +539,8 @@ class _WebSocketRequestState:
     error_message_override: str | None = None
     error_type_override: str | None = None
     error_param_override: str | None = None
+    failure_phase_override: str | None = None
+    failure_detail_override: str | None = None
     error_http_status_override: int | None = None
     response_event_count: int = 0
     previous_response_not_found_rewritten: bool = False
@@ -845,6 +847,8 @@ def _clear_websocket_request_error_overrides(request_state: _WebSocketRequestSta
     request_state.error_message_override = None
     request_state.error_type_override = None
     request_state.error_param_override = None
+    request_state.failure_phase_override = None
+    request_state.failure_detail_override = None
     request_state.error_http_status_override = None
 
 
