@@ -221,6 +221,7 @@ async def test_backend_responses_preserves_responses_lite_tools_and_outputs(asyn
             custom_tool_output,
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "inspect"}]},
         ],
+        "reasoning": {"effort": "ultra"},
         "stream": True,
     }
     async with async_client.stream(
@@ -245,8 +246,49 @@ async def test_backend_responses_preserves_responses_lite_tools_and_outputs(asyn
         custom_tool_output,
         {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "inspect"}]},
     ]
+    # Catalog-advertised ``ultra`` must be aliased to ``max`` on the wire,
+    # exactly like the reference Codex client (codex-rs core/src/client.rs
+    # ``reasoning_effort_for_request`` at rust-v0.144.1).
+    reasoning = cast("dict[str, JsonValue]", seen_payload["reasoning"])
+    assert reasoning["effort"] == "max"
+    # This monkeypatch observes the validated request model before core egress;
+    # Lite context is a wire-only finalization and must not leak back into it.
+    assert "context" not in reasoning
+    # The forwarded payload must keep signaling Responses Lite: the upstream
+    # HTTP client derives the internal Lite header from the additional_tools
+    # input prefix that survived the round trip.
+    upstream_headers: dict[str, str] = {}
+    proxy_client_module._apply_responses_lite_http_header(
+        upstream_headers,
+        cast("Mapping[str, JsonValue]", seen_payload),
+    )
+    assert upstream_headers == {proxy_client_module.CODEX_RESPONSES_LITE_HEADER: "true"}
 
+@pytest.mark.asyncio
+async def test_backend_responses_rejects_non_object_reasoning(async_client):
+    response = await async_client.post(
+        "/backend-api/codex/responses",
+        json={
+            "model": "gpt-5.6-sol",
+            "instructions": "",
+            "input": [
+                {
+                    "type": "additional_tools",
+                    "role": "developer",
+                    "tools": [{"type": "custom", "name": "shell"}],
+                },
+                {"role": "user", "content": "inspect"},
+            ],
+            "reasoning": ["invalid"],
+            "stream": True,
+        },
+    )
 
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == "invalid_request_error"
+    assert error["type"] == "invalid_request_error"
+    assert error["param"] == "reasoning"
 @pytest.mark.asyncio
 async def test_backend_responses_forwards_explicit_empty_tools(async_client, monkeypatch):
     # An explicit client-sent ``"tools": []`` is a real request field and must

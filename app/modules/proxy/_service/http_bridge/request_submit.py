@@ -12,7 +12,7 @@ import anyio
 from app.core import shutdown as shutdown_state
 from app.core.clients.files import create_file as core_create_file  # noqa: F401
 from app.core.clients.files import finalize_file as core_finalize_file  # noqa: F401
-from app.core.clients.proxy import CodexControlResponse as CodexControlResponse
+from app.core.clients.proxy import CodexControlResponse as CodexControlResponse, _payload_uses_responses_lite, _finalize_responses_lite_reasoning_context, _payload_has_responses_lite_websocket_marker
 from app.core.clients.proxy import (  # noqa: F401  # noqa: F401
     ImageFetchSession,
     ProxyResponseError,
@@ -29,10 +29,13 @@ from app.core.clients.proxy import (  # noqa: F401  # noqa: F401
     push_compact_timeout_overrides,
     push_stream_timeout_overrides,
     push_transcribe_timeout_overrides,
+    _finalize_responses_lite_reasoning_context,
+    _payload_has_responses_lite_websocket_marker,
+    _payload_uses_responses_lite,
 )
-from app.core.clients.proxy import codex_control_request as core_codex_control_request  # noqa: F401
-from app.core.clients.proxy import compact_responses as core_compact_responses  # noqa: F401
-from app.core.clients.proxy import transcribe_audio as core_transcribe_audio  # noqa: F401
+from app.core.clients.proxy import codex_control_request as core_codex_control_request  # noqa: F401, _payload_uses_responses_lite, _payload_has_responses_lite_websocket_marker, _finalize_responses_lite_reasoning_context
+from app.core.clients.proxy import compact_responses as core_compact_responses  # noqa: F401, _payload_has_responses_lite_websocket_marker, _finalize_responses_lite_reasoning_context, _payload_uses_responses_lite
+from app.core.clients.proxy import transcribe_audio as core_transcribe_audio  # noqa: F401, _payload_has_responses_lite_websocket_marker, _payload_uses_responses_lite, _finalize_responses_lite_reasoning_context
 from app.core.clients.proxy_websocket import UpstreamWebSocketTransportError
 from app.core.errors import (
     openai_error,
@@ -116,8 +119,8 @@ from app.modules.proxy._service.observability import (
     _truncate_identifier as _truncate_identifier,
 )
 from app.modules.proxy._service.support import (
-    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
-    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
+    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401,
+    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401,
     _clear_websocket_request_error_overrides,
     _copy_websocket_route_metadata_from_session,
     _event_type_from_payload,
@@ -189,6 +192,29 @@ _SECURITY_WORK_NO_AUTHORIZED_ACCOUNTS_MESSAGE = (
     "security work. codex-lb is continuing with normal account selection; the upstream request may still fail until "
     "an account with Trusted Access for Cyber is marked as security-work-authorized."
 )
+_HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS = 5.0
+_HTTP_BRIDGE_BACKGROUND_CLEANUP_WARN_THRESHOLD = 100
+
+
+from app.modules.proxy.load_balancer import effective_account_concurrency_caps
+
+    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
+    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
+logger = logging.getLogger("app.modules.proxy.service")
+T = TypeVar("T")
+_TEXT_DELTA_EVENT_TYPES = frozenset({"response.output_text.delta", "response.refusal.delta"})
+_REQUEST_TRANSPORT_HTTP = "http"
+_UPSTREAM_CLOSE_CODES_SKIP_SAME_ACCOUNT_RETRY = frozenset({1011})
+_WEBSOCKET_AUTH_INVALIDATED_FAILURE_CODE = "account_auth_invalidated"
+_SECURITY_WORK_AUTHORIZATION_REQUIRED_CODE = "security_work_authorization_required"
+_NO_SECURITY_WORK_AUTHORIZED_ACCOUNTS_CODE = "no_security_work_authorized_accounts"
+_SECURITY_WORK_RETRY_MESSAGE = (
+    "Upstream flagged this request as possible cybersecurity work. "
+    "codex-lb is retrying on an account marked as authorized for security work."
+_SECURITY_WORK_NO_AUTHORIZED_ACCOUNTS_MESSAGE = (
+    "Upstream flagged this request as possible cybersecurity work, but no account is marked as authorized for "
+    "security work. codex-lb is continuing with normal account selection; the upstream request may still fail until "
+    "an account with Trusted Access for Cyber is marked as security-work-authorized."
 _HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS = 5.0
 _HTTP_BRIDGE_BACKGROUND_CLEANUP_WARN_THRESHOLD = 100
 
@@ -316,6 +342,13 @@ class _HTTPBridgeRequestSubmitMixin:
             upstream_payload["type"] = "response.create"
         if client_metadata:
             upstream_payload["client_metadata"] = client_metadata
+        _finalize_responses_lite_reasoning_context(
+            upstream_payload,
+            responses_lite=(
+                _payload_uses_responses_lite(upstream_payload)
+                or _payload_has_responses_lite_websocket_marker(upstream_payload)
+            ),
+        )
         forwarded_service_tier = _normalize_service_tier_value(upstream_payload.get("service_tier"))
         input_item_count = 0
         input_full_fingerprint: str | None = None
