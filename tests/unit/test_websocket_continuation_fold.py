@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -168,7 +168,13 @@ def test_ws_fold_chained_turn_with_buffered_tool_call_stops_and_delivers(decisio
     assert terminal["response"]["metadata"]["proxy_stopped_reason"] == "buffered_tool_calls"
     assert decision_counter.samples == [
         {
-            "labels": {"transport": "websocket", "decision": "buffered_tool_calls", "tier": "1"},
+            "labels": {
+                "transport": "websocket",
+                "decision": "buffered_tool_calls",
+                "tier": "1",
+                "client": "unknown",
+                "effort": "unknown",
+            },
             "value": 1.0,
         }
     ]
@@ -264,7 +270,13 @@ def test_ws_fold_anchorless_turn_with_buffered_tool_call_stops_and_delivers(
     assert terminal["response"]["metadata"]["proxy_stopped_reason"] == "buffered_tool_calls"
     assert decision_counter.samples == [
         {
-            "labels": {"transport": "websocket", "decision": "buffered_tool_calls", "tier": "1"},
+            "labels": {
+                "transport": "websocket",
+                "decision": "buffered_tool_calls",
+                "tier": "1",
+                "client": "unknown",
+                "effort": "unknown",
+            },
             "value": 1.0,
         }
     ]
@@ -315,7 +327,13 @@ def test_ws_fold_continues_truncated_round_then_reconstructs_final(decision_coun
     assert not any("partial answer" in str(event.get("delta", "")) for event in down1)
     assert decision_counter.samples == [
         {
-            "labels": {"transport": "websocket", "decision": "continue", "tier": "1"},
+            "labels": {
+                "transport": "websocket",
+                "decision": "continue",
+                "tier": "1",
+                "client": "unknown",
+                "effort": "unknown",
+            },
             "value": 1.0,
         }
     ]
@@ -356,7 +374,13 @@ def test_ws_fold_continues_truncated_round_then_reconstructs_final(decision_coun
     # The non-truncated hidden round's terminal emits no decision sample.
     assert decision_counter.samples == [
         {
-            "labels": {"transport": "websocket", "decision": "continue", "tier": "1"},
+            "labels": {
+                "transport": "websocket",
+                "decision": "continue",
+                "tier": "1",
+                "client": "unknown",
+                "effort": "unknown",
+            },
             "value": 1.0,
         }
     ]
@@ -404,3 +428,94 @@ def test_ws_fold_passes_through_non_truncated_round(decision_counter: _ObservedC
     assert [e["type"] for e in downstream].count("response.completed") == 1
     assert terminal["response"]["metadata"]["proxy_billed_usage"]["output_tokens"] == 200
     assert decision_counter.samples == []
+
+
+@pytest.fixture
+def reasoning_tokens_counter(monkeypatch: pytest.MonkeyPatch) -> _ObservedCounter:
+    counter = _ObservedCounter()
+    monkeypatch.setattr(codex_continuation_module, "PROMETHEUS_AVAILABLE", True)
+    monkeypatch.setattr(
+        codex_continuation_module,
+        "codex_continuation_reasoning_tokens_total",
+        counter,
+        raising=False,
+    )
+    return counter
+
+
+def test_ws_fold_labels_decision_with_client_and_effort(
+    decision_counter: _ObservedCounter,
+    reasoning_tokens_counter: _ObservedCounter,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fold = _WebSocketContinuationFold(
+        CodexContinuationConfig(max_continue=1, rechunk_size=64),
+        {
+            "model": "gpt-5.5",
+            "instructions": "solve",
+            "input": [{"role": "user", "content": "question"}],
+            "previous_response_id": "resp_previous",
+            "stream": True,
+            "reasoning": {"effort": "high"},
+        },
+        client_label="nanocodex",
+    )
+
+    round_one = [
+        {"type": "response.created", "response": {"id": "resp_lbl", "status": "in_progress", "output": []}},
+        *_reasoning_events(output_index=0, item_id="rs_lbl", encrypted_content="enc_lbl"),
+        _completed("resp_lbl", input_tokens=100, output_tokens=600, reasoning_tokens=516),
+    ]
+    with caplog.at_level("INFO", logger="app.modules.proxy._service.websocket.continuation"):
+        _down, continuation, _terminal = _drive(fold, round_one)
+
+    assert continuation is not None
+    assert decision_counter.samples == [
+        {
+            "labels": {
+                "transport": "websocket",
+                "decision": "continue",
+                "tier": "1",
+                "client": "nanocodex",
+                "effort": "high",
+            },
+            "value": 1.0,
+        }
+    ]
+    assert reasoning_tokens_counter.samples == [
+        {
+            "labels": {"transport": "websocket", "outcome": "recovered", "client": "nanocodex", "effort": "high"},
+            "value": 516.0,
+        }
+    ]
+    log_line = next(record.getMessage() for record in caplog.records if "codex_continuation_ws" in record.getMessage())
+    assert "client=nanocodex" in log_line
+    assert "effort=high" in log_line
+
+
+def test_ws_fold_defaults_labels_to_unknown(
+    decision_counter: _ObservedCounter,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fold = _WebSocketContinuationFold(
+        CodexContinuationConfig(min_n=2, rechunk_size=64),
+        {
+            "model": "gpt-5.5",
+            "input": [{"role": "user", "content": "question"}],
+            "stream": True,
+        },
+    )
+    round_one = [
+        {"type": "response.created", "response": {"id": "resp_unk", "status": "in_progress", "output": []}},
+        *_reasoning_events(output_index=0, item_id="rs_unk", encrypted_content="enc_unk"),
+        _completed("resp_unk", input_tokens=100, output_tokens=600, reasoning_tokens=516),
+    ]
+    with caplog.at_level("INFO", logger="app.modules.proxy._service.websocket.continuation"):
+        _drive(fold, round_one)
+
+    labels = cast(dict[str, str], decision_counter.samples[0]["labels"])
+    assert labels["client"] == "unknown"
+    assert labels["effort"] == "unknown"
+    log_line = next(record.getMessage() for record in caplog.records if "codex_continuation_ws" in record.getMessage())
+    assert "client=unknown" in log_line
+    assert "effort=unknown" in log_line

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any, cast
@@ -16,7 +17,11 @@ from app.core.clients.codex_truncation import (
     should_continue,
     tier_n,
 )
-from app.core.metrics.prometheus import PROMETHEUS_AVAILABLE, codex_continuation_decision_total
+from app.core.metrics.prometheus import (
+    PROMETHEUS_AVAILABLE,
+    codex_continuation_decision_total,
+    codex_continuation_reasoning_tokens_total,
+)
 from app.core.types import JsonObject, JsonValue
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
 
@@ -33,9 +38,54 @@ _CLIENT_TOOL_CALL_ITEM_TYPES = frozenset({"function_call", "custom_tool_call", "
 # Cap the ``tier`` label to keep its cardinality bounded even when
 # ``codex_continuation_max_n=0`` leaves the truncation tier unbounded.
 _DECISION_TIER_LABEL_CAP = 10
+# Bounded label fallback for missing/unparseable client or effort identity.
+UNKNOWN_LABEL = "unknown"
+# Closed Responses reasoning-effort set accepted as an ``effort`` label value.
+_EFFORT_LABEL_VALUES = frozenset({"none", "low", "medium", "high", "xhigh", "max"})
+_CLIENT_LABEL_MAX_LENGTH = 32
+_CLIENT_LABEL_PATTERN = re.compile(r"[^a-z0-9_-]")
+# Fold decisions that stop for a cap/capability reason forfeit the terminal
+# round's reasoning tokens; natural terminals deliver them.
+_FORFEIT_DECISIONS = frozenset(
+    {
+        "max_continue",
+        "max_total_output_tokens",
+        "no_encrypted_content",
+        "missing_round_anchor",
+        "tier_out_of_window",
+    }
+)
 
 
-def _record_continuation_decision(*, transport: str, decision: str, tier: int | None) -> None:
+def continuation_client_label(useragent_group: str | None) -> str:
+    """Bound a request-log user-agent group into a safe metric label value."""
+    if not useragent_group:
+        return UNKNOWN_LABEL
+    sanitized = _CLIENT_LABEL_PATTERN.sub("", useragent_group.strip().lower())
+    if not sanitized:
+        return UNKNOWN_LABEL
+    return sanitized[:_CLIENT_LABEL_MAX_LENGTH]
+
+
+def continuation_effort_label(payload: JsonObject | dict[str, Any]) -> str:
+    """Extract the visible round's reasoning effort as a closed-set label."""
+    reasoning = payload.get("reasoning")
+    if not isinstance(reasoning, dict):
+        return UNKNOWN_LABEL
+    effort = reasoning.get("effort")
+    if isinstance(effort, str) and effort in _EFFORT_LABEL_VALUES:
+        return effort
+    return UNKNOWN_LABEL
+
+
+def _record_continuation_decision(
+    *,
+    transport: str,
+    decision: str,
+    tier: int | None,
+    client_label: str = UNKNOWN_LABEL,
+    effort_label: str = UNKNOWN_LABEL,
+) -> None:
     """Count one fold round-terminal decision at a truncation fingerprint."""
     if not PROMETHEUS_AVAILABLE or codex_continuation_decision_total is None:
         return
@@ -47,7 +97,38 @@ def _record_continuation_decision(*, transport: str, decision: str, tier: int | 
         transport=transport,
         decision=decision,
         tier=tier_label,
+        client=client_label,
+        effort=effort_label,
     ).inc()
+
+
+def _record_continuation_reasoning_tokens(
+    *,
+    transport: str,
+    decision: str,
+    should_continue_round: bool,
+    reasoning_token_count: int | None,
+    client_label: str,
+    effort_label: str,
+) -> None:
+    """Record the terminal round's reasoning tokens by fold outcome."""
+    if not PROMETHEUS_AVAILABLE or codex_continuation_reasoning_tokens_total is None:
+        return
+    if reasoning_token_count is None or reasoning_token_count <= 0:
+        return
+    if should_continue_round:
+        outcome = "recovered"
+    elif decision in _FORFEIT_DECISIONS:
+        outcome = "forfeited"
+    else:
+        outcome = "natural"
+    codex_continuation_reasoning_tokens_total.labels(
+        transport=transport,
+        outcome=outcome,
+        client=client_label,
+        effort=effort_label,
+    ).inc(reasoning_token_count)
+
 
 type OpenRound = Callable[[JsonObject], AsyncIterator[str]]
 
@@ -118,8 +199,10 @@ async def fold_responses_stream_with_codex_continuation(
     base_payload: JsonObject,
     open_round: OpenRound,
     config: CodexContinuationConfig,
+    client_label: str = UNKNOWN_LABEL,
 ) -> AsyncIterator[str]:
     base_body = dict(cast(dict[str, Any], base_payload))
+    effort_label = continuation_effort_label(base_body)
     original_input = _input_items(base_body.get("input"))
     next_payload = build_round_payload(
         base_body,
@@ -276,17 +359,30 @@ async def fold_responses_stream_with_codex_continuation(
                 )
             )
             logger.debug(
-                "codex_continuation_round request_round=%s reasoning_tokens=%s tier=%s decision=%s",
+                "codex_continuation_round request_round=%s reasoning_tokens=%s tier=%s decision=%s client=%s effort=%s",
                 round_number,
                 round_reasoning_tokens,
                 truncation_tier,
                 "continue" if should_continue_round else stopped_reason or "stop",
+                client_label,
+                effort_label,
             )
             if truncation_tier is not None:
+                decision_label = "continue" if should_continue_round else stopped_reason or "stop"
                 _record_continuation_decision(
                     transport="http",
-                    decision="continue" if should_continue_round else stopped_reason or "stop",
+                    decision=decision_label,
                     tier=truncation_tier,
+                    client_label=client_label,
+                    effort_label=effort_label,
+                )
+                _record_continuation_reasoning_tokens(
+                    transport="http",
+                    decision=decision_label,
+                    should_continue_round=should_continue_round,
+                    reasoning_token_count=round_reasoning_tokens,
+                    client_label=client_label,
+                    effort_label=effort_label,
                 )
 
             if should_continue_round:

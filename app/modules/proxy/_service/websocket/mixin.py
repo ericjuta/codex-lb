@@ -26,6 +26,7 @@ from app.core.balancer import (
 from app.core.balancer.types import ClassifiedFailure, UpstreamError
 from app.core.clients.codex_continuation import (
     codex_continuation_config_from_settings,
+    continuation_client_label,
     should_apply_codex_continuation,
 )
 from app.core.clients.files import create_file as core_create_file  # noqa: F401
@@ -1005,6 +1006,7 @@ class _WebSocketMixin:
                         request_state.continuation_fold = _WebSocketContinuationFold(
                             codex_continuation_config_from_settings(runtime_settings),
                             {key: value for key, value in payload.items() if key != "type"},
+                            client_label=continuation_client_label(useragent_group),
                         )
                     async with pending_lock:
                         pending_requests.append(request_state)
@@ -1500,6 +1502,7 @@ class _WebSocketMixin:
                         request_state.continuation_fold = _WebSocketContinuationFold(
                             codex_continuation_config_from_settings(runtime_settings),
                             fold_base_body,
+                            client_label=continuation_client_label(useragent_group),
                         )
                     elif request_state is not None:
                         request_state.continuation_fold = None

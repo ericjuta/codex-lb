@@ -229,9 +229,7 @@ async def test_fold_responses_stream_continues_truncated_round_and_reuses_payloa
     assert [event["sequence_number"] for event in events] == list(range(len(events)))
 
     deltas = "".join(
-        str(event.get("delta", ""))
-        for event in events
-        if event.get("type") == "response.output_text.delta"
+        str(event.get("delta", "")) for event in events if event.get("type") == "response.output_text.delta"
     )
     assert "final answer" in deltas
     assert "partial answer" not in deltas
@@ -261,7 +259,13 @@ async def test_fold_responses_stream_continues_truncated_round_and_reuses_payloa
     # (reasoning_tokens=10) and emits no decision sample.
     assert decision_counter.samples == [
         {
-            "labels": {"transport": "http", "decision": "continue", "tier": "1"},
+            "labels": {
+                "transport": "http",
+                "decision": "continue",
+                "tier": "1",
+                "client": "unknown",
+                "effort": "unknown",
+            },
             "value": 1.0,
         }
     ]
@@ -319,7 +323,13 @@ async def test_fold_responses_stream_stops_and_delivers_truncated_round_tool_cal
     assert [event["sequence_number"] for event in events] == list(range(len(events)))
     assert decision_counter.samples == [
         {
-            "labels": {"transport": "http", "decision": "buffered_tool_calls", "tier": "1"},
+            "labels": {
+                "transport": "http",
+                "decision": "buffered_tool_calls",
+                "tier": "1",
+                "client": "unknown",
+                "effort": "unknown",
+            },
             "value": 1.0,
         }
     ]
@@ -349,7 +359,13 @@ async def test_fold_responses_stream_counts_terminal_stop_decision(
     assert events[-1]["type"] == "response.completed"
     assert decision_counter.samples == [
         {
-            "labels": {"transport": "http", "decision": "tier_out_of_window", "tier": "1"},
+            "labels": {
+                "transport": "http",
+                "decision": "tier_out_of_window",
+                "tier": "1",
+                "client": "unknown",
+                "effort": "unknown",
+            },
             "value": 1.0,
         }
     ]
@@ -364,8 +380,8 @@ def test_record_continuation_decision_caps_tier_label(monkeypatch: pytest.Monkey
     _record_continuation_decision(transport="websocket", decision="max_continue", tier=11)
 
     assert [sample["labels"] for sample in counter.samples] == [
-        {"transport": "http", "decision": "continue", "tier": "3"},
-        {"transport": "websocket", "decision": "max_continue", "tier": "10+"},
+        {"transport": "http", "decision": "continue", "tier": "3", "client": "unknown", "effort": "unknown"},
+        {"transport": "websocket", "decision": "max_continue", "tier": "10+", "client": "unknown", "effort": "unknown"},
     ]
 
 
@@ -425,3 +441,159 @@ def test_should_apply_codex_continuation_respects_explicit_reasoning_opt_out() -
         },
         config,
     )
+
+
+def test_continuation_client_label_bounds_and_falls_back() -> None:
+    assert codex_continuation_module.continuation_client_label("nanocodex") == "nanocodex"
+    assert codex_continuation_module.continuation_client_label("Codex_CLI-RS") == "codex_cli-rs"
+    assert codex_continuation_module.continuation_client_label(None) == "unknown"
+    assert codex_continuation_module.continuation_client_label("") == "unknown"
+    assert codex_continuation_module.continuation_client_label("!!!$$$") == "unknown"
+    hostile = "a" * 100 + "$(rm -rf /)"
+    bounded = codex_continuation_module.continuation_client_label(hostile)
+    assert bounded == "a" * 32
+    assert len(bounded) <= 32
+
+
+def test_continuation_effort_label_closed_set() -> None:
+    extract = codex_continuation_module.continuation_effort_label
+    assert extract({"reasoning": {"effort": "high"}}) == "high"
+    assert extract({"reasoning": {"effort": "xhigh"}}) == "xhigh"
+    assert extract({"reasoning": {"effort": "turbo"}}) == "unknown"
+    assert extract({"reasoning": {}}) == "unknown"
+    assert extract({"reasoning": "high"}) == "unknown"
+    assert extract({}) == "unknown"
+
+
+@pytest.fixture
+def reasoning_tokens_counter(monkeypatch: pytest.MonkeyPatch) -> _ObservedCounter:
+    counter = _ObservedCounter()
+    monkeypatch.setattr(codex_continuation_module, "PROMETHEUS_AVAILABLE", True)
+    monkeypatch.setattr(
+        codex_continuation_module,
+        "codex_continuation_reasoning_tokens_total",
+        counter,
+        raising=False,
+    )
+    return counter
+
+
+def test_reasoning_token_outcomes_classify_recovered_forfeited_natural(
+    reasoning_tokens_counter: _ObservedCounter,
+) -> None:
+    record = codex_continuation_module._record_continuation_reasoning_tokens
+    record(
+        transport="http",
+        decision="continue",
+        should_continue_round=True,
+        reasoning_token_count=1034,
+        client_label="nanocodex",
+        effort_label="high",
+    )
+    record(
+        transport="websocket",
+        decision="max_continue",
+        should_continue_round=False,
+        reasoning_token_count=516,
+        client_label="nanocodex",
+        effort_label="high",
+    )
+    record(
+        transport="websocket",
+        decision="buffered_tool_calls",
+        should_continue_round=False,
+        reasoning_token_count=516,
+        client_label="unknown",
+        effort_label="unknown",
+    )
+    # Zero-token terminals record nothing.
+    record(
+        transport="http",
+        decision="stop",
+        should_continue_round=False,
+        reasoning_token_count=0,
+        client_label="unknown",
+        effort_label="unknown",
+    )
+
+    assert reasoning_tokens_counter.samples == [
+        {
+            "labels": {"transport": "http", "outcome": "recovered", "client": "nanocodex", "effort": "high"},
+            "value": 1034.0,
+        },
+        {
+            "labels": {"transport": "websocket", "outcome": "forfeited", "client": "nanocodex", "effort": "high"},
+            "value": 516.0,
+        },
+        {
+            "labels": {"transport": "websocket", "outcome": "natural", "client": "unknown", "effort": "unknown"},
+            "value": 516.0,
+        },
+    ]
+
+
+def test_reasoning_token_recording_noops_without_prometheus(monkeypatch: pytest.MonkeyPatch) -> None:
+    counter = _ObservedCounter()
+    monkeypatch.setattr(codex_continuation_module, "PROMETHEUS_AVAILABLE", False)
+    monkeypatch.setattr(
+        codex_continuation_module,
+        "codex_continuation_reasoning_tokens_total",
+        counter,
+        raising=False,
+    )
+    codex_continuation_module._record_continuation_reasoning_tokens(
+        transport="http",
+        decision="continue",
+        should_continue_round=True,
+        reasoning_token_count=516,
+        client_label="nanocodex",
+        effort_label="high",
+    )
+    assert counter.samples == []
+
+
+@pytest.mark.asyncio
+async def test_fold_labels_decision_with_client_and_effort(
+    decision_counter: _ObservedCounter,
+    reasoning_tokens_counter: _ObservedCounter,
+) -> None:
+    async def open_round(payload: JsonObject) -> AsyncIterator[str]:
+        del payload
+        yield _event(_created("resp_lbl"))
+        for event in _reasoning_events(output_index=0, item_id="rs_lbl", encrypted_content="enc_lbl"):
+            yield _event(event)
+        yield _event(_completed("resp_lbl", input_tokens=50, output_tokens=550, reasoning_tokens=516))
+
+    events = await _collect_events(
+        fold_responses_stream_with_codex_continuation(
+            base_payload={
+                "model": "gpt-5.5",
+                "input": [],
+                "stream": True,
+                "reasoning": {"effort": "high"},
+            },
+            open_round=open_round,
+            config=CodexContinuationConfig(min_n=2, rechunk_size=64),
+            client_label="nanocodex",
+        )
+    )
+
+    assert events[-1]["type"] == "response.completed"
+    assert decision_counter.samples == [
+        {
+            "labels": {
+                "transport": "http",
+                "decision": "tier_out_of_window",
+                "tier": "1",
+                "client": "nanocodex",
+                "effort": "high",
+            },
+            "value": 1.0,
+        }
+    ]
+    assert reasoning_tokens_counter.samples == [
+        {
+            "labels": {"transport": "http", "outcome": "forfeited", "client": "nanocodex", "effort": "high"},
+            "value": 516.0,
+        }
+    ]

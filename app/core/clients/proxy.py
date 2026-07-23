@@ -46,6 +46,7 @@ from app.core.clients.codex import (
 )
 from app.core.clients.codex_continuation import (
     codex_continuation_config_from_settings,
+    continuation_client_label,
     fold_responses_stream_with_codex_continuation,
     should_apply_codex_continuation,
 )
@@ -2773,10 +2774,18 @@ async def _stream_responses_with_session(
             ):
                 yield event_block
 
+        fold_useragent = next(
+            (value for key, value in headers.items() if key.lower() == "user-agent"),
+            None,
+        )
+        fold_useragent_group = None
+        if fold_useragent and fold_useragent.strip():
+            fold_useragent_group = fold_useragent.strip().split(maxsplit=1)[0].split("/", 1)[0].strip() or None
         async for event_block in fold_responses_stream_with_codex_continuation(
             base_payload=payload_dict,
             open_round=_open_continuation_round,
             config=codex_continuation_config,
+            client_label=continuation_client_label(fold_useragent_group),
         ):
             yield event_block
         return

@@ -140,7 +140,23 @@ def test_prometheus_metrics_defined_when_dependency_available(monkeypatch: pytes
     assert prometheus_module.continuity_fail_closed_total.name == "codex_lb_continuity_fail_closed_total"
     assert prometheus_module.continuity_fail_closed_total.labelnames == ("surface", "reason")
     assert prometheus_module.codex_continuation_decision_total.name == "codex_lb_codex_continuation_decision_total"
-    assert prometheus_module.codex_continuation_decision_total.labelnames == ("transport", "decision", "tier")
+    assert prometheus_module.codex_continuation_decision_total.labelnames == (
+        "transport",
+        "decision",
+        "tier",
+        "client",
+        "effort",
+    )
+    assert (
+        prometheus_module.codex_continuation_reasoning_tokens_total.name
+        == "codex_lb_codex_continuation_reasoning_tokens_total"
+    )
+    assert prometheus_module.codex_continuation_reasoning_tokens_total.labelnames == (
+        "transport",
+        "outcome",
+        "client",
+        "effort",
+    )
     assert prometheus_module.failover_total.name == "codex_lb_failover_total"
     assert prometheus_module.failover_total.labelnames == ("transport", "failure_class", "action")
     assert prometheus_module.drain_transitions_total.name == "codex_lb_drain_transitions_total"

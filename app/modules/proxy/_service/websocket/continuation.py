@@ -12,6 +12,7 @@ It reuses the exact helpers behind the HTTP engine so the reconstructed stream
 (index/sequence rewriting, buffered final answer, summed usage, proxy metadata)
 is byte-compatible with the HTTP fold.
 """
+
 from __future__ import annotations
 
 import logging
@@ -19,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.core.clients.codex_continuation import (
+    UNKNOWN_LABEL,
     CodexContinuationConfig,
     _agent_usage,
     _BufferedOutput,
@@ -31,11 +33,13 @@ from app.core.clients.codex_continuation import (
     _item_payload,
     _reconstruct_terminal,
     _record_continuation_decision,
+    _record_continuation_reasoning_tokens,
     _response_payload,
     _response_usage,
     _Seq,
     _stopped_reason,
     _sum_usage,
+    continuation_effort_label,
 )
 from app.core.clients.codex_truncation import (
     build_round_payload,
@@ -71,9 +75,17 @@ class _FoldOutcome:
 class _WebSocketContinuationFold:
     """Per-request push-based continuation fold state machine."""
 
-    def __init__(self, config: CodexContinuationConfig, base_body: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        config: CodexContinuationConfig,
+        base_body: dict[str, Any],
+        *,
+        client_label: str = UNKNOWN_LABEL,
+    ) -> None:
         self._config = config
         self._base_body = base_body
+        self._client_label = client_label
+        self._effort_label = continuation_effort_label(base_body)
         self._original_input = _input_items(base_body.get("input"))
         self._seq = _Seq()
         self._downstream_output_index = 0
@@ -194,9 +206,7 @@ class _WebSocketContinuationFold:
         )
         base_anchor_value = self._base_body.get("previous_response_id")
         chained_anchor = (
-            base_anchor_value.strip()
-            if isinstance(base_anchor_value, str) and base_anchor_value.strip()
-            else None
+            base_anchor_value.strip() if isinstance(base_anchor_value, str) and base_anchor_value.strip() else None
         )
         round_anchor = None
         fold_stop_reason = None
@@ -213,9 +223,7 @@ class _WebSocketContinuationFold:
             fold_stop_reason = "buffered_tool_calls"
         if should_continue_round and chained_anchor is not None:
             terminal_id = _response_payload(terminal).get("id")
-            round_anchor = (
-                terminal_id.strip() if isinstance(terminal_id, str) and terminal_id.strip() else None
-            )
+            round_anchor = terminal_id.strip() if isinstance(terminal_id, str) and terminal_id.strip() else None
             if round_anchor is None:
                 should_continue_round = False
                 fold_stop_reason = "missing_round_anchor"
@@ -232,18 +240,32 @@ class _WebSocketContinuationFold:
             # Only log turns that hit the truncation fingerprint (the cases where
             # continuation does or deliberately does not fire); non-truncated
             # turns are the uninteresting common path.
+            decision_label = "continue" if should_continue_round else (stopped_reason or "stop")
             logger.info(
-                "codex_continuation_ws round=%s reasoning_tokens=%s tier=%s has_encrypted=%s decision=%s",
+                "codex_continuation_ws round=%s reasoning_tokens=%s tier=%s has_encrypted=%s decision=%s"
+                " client=%s effort=%s",
                 self._round_number,
                 round_reasoning_tokens,
                 truncation_tier,
                 has_encrypted_content,
-                "continue" if should_continue_round else (stopped_reason or "stop"),
+                decision_label,
+                self._client_label,
+                self._effort_label,
             )
             _record_continuation_decision(
                 transport="websocket",
-                decision="continue" if should_continue_round else (stopped_reason or "stop"),
+                decision=decision_label,
                 tier=truncation_tier,
+                client_label=self._client_label,
+                effort_label=self._effort_label,
+            )
+            _record_continuation_reasoning_tokens(
+                transport="websocket",
+                decision=decision_label,
+                should_continue_round=should_continue_round,
+                reasoning_token_count=round_reasoning_tokens,
+                client_label=self._client_label,
+                effort_label=self._effort_label,
             )
 
         if should_continue_round:
