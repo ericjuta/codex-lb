@@ -40,3 +40,33 @@ Both revert cleanly with `git revert` (plus the paired weave-repair hunks in
 `_load_balancer/` decomposition or multi-replica invalidation namespaces this
 fork does not carry. They only become viable after a deliberate wholesale
 adoption of that decomposition.
+
+## 2026-07-23 upstream pick batch
+
+Six upstream commits picked onto the fork (see `git log`): `#1400`, `#1399`,
+`#1398`, `#1451`, `#1438`, `#1447`. Fork adaptations during the weave:
+
+- `#1438`: fork lacks the fast-mode plumbing (`prohibit_fast_mode`) and the
+  model-sources lane; `apply_enforced_service_tier_model_fallback` was wired
+  into the fork's four `apply_api_key_enforcement` call sites in `api.py`
+  (with owner-forward tier retention in `_stream_responses`) plus the
+  websocket prepare path. Upstream's source-routed control test was dropped.
+- `#1447`: fork has no codex image-edit alias routes or model-source audio
+  routing; kept bounded-multipart parsing, the new `app/core/multipart*.py`
+  and middleware, and the OpenAPI extras block; dropped
+  `_source_audio_transcription_response` and
+  `tests/integration/test_model_source_routing.py`.
+- `#1451`: fork was missing `openspec/specs/automations/spec.md`; adopted
+  upstream's spec file wholesale.
+
+### Not picked (adds to the July 22 list)
+
+- `#1437` (`recover verified responses after owner loss`): aborted. The pick
+  assumes upstream's decomposed `select_account` signature
+  (`required_account_id` / `required_continuity_owner` /
+  `sticky_source` plumbing), `effective_continuity_owner_candidates` on
+  `_SelectionInputs`, and the `test_load_balancer_contract.py` /
+  `test_bridge_ring_lifecycle.py` suites the fork does not carry. 15 conflicted
+  files including a 500-line `select_account` weave. Viable only after a
+  deliberate wholesale adoption of upstream's load-balancer decomposition,
+  same as the `#1283`/`#1325` family.
