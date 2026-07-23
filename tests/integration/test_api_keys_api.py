@@ -866,7 +866,12 @@ async def test_enforced_unadvertised_tier_uses_effective_tier_for_accounting_and
     # Account selection still uses the populated registry above.
     monkeypatch.setattr(
         "app.modules.proxy.request_policy.get_model_registry",
-        lambda: SimpleNamespace(model_advertises_service_tier=lambda _model, _tier: False),
+        lambda: SimpleNamespace(
+            model_advertises_service_tier=lambda _model, _tier: False,
+            # Fork adaptation: enforce_context_window also resolves the
+            # registry through this symbol.
+            get_models_with_fallback=lambda: {},
+        ),
     )
     seen: dict[str, object] = {}
 
