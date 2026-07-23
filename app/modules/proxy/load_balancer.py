@@ -893,8 +893,11 @@ class LoadBalancer:
                 allowed_account_ids = set(account_ids)
                 accounts = [account for account in accounts if account.id in allowed_account_ids]
             pre_model_filter_accounts = accounts
+            applied_service_tier: str | None = None
             if model and _mapped_model_has_registry_entry(model):
                 accounts = _filter_accounts_for_model(pre_model_filter_accounts, model, service_tier=service_tier)
+                normalized_service_tier = service_tier.strip().lower() if service_tier is not None else None
+                applied_service_tier = None if normalized_service_tier in {"auto", "default"} else service_tier
             if model and not accounts:
                 if not all_accounts:
                     selection_inputs = _SelectionInputs(
@@ -929,7 +932,11 @@ class LoadBalancer:
                     latest_monthly={},
                     quota_planner_settings=quota_planner_settings,
                     runtime_accounts=[_clone_account(account) for account in all_accounts],
-                    error_message=f"No accounts with a plan supporting model '{model}'",
+                    error_message=(
+                        f"No accounts with a plan supporting model '{model}' at service tier '{applied_service_tier}'"
+                        if applied_service_tier is not None
+                        else f"No accounts with a plan supporting model '{model}'"
+                    ),
                     error_code=NO_PLAN_SUPPORT_FOR_MODEL,
                 )
                 await self._selection_inputs_cache.set(

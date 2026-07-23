@@ -15,7 +15,6 @@ from app.core.balancer.types import UpstreamError
 from app.core.crypto import TokenEncryptor
 from app.core.openai.model_registry import (
     ModelRegistry,
-    ModelRegistryExport,
     ModelRegistrySnapshot,
     UpstreamModel,
 )
@@ -3557,11 +3556,10 @@ def _authoritative_snapshot(
     )
 
 async def _registry_with_snapshot(snapshot: ModelRegistrySnapshot) -> ModelRegistry:
+    # Fork adaptation: no ModelRegistryExport/import_state lane; install the
+    # snapshot directly on the registry instance.
     registry = ModelRegistry(ttl_seconds=60.0)
-    await registry.import_state(
-        ModelRegistryExport(snapshot=snapshot, metadata_models=None),
-        content_hash="test-enforced-tier",
-    )
+    registry._snapshot = snapshot
     return registry
 
 def _single_account_repos(account: Account) -> tuple[Any, Any, Any]:
