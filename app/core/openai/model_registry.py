@@ -500,7 +500,7 @@ class ModelRegistry:
         if not self._snapshot.account_catalogs_authoritative:
             return True
         normalized_slug = slug.strip().lower()
-        normalized_service_tier = canonical_service_tier_value(service_tier)
+        normalized_service_tier = _canonical_service_tier_value(service_tier)
         if not normalized_slug or not normalized_service_tier:
             return True
 

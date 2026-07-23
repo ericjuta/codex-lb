@@ -15,10 +15,11 @@ from app.core.balancer.types import UpstreamError
 from app.core.crypto import TokenEncryptor
 from app.core.openai.model_registry import (
     ModelRegistry,
+    ModelRegistryExport,
     ModelRegistrySnapshot,
     UpstreamModel,
-    ModelRegistryExport,
 )
+from app.core.openai.requests import ResponsesRequest
 from app.core.utils.time import utcnow
 from app.db.models import (
     Account,
@@ -30,6 +31,8 @@ from app.db.models import (
 )
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.api_keys.repository import ApiKeysRepository
+from app.modules.api_keys.service import ApiKeyData
+from app.modules.proxy._service.support import _http_bridge_session_supports_service_tier
 from app.modules.proxy.account_cache import is_account_routing_unavailable
 from app.modules.proxy.load_balancer import (
     ADDITIONAL_QUOTA_DATA_UNAVAILABLE,
@@ -41,6 +44,10 @@ from app.modules.proxy.load_balancer import (
     RuntimeState,
 )
 from app.modules.proxy.repo_bundle import ProxyRepositories
+from app.modules.proxy.request_policy import (
+    apply_api_key_enforcement,
+    apply_enforced_service_tier_model_fallback,
+)
 from app.modules.proxy.sticky_repository import StickySessionsRepository
 from app.modules.request_logs.repository import RequestLogsRepository
 from app.modules.usage.repository import AdditionalUsageRepository, UsageRepository
@@ -48,16 +55,6 @@ from app.modules.usage.repository import AdditionalUsageRepository, UsageReposit
 pytestmark = pytest.mark.unit
 
 _UNSET = object()
-
-
-from dataclasses import replace
-from app.core.openai.requests import ResponsesRequest
-from app.modules.api_keys.service import ApiKeyData
-from app.modules.proxy._service.support import _http_bridge_session_supports_service_tier
-from app.modules.proxy.request_policy import (
-    apply_api_key_enforcement,
-    apply_enforced_service_tier_model_fallback,
-)
 
 pytestmark = pytest.mark.unit
 _UNSET = object()

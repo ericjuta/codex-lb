@@ -5,12 +5,15 @@ import base64
 import contextlib
 import json
 from datetime import timedelta
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from sqlalchemy import select, update
 
 import app.core.clients.proxy as core_proxy_module
 import app.modules.api_keys.repository as api_keys_repository_module
+import app.modules.proxy.api as proxy_api
 import app.modules.proxy.load_balancer as load_balancer_module
 import app.modules.proxy.service as proxy_module
 from app.core.auth import generate_unique_account_id
@@ -27,22 +30,6 @@ pytestmark = pytest.mark.integration
 
 _TEST_MODELS = ["model-alpha", "model-beta"]
 _HIDDEN_MODEL = "model-hidden"
-
-
-from types import SimpleNamespace
-from typing import cast
-from fastapi.responses import JSONResponse
-import app.modules.proxy.api as proxy_api
-from app.modules.model_sources.forwarding import (
-    SourceChatCompletion,
-    SourceResponsesStream,
-    SourceTimings,
-    SourceUsage,
-    SourceUsageHolder,
-)
-
-pytestmark = pytest.mark.integration
-_TEST_MODELS = ["model-alpha", "model-beta"]
 _HIDDEN_MODEL = "model-hidden"
 
 

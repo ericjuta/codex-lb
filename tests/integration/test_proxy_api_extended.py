@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import cast
 import asyncio
 import base64
 import json
+from collections import Counter
+from types import SimpleNamespace
+from typing import cast
 
+import pytest
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from starlette.requests import Request
-import pytest
 
+import app.modules.proxy.api as proxy_api_module
+import app.modules.proxy.service as proxy_module
 from app.core.auth import generate_unique_account_id
 from app.core.clients import proxy as core_proxy
 from app.core.clients.proxy import ProxyResponseError
@@ -19,9 +22,6 @@ from app.db.models import Account, AccountStatus, RequestLog
 from app.db.session import SessionLocal
 from app.dependencies import ProxyContext
 from app.modules.proxy._service.support import _signal_propagated_capacity_startup_ready
-from collections import Counter
-import app.modules.proxy.api as proxy_api_module
-import app.modules.proxy.service as proxy_module
 
 pytestmark = pytest.mark.integration
 

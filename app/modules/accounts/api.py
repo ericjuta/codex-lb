@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-
 from fastapi import APIRouter, Depends, Request, Response
 
 from app.core.audit.service import AuditService

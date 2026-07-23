@@ -33,23 +33,23 @@ from app.core.exceptions import (
     ProxyRateLimitError,
     ProxyUpstreamError,
 )
+from app.core.middleware.multipart_content_encoding import (
+    UnsupportedMultipartContentEncoding,
+    multipart_error_response,
+)
 from app.core.middleware.request_body_limit import (
     REQUEST_BODY_TOO_LARGE_MESSAGE,
     request_body_limit_was_exceeded,
     request_ingress_error_response,
 )
-from app.core.middleware.multipart_content_encoding import (
-    UnsupportedMultipartContentEncoding,
-    multipart_error_response,
-)
 from app.core.multipart import MultipartPayloadTooLarge
 from app.core.runtime_logging import log_error_response
 from app.modules.proxy.images_observability import (
+    IMAGE_ROUTE_MODEL_STATE,
+    IMAGE_ROUTE_STARTED_AT_STATE,
+    IMAGE_ROUTE_STREAM_STATE,
     ImageRoute,
     record_images_route_observability,
-    IMAGE_ROUTE_MODEL_STATE,
-    IMAGE_ROUTE_STREAM_STATE,
-    IMAGE_ROUTE_STARTED_AT_STATE,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,6 +98,11 @@ def _image_route_from_path(path: str) -> ImageRoute | None:
     if path == "/v1/images/edits":
         return "edits"
     return None
+
+
+def _is_json_request(request: Request) -> bool:
+    content_type = request.headers.get("content-type", "")
+    return content_type.split(";", 1)[0].strip().lower() == "application/json"
 
 
 async def _image_request_model_and_stream(request: Request, route: ImageRoute) -> tuple[str | None, bool]:

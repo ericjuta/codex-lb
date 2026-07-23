@@ -35,10 +35,10 @@ from app.core.middleware import (
     add_app_version_middleware,
     add_backend_api_codex_v1_alias_middleware,
     add_dashboard_auth_proxy_middleware,
+    add_multipart_content_encoding_middleware,
     add_request_body_limit_middleware,
     add_request_decompression_middleware,
     add_request_id_middleware,
-    add_multipart_content_encoding_middleware,
 )
 from app.core.middleware.dashboard_gzip import add_dashboard_gzip_middleware
 from app.core.middleware.inflight import InFlightMiddleware
@@ -93,17 +93,6 @@ from app.modules.usage import api as usage_api
 from app.modules.usage.additional_quota_keys import reload_additional_quota_registry
 from app.modules.usage.live_ingest import start_live_usage_ingestor, stop_live_usage_ingestor
 
-logger = logging.getLogger(__name__)
-logger = logging.getLogger(__name__)
-
-
-from app.core.balancer import configure_replica_salt
-from app.core.config.key_fingerprint import verify_encryption_key_fingerprint
-from app.core.scheduling.leader_election import get_leader_election
-from app.modules.model_sources import api as model_sources_api
-from app.modules.proxy.cap_partitioning import refresh_cap_partition
-
-logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
 
 

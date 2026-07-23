@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Collection
+from collections.abc import Collection
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, cast

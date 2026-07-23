@@ -6,7 +6,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import replace, dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from json import JSONDecodeError
 from typing import Any, Final, Literal, cast
@@ -64,6 +64,22 @@ from app.core.exceptions import (
     ProxyUpstreamError,
 )
 from app.core.metrics.prometheus import PROMETHEUS_AVAILABLE, bridge_public_contract_error_total
+from app.core.middleware.multipart_content_encoding import raise_for_unsupported_multipart_content_encoding
+from app.core.multipart import (
+    IMAGE_EDITS_MULTIPART_POLICY,
+    TRANSCRIPTION_MULTIPART_POLICY,
+    bounded_multipart_form,
+    read_bounded_upload,
+)
+from app.core.multipart_fields import (
+    optional_text,
+    optional_upload,
+    ordered_text_items,
+    ordered_uploads,
+    required_text,
+    required_upload,
+    uploaded_file_items,
+)
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.chat_responses import (
     ChatCompletion,
@@ -140,9 +156,9 @@ from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.helpers import _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
 from app.modules.proxy.images_observability import (
-    record_images_route_observability,
-    IMAGE_ROUTE_STREAM_STATE,
     IMAGE_ROUTE_MODEL_STATE,
+    IMAGE_ROUTE_STREAM_STATE,
+    record_images_route_observability,
 )
 from app.modules.proxy.request_policy import (
     apply_api_key_enforcement,
@@ -192,57 +208,6 @@ from app.modules.rate_limit_reset_credits.store import get_rate_limit_reset_cred
 from app.modules.usage.mappers import usage_history_to_window_row
 from app.modules.usage.repository import AdditionalUsageRepository, UsageRepository
 from app.modules.usage.updater import UsageUpdater
-
-logger = logging.getLogger(__name__)
-
-
-from app.core.cache.invalidation import NAMESPACE_RESET_CREDITS, bump_cache_invalidation_local
-from app.core.middleware.multipart_content_encoding import raise_for_unsupported_multipart_content_encoding
-from app.core.multipart import (
-    IMAGE_EDITS_MULTIPART_POLICY,
-    TRANSCRIPTION_MULTIPART_POLICY,
-    bounded_multipart_form,
-    read_bounded_upload,
-)
-from app.core.multipart_fields import (
-    optional_text,
-    optional_upload,
-    ordered_text_items,
-    ordered_uploads,
-    required_text,
-    required_upload,
-    uploaded_file_items,
-)
-from app.modules.model_sources.catalog import (
-    source_model_audio_cost_usd,
-    source_model_cost_usd,
-    source_model_request_overrides,
-    source_model_supported_tool_types,
-    source_model_supports_reasoning,
-    source_models_to_upstream_models,
-)
-from app.modules.model_sources.forwarding import (
-    ModelSourceForwardingError,
-    SourceTimings,
-    SourceUsage,
-    SourceUsageHolder,
-    forward_chat_completion,
-)
-from app.modules.model_sources.forwarding import (
-    forward_audio_transcription as forward_source_audio_transcription,
-)
-from app.modules.model_sources.forwarding import (
-    forward_responses as forward_source_responses,
-)
-from app.modules.model_sources.forwarding import (
-    stream_chat_completion as stream_source_chat_completion,
-)
-from app.modules.model_sources.forwarding import (
-    stream_responses as stream_source_responses,
-)
-from app.modules.model_sources.repository import ModelSourcesRepository
-from app.modules.rate_limit_reset_credits.redeem_coordination import RedeemClaimTimeoutError
-from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
 
@@ -470,6 +435,73 @@ class _ParsedTranscriptionMultipart:
     model: str | None
     prompt: str | None
     ordered_text_fields: tuple[tuple[str, str], ...]
+router = APIRouter(
+    prefix="/backend-api/codex",
+    tags=["proxy"],
+    dependencies=[Security(validate_proxy_api_key), Depends(set_openai_error_format)],
+)
+ws_router = APIRouter(
+    prefix="/backend-api/codex",
+    tags=["proxy"],
+)
+wham_router = APIRouter(
+    prefix="/backend-api/wham",
+    tags=["proxy"],
+    dependencies=[Security(validate_proxy_api_key), Depends(set_openai_error_format)],
+)
+v1_router = APIRouter(
+    prefix="/v1",
+    tags=["proxy"],
+    dependencies=[Security(validate_proxy_api_key), Depends(set_openai_error_format)],
+)
+v1_ws_router = APIRouter(
+    prefix="/v1",
+    tags=["proxy"],
+)
+usage_router = APIRouter(
+    tags=["proxy"],
+    dependencies=[Depends(set_openai_error_format)],
+)
+transcribe_router = APIRouter(
+    prefix="/backend-api",
+    tags=["proxy"],
+    dependencies=[Security(validate_proxy_api_key), Depends(set_openai_error_format)],
+)
+files_router = APIRouter(
+    prefix="/backend-api",
+    tags=["proxy"],
+    dependencies=[Security(validate_proxy_api_key), Depends(set_openai_error_format)],
+)
+internal_router = APIRouter(
+    prefix="/internal/bridge",
+    tags=["proxy"],
+    dependencies=[Depends(set_openai_error_format)],
+)
+
+_UNAVAILABLE_SELECTION_ERROR_CODES = {
+    "no_accounts",
+    "no_plan_support_for_model",
+    "additional_quota_data_unavailable",
+    "quota_exhausted",
+    "no_additional_quota_eligible_accounts",
+}
+_STREAM_STARTUP_ERROR_PROBE_SECONDS = 0.05
+_CAPACITY_WAIT_MARKER_GRACE_SECONDS = 0.05
+# Keep bridge startup probing above tiny event-loop scheduling jitter:
+# PostgreSQL-backed failures may need a DB round trip before the first item.
+_HTTP_BRIDGE_STARTUP_ERROR_PROBE_SECONDS = 2.0
+_CAPACITY_STARTUP_SIGNAL_DISCOVERY_SECONDS = _HTTP_BRIDGE_STARTUP_ERROR_PROBE_SECONDS
+_CHAT_COMPLETIONS_STARTUP_ERROR_PROBE_SECONDS = 2.0
+_CURSOR_CHAT_COMPLETIONS_STARTUP_ERROR_PROBE_SECONDS = 15.0
+_CURSOR_CONTEXT_LIMIT_SYNTHETIC_USAGE_TOKENS: Final[int] = 1_000_000
+_V1_MAX_OUTPUT_TOKEN_OVERRIDES: Final[dict[str, int]] = {
+    "gpt-5.4": 128_000,
+    "gpt-5.5": 128_000,
+    "gpt-5.4-mini": 128_000,
+    "gpt-5.3-codex": 128_000,
+}
+
+
 class _CapacityStartupReadyEvent(asyncio.Event):
     """Track when admission became ready so its startup probe cannot reset."""
 
