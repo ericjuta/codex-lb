@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import logging
 import time
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TypeVar
 from typing import cast as typing_cast
 
 import anyio
@@ -15,18 +12,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.core.config.settings import get_settings
 from app.core.usage.logs import RequestLogLike, calculated_cost_from_log
-from app.core.usage.types import BucketModelAggregate, RequestActivityAggregate, UsageSummaryLogsAggregate
+from app.core.usage.types import (
+    BucketConversationAggregate,
+    BucketModelAggregate,
+    RequestActivityAggregate,
+    UsageSummaryLogsAggregate,
+)
 from app.core.utils.request_id import ensure_request_id
 from app.core.utils.time import utcnow
-from app.db.models import Account, ApiKey, RequestKind, RequestLog
-from app.db.sqlite_retry import retry_sqlite_write as retry_session_sqlite_write
-
-_T = TypeVar("_T")
-logger = logging.getLogger(__name__)
-
-_INTERNAL_LIMIT_WARMUP_SOURCE = "limit_warmup"
+from app.db.models import Account, ApiKey, RequestKind, RequestLog, RequestUsageHourlyRollup
+from app.db.session import sqlite_writer_section
+from app.modules.accounts.usage_time_rollup import HOURLY_BUCKET_SECONDS, WARMUP_REQUEST_KINDS, from_dimension
+from app.modules.accounts.usage_time_rollup_read import (
+    RawWindow,
+    earliest_hourly_bucket_at,
+    raw_windows_clause,
+    read_errors_window,
+    read_hourly_window,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,13 +39,22 @@ class _RequestLogFilters:
     needs_related_search_joins: bool
 
 
+@dataclass(frozen=True, slots=True)
+class RequestLogsResult:
+    logs: list[RequestLog]
+    total: int
+    aggregated_cost_usd: float | None = None
+
+
 # The exact COUNT(*) behind the request-log listing's "X-Y of N" scans the
 # whole filtered set on PostgreSQL; the dashboard re-runs it on every 30s
 # poll and every pagination click even though the displayed total is
 # tolerant of short staleness. Cache it per filter signature for a small
-# TTL (configurable; 0 disables, which the test suite uses so totals stay
-# exact within a test).
+# fixed TTL (issue #1340 / PRINCIPLES.md P2; the test suite patches the
+# TTL to 0 so totals stay exact within a test).
+_COUNT_CACHE_TTL_SECONDS = 30.0
 _COUNT_CACHE_MAX_ENTRIES = 256
+_CONVERSATION_WHITESPACE = " \t\n\v\f\r"
 _recent_count_cache: dict[tuple, tuple[int, float]] = {}
 
 
@@ -67,6 +80,13 @@ def _store_recent_count(key: tuple, total: int, ttl_seconds: float) -> None:
     _recent_count_cache[key] = (total, time.monotonic() + ttl_seconds)
 
 
+@dataclass(frozen=True, slots=True)
+class PreviousResponseOwnerRecord:
+    account_id: str
+    requested_at: datetime | None
+    session_id: str | None
+
+
 class RequestLogsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -74,6 +94,23 @@ class RequestLogsRepository:
     @staticmethod
     def _exclude_warmup_clause() -> ColumnElement[bool]:
         return RequestLog.request_kind.not_in((RequestKind.WARMUP.value, "limit_warmup"))
+
+    @staticmethod
+    def _conversation_id_expr() -> ColumnElement:
+        trimmed = func.ltrim(
+            func.rtrim(RequestLog.conversation_id, _CONVERSATION_WHITESPACE),
+            _CONVERSATION_WHITESPACE,
+        )
+        return func.nullif(trimmed, "")
+
+    def _bucket_epoch_expr(self, bucket_seconds: int) -> ColumnElement:
+        bind = self._session.get_bind()
+        dialect = bind.dialect.name if bind else "sqlite"
+        if dialect == "postgresql":
+            return func.floor(func.extract("epoch", RequestLog.requested_at) / bucket_seconds) * bucket_seconds
+        # Use explicit integer division for SQLite: CAST(epoch / N AS INTEGER) * N
+        epoch_col = cast(func.strftime("%s", RequestLog.requested_at), Integer)
+        return cast(epoch_col / bucket_seconds, Integer) * bucket_seconds
 
     async def list_since(self, since: datetime) -> list[RequestLog]:
         result = await self._session.execute(
@@ -84,13 +121,13 @@ class RequestLogsRepository:
         )
         return list(result.scalars().all())
 
-    async def find_latest_account_id_for_response_id(
+    async def find_latest_owner_record_for_response_id(
         self,
         *,
         response_id: str,
         api_key_id: str | None,
         session_id: str | None = None,
-    ) -> str | None:
+    ) -> PreviousResponseOwnerRecord | None:
         response_id_value = response_id.strip()
         if not response_id_value:
             return None
@@ -103,128 +140,250 @@ class RequestLogsRepository:
         if api_key_id is not None:
             base_conditions.append(RequestLog.api_key_id == api_key_id)
 
-        async def _lookup_account_id(conditions: list[ColumnElement[bool]]) -> str | None:
+        async def _lookup_owner_record(
+            conditions: list[ColumnElement[bool]],
+        ) -> PreviousResponseOwnerRecord | None:
             stmt = (
-                select(RequestLog.account_id)
+                select(RequestLog.account_id, RequestLog.requested_at, RequestLog.session_id)
                 .where(and_(*conditions))
                 .order_by(RequestLog.requested_at.desc(), RequestLog.id.desc())
                 .limit(1)
             )
             result = await self._session.execute(stmt)
-            account_id = result.scalar_one_or_none()
+            row = result.one_or_none()
+            if row is None:
+                return None
+            account_id, requested_at, owner_session_id = row
             if not isinstance(account_id, str):
                 return None
             stripped = account_id.strip()
-            return stripped or None
+            if not stripped:
+                return None
+            normalized_owner_session_id = (
+                owner_session_id.strip() if isinstance(owner_session_id, str) and owner_session_id.strip() else None
+            )
+            return PreviousResponseOwnerRecord(
+                account_id=stripped,
+                requested_at=requested_at if isinstance(requested_at, datetime) else None,
+                session_id=normalized_owner_session_id,
+            )
 
         session_id_value = session_id.strip() if isinstance(session_id, str) else ""
         if session_id_value:
-            scoped_owner = await _lookup_account_id([*base_conditions, RequestLog.session_id == session_id_value])
+            scoped_owner = await _lookup_owner_record([*base_conditions, RequestLog.session_id == session_id_value])
             if scoped_owner is not None:
                 return scoped_owner
 
-        return await _lookup_account_id(base_conditions)
+        return await _lookup_owner_record(base_conditions)
+
+    async def find_latest_account_id_for_response_id(
+        self,
+        *,
+        response_id: str,
+        api_key_id: str | None,
+        session_id: str | None = None,
+    ) -> str | None:
+        owner = await self.find_latest_owner_record_for_response_id(
+            response_id=response_id,
+            api_key_id=api_key_id,
+            session_id=session_id,
+        )
+        return owner.account_id if owner is not None else None
 
     async def aggregate_by_bucket(
         self,
         since: datetime,
         bucket_seconds: int = 21600,
     ) -> list[BucketModelAggregate]:
-        bind = self._session.get_bind()
-        dialect = bind.dialect.name if bind else "sqlite"
-        if dialect == "postgresql":
-            bucket_expr = func.floor(func.extract("epoch", RequestLog.requested_at) / bucket_seconds) * bucket_seconds
-        else:
-            # Use explicit integer division for SQLite: CAST(epoch / N AS INTEGER) * N
-            epoch_col = cast(func.strftime("%s", RequestLog.requested_at), Integer)
-            bucket_expr = cast(epoch_col / bucket_seconds, Integer) * bucket_seconds
-        bucket_col = bucket_expr.label("bucket_epoch")
+        # Folded history comes from the hourly rollups; only the un-folded
+        # complement scans raw request_logs. Every display bucket the
+        # dashboard uses (3600/21600/86400) is a whole multiple of the rollup
+        # hour, so a folded bucket is never split across the merge; any other
+        # granularity degrades to the full raw scan.
+        merged: dict[tuple[int, str, str | None], list[float]] = {}
 
+        def _add(key: tuple[int, str, str | None], values: tuple[int, int, int, int, int, int, float]) -> None:
+            entry = merged.setdefault(key, [0, 0, 0, 0, 0, 0, 0.0])
+            for index, value in enumerate(values):
+                entry[index] += value
+
+        raw_windows: list[RawWindow] = [(since, None)]
+        if bucket_seconds > 0 and bucket_seconds % HOURLY_BUCKET_SECONDS == 0:
+            rollup_rows, raw_windows = await read_hourly_window(
+                self._session,
+                since,
+                filters=(RequestUsageHourlyRollup.request_kind.not_in(WARMUP_REQUEST_KINDS),),
+            )
+            for rollup in rollup_rows:
+                _add(
+                    (
+                        rollup.bucket_epoch // bucket_seconds * bucket_seconds,
+                        rollup.model,
+                        from_dimension(rollup.service_tier),
+                    ),
+                    (
+                        rollup.request_count,
+                        rollup.error_count,
+                        rollup.input_tokens,
+                        rollup.output_tokens,
+                        rollup.cached_input_tokens,
+                        rollup.reasoning_tokens,
+                        rollup.cost_usd,
+                    ),
+                )
+        if raw_windows:
+            bucket_col = self._bucket_epoch_expr(bucket_seconds).label("bucket_epoch")
+            stmt = (
+                select(
+                    bucket_col,
+                    RequestLog.model,
+                    RequestLog.service_tier,
+                    func.count().label("request_count"),
+                    func.sum(cast(RequestLog.status != literal_column("'success'"), Integer)).label("error_count"),
+                    func.coalesce(func.sum(RequestLog.input_tokens), 0).label("input_tokens"),
+                    func.coalesce(func.sum(RequestLog.output_tokens), 0).label("output_tokens"),
+                    func.coalesce(func.sum(RequestLog.cached_input_tokens), 0).label("cached_input_tokens"),
+                    func.coalesce(func.sum(RequestLog.reasoning_tokens), 0).label("reasoning_tokens"),
+                    func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("cost_usd"),
+                )
+                .where(raw_windows_clause(raw_windows))
+                .where(self._exclude_warmup_clause())
+                .group_by(bucket_col, RequestLog.model, RequestLog.service_tier)
+            )
+            for row in (await self._session.execute(stmt)).all():
+                _add(
+                    (int(row.bucket_epoch), row.model, row.service_tier),
+                    (
+                        int(row.request_count),
+                        int(row.error_count),
+                        int(row.input_tokens),
+                        int(row.output_tokens),
+                        int(row.cached_input_tokens),
+                        int(row.reasoning_tokens),
+                        float(row.cost_usd or 0.0),
+                    ),
+                )
+        return [
+            BucketModelAggregate(
+                bucket_epoch=key[0],
+                model=key[1],
+                service_tier=key[2],
+                request_count=int(entry[0]),
+                error_count=int(entry[1]),
+                input_tokens=int(entry[2]),
+                output_tokens=int(entry[3]),
+                cached_input_tokens=int(entry[4]),
+                reasoning_tokens=int(entry[5]),
+                cost_usd=float(entry[6]),
+            )
+            for key, entry in sorted(merged.items(), key=lambda item: (item[0][0], item[0][1], item[0][2] or ""))
+        ]
+
+    async def aggregate_conversations_by_bucket(
+        self,
+        since: datetime,
+        bucket_seconds: int = 21600,
+    ) -> list[BucketConversationAggregate]:
+        bucket_expr = self._bucket_epoch_expr(bucket_seconds)
+        bucket_col = bucket_expr.label("bucket_epoch")
+        conversation_id = self._conversation_id_expr()
         stmt = (
             select(
                 bucket_col,
-                RequestLog.model,
-                RequestLog.service_tier,
-                func.count().label("request_count"),
-                func.sum(cast(RequestLog.status != literal_column("'success'"), Integer)).label("error_count"),
-                func.coalesce(func.sum(RequestLog.input_tokens), 0).label("input_tokens"),
-                func.coalesce(func.sum(RequestLog.output_tokens), 0).label("output_tokens"),
-                func.coalesce(func.sum(RequestLog.cached_input_tokens), 0).label("cached_input_tokens"),
-                func.coalesce(func.sum(RequestLog.reasoning_tokens), 0).label("reasoning_tokens"),
-                func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("cost_usd"),
+                func.count(func.distinct(conversation_id)).label("conversation_count"),
             )
-            .where(RequestLog.requested_at >= since)
-            .where(self._exclude_warmup_clause())
-            .group_by(bucket_col, RequestLog.model, RequestLog.service_tier)
+            .where(
+                RequestLog.requested_at >= since,
+                self._exclude_warmup_clause(),
+                conversation_id.is_not(None),
+            )
+            .group_by(bucket_col)
             .order_by(bucket_col)
         )
         result = await self._session.execute(stmt)
         return [
-            BucketModelAggregate(
+            BucketConversationAggregate(
                 bucket_epoch=int(row.bucket_epoch),
-                model=row.model,
-                service_tier=row.service_tier,
-                request_count=int(row.request_count),
-                error_count=int(row.error_count),
-                input_tokens=int(row.input_tokens),
-                output_tokens=int(row.output_tokens),
-                cached_input_tokens=int(row.cached_input_tokens),
-                reasoning_tokens=int(row.reasoning_tokens),
-                cost_usd=float(row.cost_usd or 0.0),
+                conversation_count=int(row.conversation_count),
             )
             for row in result.all()
         ]
 
     async def aggregate_activity_since(self, since: datetime) -> RequestActivityAggregate:
-        stmt = self._aggregate_activity_stmt(since)
-        result = await self._session.execute(stmt)
-        row = result.one()
-        return RequestActivityAggregate(
-            request_count=int(row.request_count),
-            error_count=int(row.error_count),
-            input_tokens=int(row.input_tokens),
-            output_tokens=int(row.output_tokens),
-            cached_input_tokens=int(row.cached_input_tokens),
-            cost_usd=float(row.cost_usd or 0.0),
-        )
+        return await self._aggregate_activity(since, None)
 
     async def aggregate_activity_between(self, since: datetime, until: datetime) -> RequestActivityAggregate:
-        stmt = self._aggregate_activity_stmt(since, until)
-        result = await self._session.execute(stmt)
-        row = result.one()
-        return RequestActivityAggregate(
-            request_count=int(row.request_count),
-            error_count=int(row.error_count),
-            input_tokens=int(row.input_tokens),
-            output_tokens=int(row.output_tokens),
-            cached_input_tokens=int(row.cached_input_tokens),
-            cost_usd=float(row.cost_usd or 0.0),
-        )
+        return await self._aggregate_activity(since, until)
 
-    def _aggregate_activity_stmt(self, since: datetime, until: datetime | None = None):
-        stmt = select(
-            func.count().label("request_count"),
-            func.coalesce(
-                func.sum(cast(RequestLog.status != literal_column("'success'"), Integer)),
-                0,
-            ).label("error_count"),
-            func.coalesce(func.sum(RequestLog.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(RequestLog.output_tokens), 0).label("output_tokens"),
-            func.coalesce(func.sum(RequestLog.cached_input_tokens), 0).label("cached_input_tokens"),
-            func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("cost_usd"),
+    async def _aggregate_activity(self, since: datetime, until: datetime | None) -> RequestActivityAggregate:
+        rollup_rows, raw_windows = await read_hourly_window(
+            self._session,
+            since,
+            until,
+            filters=(RequestUsageHourlyRollup.request_kind.not_in(WARMUP_REQUEST_KINDS),),
+        )
+        request_count = error_count = input_tokens = output_tokens = cached_input_tokens = 0
+        cost_usd = 0.0
+        for rollup in rollup_rows:
+            request_count += rollup.request_count
+            error_count += rollup.error_count
+            input_tokens += rollup.input_tokens
+            output_tokens += rollup.output_tokens
+            cached_input_tokens += rollup.cached_input_tokens
+            cost_usd += rollup.cost_usd
+        if raw_windows:
+            totals_stmt = select(
+                func.count().label("request_count"),
+                func.coalesce(
+                    func.sum(cast(RequestLog.status != literal_column("'success'"), Integer)),
+                    0,
+                ).label("error_count"),
+                func.coalesce(func.sum(RequestLog.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(RequestLog.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(RequestLog.cached_input_tokens), 0).label("cached_input_tokens"),
+                func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("cost_usd"),
+            ).where(
+                raw_windows_clause(raw_windows),
+                self._exclude_warmup_clause(),
+            )
+            row = (await self._session.execute(totals_stmt)).one()
+            request_count += int(row.request_count)
+            error_count += int(row.error_count)
+            input_tokens += int(row.input_tokens)
+            output_tokens += int(row.output_tokens)
+            cached_input_tokens += int(row.cached_input_tokens)
+            cost_usd += float(row.cost_usd or 0.0)
+
+        # Distinct conversation counts are not additive across the fold
+        # boundary, so they always come from raw over the FULL window (a
+        # documented non-goal: they only reach as far back as retention keeps
+        # raw rows). This splits the legacy single-statement read in two —
+        # totals and conversation metrics can straddle a concurrent insert,
+        # which the periodically-polled dashboard tolerates.
+        conversation_stmt = select(
+            func.count(func.distinct(self._conversation_id_expr())).label("conversation_count"),
+            func.count(self._conversation_id_expr()).label("conversation_request_count"),
         ).where(
             RequestLog.requested_at >= since,
             self._exclude_warmup_clause(),
         )
         if until is not None:
-            stmt = stmt.where(RequestLog.requested_at < until)
-        return stmt
+            conversation_stmt = conversation_stmt.where(RequestLog.requested_at < until)
+        conversation_row = (await self._session.execute(conversation_stmt)).one()
+
+        return RequestActivityAggregate(
+            request_count=request_count,
+            error_count=error_count,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_input_tokens=cached_input_tokens,
+            cost_usd=cost_usd,
+            conversation_count=int(conversation_row.conversation_count or 0),
+            conversation_request_count=int(conversation_row.conversation_request_count or 0),
+        )
 
     async def top_error_since(self, since: datetime) -> str | None:
-        stmt = self._top_error_stmt(since)
-        result = await self._session.execute(stmt)
-        row = result.first()
-        return str(row[0]) if row and row[0] else None
+        return await self._top_error(since, None)
 
     async def aggregate_usage_metrics_since(self, since: datetime) -> UsageSummaryLogsAggregate:
         """Aggregate the usage-summary window in SQL instead of hydrating
@@ -294,7 +453,7 @@ class RequestLogsRepository:
         top_error = None
         if error_code_counts:
             # Deterministic tie-break: highest count, then code ascending
-            # (the same rule _top_error_stmt uses for the dashboard).
+            # (the same rule the dashboard top-error read uses).
             top_error = min(error_code_counts, key=lambda code: (-error_code_counts[code], code))
 
         return UsageSummaryLogsAggregate(
@@ -309,33 +468,47 @@ class RequestLogsRepository:
         )
 
     async def top_error_between(self, since: datetime, until: datetime) -> str | None:
-        stmt = self._top_error_stmt(since, until)
-        result = await self._session.execute(stmt)
-        row = result.first()
-        return str(row[0]) if row and row[0] else None
+        return await self._top_error(since, until)
 
-    def _top_error_stmt(self, since: datetime, until: datetime | None = None):
-        stmt = (
-            select(RequestLog.error_code, func.count(RequestLog.id).label("error_count"))
-            .where(
-                RequestLog.requested_at >= since,
-                self._exclude_warmup_clause(),
-                RequestLog.status != "success",
-                RequestLog.error_code.is_not(None),
+    async def _top_error(self, since: datetime, until: datetime | None) -> str | None:
+        # The error satellite was folded with this exact filter set (warmup
+        # kinds excluded, soft-deleted rows INCLUDED, error_code NOT NULL);
+        # only the account dimension needs summing over here.
+        error_rows, raw_windows = await read_errors_window(self._session, since, until)
+        counts: dict[str, int] = {}
+        for error in error_rows:
+            counts[error.error_code] = counts.get(error.error_code, 0) + error.error_count
+        if raw_windows:
+            stmt = (
+                select(RequestLog.error_code, func.count(RequestLog.id).label("error_count"))
+                .where(
+                    raw_windows_clause(raw_windows),
+                    self._exclude_warmup_clause(),
+                    RequestLog.status != "success",
+                    RequestLog.error_code.is_not(None),
+                )
+                .group_by(RequestLog.error_code)
             )
-            .group_by(RequestLog.error_code)
-            .order_by(func.count(RequestLog.id).desc(), RequestLog.error_code.asc())
-            .limit(1)
-        )
-        if until is not None:
-            stmt = stmt.where(RequestLog.requested_at < until)
-        return stmt
+            for error_code, error_count in (await self._session.execute(stmt)).all():
+                counts[error_code] = counts.get(error_code, 0) + int(error_count)
+        if not counts:
+            return None
+        # Deterministic tie-break: highest count, then code ascending — the
+        # rule the legacy single-statement ORDER BY used.
+        return min(counts, key=lambda code: (-counts[code], code))
 
     async def earliest_activity_at(self) -> datetime | None:
         stmt = select(func.min(RequestLog.requested_at)).where(self._exclude_warmup_clause())
         result = await self._session.execute(stmt)
         value = result.scalar_one_or_none()
-        return value if isinstance(value, datetime) else None
+        raw_earliest = value if isinstance(value, datetime) else None
+        # Raw wins while it survives (sub-hour precision); once retention has
+        # pruned it, fall back to the earliest folded bucket at whole-hour
+        # precision so history-dependent UI (e.g. canCompare) keeps working.
+        rollup_earliest = await earliest_hourly_bucket_at(self._session)
+        if rollup_earliest is not None and (raw_earliest is None or rollup_earliest < raw_earliest):
+            return rollup_earliest
+        return raw_earliest
 
     async def add_log(
         self,
@@ -348,14 +521,13 @@ class RequestLogsRepository:
         status: str,
         error_code: str | None,
         latency_first_token_ms: int | None = None,
+        latency_queue_ms: int | None = None,
         latency_response_created_ms: int | None = None,
         latency_first_upstream_event_ms: int | None = None,
         latency_response_create_gate_wait_ms: int | None = None,
         latency_bridge_queue_wait_ms: int | None = None,
         prewarm_status: str | None = None,
         prewarm_latency_ms: int | None = None,
-        prewarm_canary_bucket: str | None = None,
-        prewarm_eligible_reason: str | None = None,
         session_previous_gap_ms: int | None = None,
         error_message: str | None = None,
         requested_at: datetime | None = None,
@@ -373,12 +545,16 @@ class RequestLogsRepository:
         source: str | None = None,
         useragent: str | None = None,
         useragent_group: str | None = None,
+        conversation_id: str | None = None,
         client_ip: str | None = None,
         failure_phase: str | None = None,
         failure_detail: str | None = None,
         failure_exception_type: str | None = None,
         upstream_status_code: int | None = None,
         upstream_error_code: str | None = None,
+        model_source_id: str | None = None,
+        model_source_kind: str | None = None,
+        cost_usd: float | None = None,
         bridge_stage: str | None = None,
         request_kind: str = RequestKind.NORMAL.value,
         upstream_proxy_route_mode: str | None = None,
@@ -388,32 +564,35 @@ class RequestLogsRepository:
         upstream_proxy_fail_closed_reason: str | None = None,
         archive_request_id: str | None = None,
     ) -> RequestLog:
-        resolved_request_id = ensure_request_id(request_id)
-        resolved_archive_request_id = (archive_request_id or "").strip() or resolved_request_id
-        resolved_plan_type = plan_type
-        if resolved_plan_type is None and account_id:
-            resolved_plan_type = await self._resolve_account_plan_type(account_id)
-        resolved_useragent = useragent if not isinstance(useragent, str) or useragent.strip() else None
-        resolved_useragent_group = (
-            useragent_group if not isinstance(useragent_group, str) or useragent_group.strip() else None
-        )
-        resolved_client_ip = client_ip if not isinstance(client_ip, str) or client_ip.strip() else None
-        resolved_requested_at = requested_at or utcnow()
-
-        async def _add_once() -> RequestLog:
+        async with sqlite_writer_section():
+            resolved_request_id = ensure_request_id(request_id)
+            resolved_archive_request_id = (archive_request_id or "").strip() or resolved_request_id
+            resolved_plan_type = plan_type
+            if resolved_plan_type is None and account_id:
+                resolved_plan_type = await self._resolve_account_plan_type(account_id)
+            resolved_useragent = useragent if not isinstance(useragent, str) or useragent.strip() else None
+            resolved_useragent_group = (
+                useragent_group if not isinstance(useragent_group, str) or useragent_group.strip() else None
+            )
+            resolved_conversation_id = (conversation_id or "").strip() or None
+            resolved_client_ip = client_ip if not isinstance(client_ip, str) or client_ip.strip() else None
             log = RequestLog(
                 account_id=account_id,
+                model_source_id=model_source_id,
+                model_source_kind=model_source_kind,
                 api_key_id=api_key_id,
                 session_id=session_id,
                 request_id=resolved_request_id,
                 archive_request_id=resolved_archive_request_id,
                 model=model,
                 plan_type=resolved_plan_type,
+                source=source,
                 transport=transport,
                 upstream_transport=upstream_transport,
                 request_kind=request_kind,
                 useragent=resolved_useragent,
                 useragent_group=resolved_useragent_group,
+                conversation_id=resolved_conversation_id,
                 client_ip=resolved_client_ip,
                 service_tier=service_tier,
                 requested_service_tier=requested_service_tier,
@@ -426,6 +605,14 @@ class RequestLogsRepository:
                 reasoning_effort=reasoning_effort,
                 latency_ms=latency_ms,
                 latency_first_token_ms=latency_first_token_ms,
+                latency_queue_ms=latency_queue_ms,
+                latency_response_created_ms=latency_response_created_ms,
+                latency_first_upstream_event_ms=latency_first_upstream_event_ms,
+                latency_response_create_gate_wait_ms=latency_response_create_gate_wait_ms,
+                latency_bridge_queue_wait_ms=latency_bridge_queue_wait_ms,
+                prewarm_status=prewarm_status,
+                prewarm_latency_ms=prewarm_latency_ms,
+                session_previous_gap_ms=session_previous_gap_ms,
                 status=status,
                 error_code=error_code,
                 error_message=error_message,
@@ -440,18 +627,15 @@ class RequestLogsRepository:
                 upstream_proxy_endpoint_id=upstream_proxy_endpoint_id,
                 upstream_proxy_fallback_used=upstream_proxy_fallback_used,
                 upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
-                requested_at=resolved_requested_at,
-                latency_response_created_ms=latency_response_created_ms,
-                latency_first_upstream_event_ms=latency_first_upstream_event_ms,
-                latency_response_create_gate_wait_ms=latency_response_create_gate_wait_ms,
-                latency_bridge_queue_wait_ms=latency_bridge_queue_wait_ms,
-                prewarm_status=prewarm_status,
-                prewarm_latency_ms=prewarm_latency_ms,
-                prewarm_canary_bucket=prewarm_canary_bucket,
-                prewarm_eligible_reason=prewarm_eligible_reason,
-                session_previous_gap_ms=session_previous_gap_ms,
+                requested_at=requested_at or utcnow(),
             )
-            log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
+            log.cost_usd = (
+                cost_usd
+                if cost_usd is not None
+                else 0.0
+                if model_source_id is not None
+                else calculated_cost_from_log(typing_cast(RequestLogLike, log))
+            )
             self._session.add(log)
             try:
                 await self._session.commit()
@@ -461,12 +645,9 @@ class RequestLogsRepository:
                 return log
             except sa_exc.ResourceClosedError:
                 return log
-
-        return await _retry_sqlite_write(
-            self._session,
-            _add_once,
-            operation_name="request_log_add",
-        )
+            except BaseException:
+                await _safe_rollback(self._session)
+                raise
 
     async def update_model_for_request(self, request_id: str, model: str) -> int:
         """Override the ``model`` field of any logs matching ``request_id``.
@@ -479,33 +660,29 @@ class RequestLogsRepository:
 
         Returns the number of rows that were updated.
         """
-        resolved_request_id = ensure_request_id(request_id)
-
-        async def _update_once() -> int:
-            # Fetch the affected rows so we can recompute ``cost_usd``
-            # from the new model. ``add_log`` derives the cost at insert
-            # time from the original (host) model; without recomputing
-            # here, dashboards would mix the public ``gpt-image-*`` model
-            # label with host-model pricing and report inaccurate cost.
-            stmt = select(RequestLog).where(RequestLog.request_id == resolved_request_id)
-            result_rows = await self._session.execute(stmt)
-            logs = list(result_rows.scalars())
-            if not logs:
-                return 0
-            for log in logs:
-                log.model = model
-                log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
+        async with sqlite_writer_section():
+            resolved_request_id = ensure_request_id(request_id)
             try:
+                # Fetch the affected rows so we can recompute ``cost_usd``
+                # from the new model. ``add_log`` derives the cost at insert
+                # time from the original (host) model; without recomputing
+                # here, dashboards would mix the public ``gpt-image-*`` model
+                # label with host-model pricing and report inaccurate cost.
+                stmt = select(RequestLog).where(RequestLog.request_id == resolved_request_id)
+                result_rows = await self._session.execute(stmt)
+                logs = list(result_rows.scalars())
+                if not logs:
+                    return 0
+                for log in logs:
+                    log.model = model
+                    log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
                 await self._session.commit()
             except sa_exc.ResourceClosedError:
                 return 0
+            except BaseException:
+                await _safe_rollback(self._session)
+                raise
             return len(logs)
-
-        return await _retry_sqlite_write(
-            self._session,
-            _update_once,
-            operation_name="request_log_update_model",
-        )
 
     async def list_recent(
         self,
@@ -514,6 +691,7 @@ class RequestLogsRepository:
         search: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
+        conversation_id: str | None = None,
         account_ids: list[str] | None = None,
         api_key_ids: list[str] | None = None,
         model_options: list[tuple[str, str | None]] | None = None,
@@ -523,11 +701,12 @@ class RequestLogsRepository:
         include_error_other: bool = True,
         error_codes_in: list[str] | None = None,
         error_codes_excluding: list[str] | None = None,
-    ) -> tuple[list[RequestLog], int]:
+    ) -> RequestLogsResult:
         filters = self._build_filters(
             search=search,
             since=since,
             until=until,
+            conversation_id=conversation_id,
             account_ids=account_ids,
             api_key_ids=api_key_ids,
             model_options=model_options,
@@ -551,13 +730,18 @@ class RequestLogsRepository:
         result = await self._session.execute(stmt)
         logs = list(result.scalars().all())
 
-        ttl_seconds = get_settings().request_log_count_cache_ttl_seconds
+        if conversation_id is not None:
+            total, aggregated_cost_usd = await self._count_and_sum_recent(filters)
+            return RequestLogsResult(logs=logs, total=total, aggregated_cost_usd=aggregated_cost_usd)
+
+        ttl_seconds = _COUNT_CACHE_TTL_SECONDS
         if ttl_seconds <= 0:
-            return logs, await self._count_recent(filters)
+            return RequestLogsResult(logs=logs, total=await self._count_recent(filters))
         cache_key = (
             search,
             since,
             until,
+            conversation_id,
             tuple(account_ids or ()),
             tuple(api_key_ids or ()),
             tuple(model_options or ()),
@@ -572,7 +756,19 @@ class RequestLogsRepository:
         if total is None:
             total = await self._count_recent(filters)
             _store_recent_count(cache_key, total, ttl_seconds)
-        return logs, total
+        return RequestLogsResult(logs=logs, total=total)
+
+    async def _count_and_sum_recent(self, filters: _RequestLogFilters) -> tuple[int, float]:
+        aggregate_stmt = select(
+            func.count(),
+            func.coalesce(func.sum(RequestLog.cost_usd), 0.0),
+        ).select_from(RequestLog)
+        aggregate_stmt = self._apply_related_search_joins(aggregate_stmt, filters.needs_related_search_joins)
+        if filters.conditions:
+            aggregate_stmt = aggregate_stmt.where(and_(*filters.conditions))
+        result = await self._session.execute(aggregate_stmt)
+        request_count, aggregated_cost_usd = result.one()
+        return int(request_count), float(aggregated_cost_usd)
 
     async def _count_recent(self, filters: _RequestLogFilters) -> int:
         count_stmt = select(func.count(RequestLog.id)).select_from(RequestLog)
@@ -740,6 +936,7 @@ class RequestLogsRepository:
         search: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
+        conversation_id: str | None = None,
         account_ids: list[str] | None = None,
         api_key_ids: list[str] | None = None,
         model_options: list[tuple[str, str | None]] | None = None,
@@ -758,6 +955,8 @@ class RequestLogsRepository:
             conditions.append(RequestLog.requested_at >= since)
         if until is not None:
             conditions.append(RequestLog.requested_at <= until)
+        if conversation_id is not None:
+            conditions.append(RequestLog.conversation_id == conversation_id)
         if account_ids:
             conditions.append(RequestLog.account_id.in_(account_ids))
         if api_key_ids:
@@ -842,16 +1041,3 @@ async def _safe_rollback(session: AsyncSession) -> None:
             await session.rollback()
     except BaseException:
         return
-
-
-def _normal_traffic_clause():
-    return or_(RequestLog.source.is_(None), RequestLog.source != _INTERNAL_LIMIT_WARMUP_SOURCE)
-
-
-async def _retry_sqlite_write(
-    session: AsyncSession,
-    operation: Callable[[], Awaitable[_T]],
-    *,
-    operation_name: str,
-) -> _T:
-    return await retry_session_sqlite_write(session, operation, operation_name=operation_name, logger=logger)
