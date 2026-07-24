@@ -988,8 +988,7 @@ async def test_proxy_stream_classifies_core_generated_eof_failure(async_client, 
         assert log.failure_phase == "upstream"
         assert log.failure_detail == "upstream_eof_before_terminal_event"
 
-
-async def test_proxy_stream_retries_first_core_generated_eof_before_no_accounts(async_client, monkeypatch):
+async def test_proxy_stream_surfaces_first_core_generated_eof_before_no_accounts(async_client, monkeypatch):
     expected_account_id = await _import_account(
         async_client,
         "acc_stream_first_core_eof",
@@ -1026,7 +1025,7 @@ async def test_proxy_stream_retries_first_core_generated_eof_before_no_accounts(
         json.loads(line[6:]) for line in lines if line.startswith("data: ") and not line.startswith("data: [DONE]")
     ][-1]
     assert event["type"] == "response.failed"
-    assert event["response"]["error"]["code"] == "no_accounts"
+    assert event["response"]["error"]["code"] == "stream_incomplete"
 
     async with SessionLocal() as session:
         result = await session.execute(
@@ -1042,8 +1041,59 @@ async def test_proxy_stream_retries_first_core_generated_eof_before_no_accounts(
         assert log.error_message == "Upstream closed stream without completion"
         assert log.failure_phase == "upstream"
         assert log.failure_detail == "upstream_eof_before_terminal_event"
+async def test_proxy_stream_surfaces_first_core_generated_eof_before_no_accounts(async_client, monkeypatch):
+    expected_account_id = await _import_account(
+        async_client,
+        "acc_stream_first_core_eof",
+        "stream-first-core-eof@example.com",
+    )
 
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        yield _sse_event(
+            {
+                "type": "response.failed",
+                "response": {
+                    "id": "resp_first_core_eof",
+                    "error": {
+                        "code": "stream_incomplete",
+                        "message": "Upstream closed stream without completion",
+                    },
+                },
+            }
+        )
 
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+    async with async_client.stream(
+        "POST",
+        "/backend-api/codex/responses",
+        json=payload,
+        headers={"x-request-id": "req_stream_first_core_eof"},
+    ) as resp:
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    event = [
+        json.loads(line[6:]) for line in lines if line.startswith("data: ") and not line.startswith("data: [DONE]")
+    ][-1]
+    assert event["type"] == "response.failed"
+    assert event["response"]["error"]["code"] == "stream_incomplete"
+
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(RequestLog)
+            .where(RequestLog.account_id == expected_account_id)
+            .order_by(RequestLog.requested_at.desc())
+        )
+        logs = list(result.scalars().all())
+        log = next((item for item in logs if item.error_code == "stream_incomplete"), None)
+        assert log is not None
+        assert log.status == "error"
+        assert log.error_code == "stream_incomplete"
+        assert log.error_message == "Upstream closed stream without completion"
+        assert log.failure_phase == "upstream"
+        assert log.failure_detail == "upstream_eof_before_terminal_event"
 @pytest.mark.asyncio
 async def test_proxy_stream_exception_without_terminal_event_logs_as_stream_incomplete(async_client, monkeypatch):
     expected_account_id = await _import_account(async_client, "acc_stream_exc", "stream-exception@example.com")

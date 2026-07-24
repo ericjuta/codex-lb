@@ -51,7 +51,7 @@ from app.core.utils.sse import format_sse_event, parse_sse_data_json
 from app.core.utils.time import utcnow as utcnow
 from app.db.models import (
     Account,
-    AccountStatus,  # noqa: F401
+    AccountStatus,  # noqa: F401,
 )
 from app.modules.api_keys.service import (
     ApiKeyData,
@@ -181,7 +181,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_should_attempt_local_bootstrap_rebind as _http_bridge_should_attempt_local_bootstrap_rebind,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
-    _http_bridge_should_attempt_local_previous_response_recovery,  # noqa: F401
+    _http_bridge_should_attempt_local_previous_response_recovery,  # noqa: F401,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_should_attempt_soft_affinity_reroute as _http_bridge_should_attempt_soft_affinity_reroute,
@@ -285,10 +285,10 @@ from app.modules.proxy._service.streaming.helpers import (
 from app.modules.proxy._service.streaming.protocol import _StreamingServiceProtocol
 from app.modules.proxy._service.streaming.retry import _StreamingRetryMixin
 from app.modules.proxy._service.support import (
-    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
-    _REQUEST_TRANSPORT_WEBSOCKET,  # noqa: F401
-    _WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS,  # noqa: F401
-    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
+    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401,
+    _REQUEST_TRANSPORT_WEBSOCKET,  # noqa: F401,
+    _WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS,  # noqa: F401,
+    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401,
     _ApiKeyReservationTouchState,
     _event_type_from_payload,
     _proxy_billed_usage_from_event_payload,
@@ -297,7 +297,6 @@ from app.modules.proxy._service.support import (
     _stream_usage_accounting,
     _StreamSettlement,
     _TerminalStreamError,
-    _TransientStreamError,
     _WebSocketUpstreamControl,
 )
 from app.modules.proxy._service.support import (
@@ -340,6 +339,94 @@ from app.modules.proxy._service.warmup import (
     _WarmupUsageSnapshot as _WarmupUsageSnapshot,
 )
 from app.modules.proxy._service.websocket.helpers import (
+    _app_error_to_websocket_event,  # noqa: F401,
+    _assign_websocket_response_id,  # noqa: F401,
+    _draining_websocket_request_states,  # noqa: F401,
+    _find_websocket_request_state_by_response_id,  # noqa: F401,
+    _is_websocket_previous_response_output_item,  # noqa: F401,
+    _is_websocket_response_create,  # noqa: F401,
+    _match_websocket_request_state_for_anonymous_event,  # noqa: F401,
+    _match_websocket_request_state_for_precreated_terminal_event,  # noqa: F401,
+    _match_websocket_request_state_for_previous_response_error,  # noqa: F401,
+    _matching_websocket_request_states_for_missing_tool_output_error,  # noqa: F401,
+    _matching_websocket_request_states_for_previous_response_error,  # noqa: F401,
+    _maybe_rewrite_websocket_previous_response_not_found_event,  # noqa: F401,
+    _parse_websocket_payload,  # noqa: F401,
+    _pop_matching_websocket_request_states,  # noqa: F401,
+    _pop_replayable_precreated_websocket_request_state,  # noqa: F401,
+    _pop_terminal_websocket_request_state,  # noqa: F401,
+    _prepare_websocket_request_state_for_auth_replay,  # noqa: F401,
+    _prepare_websocket_request_state_for_visible_output_replay,  # noqa: F401,
+    _record_websocket_continuity_completion,  # noqa: F401,
+    _refresh_websocket_request_input_fingerprint_from_text,  # noqa: F401,
+    _release_websocket_response_create_gate,  # noqa: F401,
+    _rewrite_websocket_continuity_corruption_event,  # noqa: F401,
+    _rewrite_websocket_downstream_response_id,  # noqa: F401,
+    _rewrite_websocket_previous_response_owner_unavailable_event,  # noqa: F401,
+    _rewrite_websocket_suppressed_duplicate_tool_call_completion_event,  # noqa: F401,
+    _sanitize_websocket_connect_failure,  # noqa: F401,
+    _sanitize_websocket_previous_response_error,  # noqa: F401,
+    _sanitize_websocket_terminal_error_fields,  # noqa: F401,
+    _serialize_websocket_error_event,  # noqa: F401,
+    _trim_websocket_previous_response_input_items,  # noqa: F401,
+    _upstream_websocket_disconnect_message,  # noqa: F401,
+    _websocket_auth_failure_permanent_code,  # noqa: F401,
+    _websocket_auth_failure_requires_reauth,  # noqa: F401,
+    _websocket_auth_request_can_switch_account,  # noqa: F401,
+    _websocket_client_previous_response_full_resend_is_retry_safe,  # noqa: F401,
+    _websocket_connect_deadline,  # noqa: F401,
+    _websocket_continuity_anchor_for_payload,  # noqa: F401,
+    _websocket_continuity_error_fields,  # noqa: F401,
+    _websocket_continuity_response_ids,  # noqa: F401,
+    _websocket_downstream_response_id,  # noqa: F401,
+    _websocket_full_resend_conflicts_with_visible_pending,  # noqa: F401,
+    _websocket_input_item_type,  # noqa: F401,
+    _websocket_owner_pinned_quota_error_code,  # noqa: F401,
+    _websocket_precreated_auth_error_code,  # noqa: F401,
+    _websocket_precreated_retry_error_code,  # noqa: F401,
+    _websocket_receive_timeout_for_pending_requests,  # noqa: F401,
+    _websocket_response_id,  # noqa: F401,
+    _websocket_top_level_error_payload,  # noqa: F401,
+    _wrapped_websocket_error_event,  # noqa: F401,
+)
+from app.modules.proxy.additional_model_limits import get_additional_quota_key_for_model_id
+from app.modules.proxy.affinity import (
+    _owner_lookup_session_id_from_headers,
+    _sticky_key_from_session_header,  # noqa: F401,
+)
+from app.modules.proxy.durable_bridge_coordinator import (
+    DurableBridgeLookup as DurableBridgeLookup,
+)
+from app.modules.proxy.helpers import (
+    _header_account_id,
+    _normalize_error_code,
+    _parse_openai_error,
+    _upstream_error_from_openai,
+)
+from app.modules.proxy.http_bridge_forwarding import (
+    HTTPBridgeForwardContext as HTTPBridgeForwardContext,
+)
+from app.modules.proxy.http_bridge_forwarding import (
+    OwnerForwardRelayFailure as OwnerForwardRelayFailure,
+)
+from app.modules.proxy.load_balancer import AccountLease
+from app.modules.proxy.tool_call_dedupe import (
+    mark_duplicate_tool_call_downstream_event,
+    rewrite_parallel_tool_call_sse_line,
+)
+from app.modules.proxy.tool_call_dedupe import (
+    response_id_from_payload as tool_call_response_id_from_payload,
+)
+from app.modules.proxy.work_admission import AdmissionLease
+
+
+# pyright: reportGeneralTypeIssues=false
+    AccountStatus,  # noqa: F401
+    _http_bridge_should_attempt_local_previous_response_recovery,  # noqa: F401
+    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
+    _REQUEST_TRANSPORT_WEBSOCKET,  # noqa: F401
+    _WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS,  # noqa: F401
+    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
     _app_error_to_websocket_event,  # noqa: F401
     _assign_websocket_response_id,  # noqa: F401
     _draining_websocket_request_states,  # noqa: F401
@@ -389,36 +476,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _websocket_response_id,  # noqa: F401
     _websocket_top_level_error_payload,  # noqa: F401
     _wrapped_websocket_error_event,  # noqa: F401
-)
-from app.modules.proxy.additional_model_limits import get_additional_quota_key_for_model_id
-from app.modules.proxy.affinity import (
-    _owner_lookup_session_id_from_headers,
     _sticky_key_from_session_header,  # noqa: F401
-)
-from app.modules.proxy.durable_bridge_coordinator import (
-    DurableBridgeLookup as DurableBridgeLookup,
-)
-from app.modules.proxy.helpers import (
-    _header_account_id,
-    _normalize_error_code,
-    _parse_openai_error,
-    _upstream_error_from_openai,
-)
-from app.modules.proxy.http_bridge_forwarding import (
-    HTTPBridgeForwardContext as HTTPBridgeForwardContext,
-)
-from app.modules.proxy.http_bridge_forwarding import (
-    OwnerForwardRelayFailure as OwnerForwardRelayFailure,
-)
-from app.modules.proxy.load_balancer import AccountLease
-from app.modules.proxy.tool_call_dedupe import (
-    mark_duplicate_tool_call_downstream_event,
-    rewrite_parallel_tool_call_sse_line,
-)
-from app.modules.proxy.tool_call_dedupe import (
-    response_id_from_payload as tool_call_response_id_from_payload,
-)
-from app.modules.proxy.work_admission import AdmissionLease
 
 
 def _facade() -> Any:
@@ -557,8 +615,6 @@ class _StreamingMixin(_StreamingEntrypointMixin, _StreamingRetryMixin):
                 settlement.record_success = False
                 settlement.account_health_error = True
                 settlement.error = {"message": error_message}
-                if allow_retry:
-                    raise _RetryableStreamError(error_code, settlement.error, exclude_account=True)
                 yield format_sse_event(
                     response_failed_event(
                         error_code,
@@ -676,12 +732,6 @@ class _StreamingMixin(_StreamingEntrypointMixin, _StreamingRetryMixin):
                         )
                     if allow_retry and _facade()._should_retry_stream_error(code):
                         raise _RetryableStreamError(code, upstream_error, exclude_account=True)
-                    if allow_transient_retry and _facade()._should_retry_transient_stream_error(
-                        code,
-                        error_message,
-                        response_id=response_id if event.type == "response.failed" else None,
-                    ):
-                        raise _TransientStreamError(code, upstream_error)
                 terminal_stream_error = _TerminalStreamError(
                     error_code or code,
                     upstream_error,
