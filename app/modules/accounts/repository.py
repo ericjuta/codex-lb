@@ -52,6 +52,14 @@ _DUPLICATE_ACCOUNT_SUFFIX = "__copy"
 _UNSET = object()
 
 
+_SETTINGS_ROW_ID = 1
+_DUPLICATE_ACCOUNT_SUFFIX = "__copy"
+_UNSET = object()
+_SETTINGS_ROW_ID = 1
+_DUPLICATE_ACCOUNT_SUFFIX = "__copy"
+_UNSET = object()
+
+
 @dataclass(frozen=True, slots=True)
 class AccountRequestUsageSummary:
     request_count: int

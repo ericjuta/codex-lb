@@ -225,6 +225,7 @@ class AccountUsageRollupState(Base):
         server_default=text("'1970-01-01 00:00:00'"),
     )
 
+
 class RequestUsageHourlyRollup(Base):
     """Hour-bucketed request-usage sums (time-axis rollup).
 
@@ -275,6 +276,7 @@ class RequestUsageHourlyRollup(Base):
     # rule of cost-by-model aggregations.
     cost_count: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"), nullable=False)
 
+
 class RequestUsageHourlyErrorRollup(Base):
     """Hour-bucketed error-code counts (top-error satellite).
 
@@ -291,6 +293,7 @@ class RequestUsageHourlyErrorRollup(Base):
     account_id: Mapped[str] = mapped_column(String, primary_key=True)
     error_code: Mapped[str] = mapped_column(String, primary_key=True)
     error_count: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"), nullable=False)
+
 
 class RequestDemandQuarterRollup(Base):
     """Quarter-hour demand sums for the quota planner (the only sub-hour
