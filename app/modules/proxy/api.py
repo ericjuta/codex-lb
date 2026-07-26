@@ -3117,7 +3117,6 @@ async def _parse_transcription_multipart(
         )
 
 
-
 async def _stream_responses(
     request: Request,
     payload: ResponsesRequest,
@@ -4914,6 +4913,7 @@ async def _normalize_public_responses_stream(
     terminal_seen = False
     done_seen = False
     contract_violation_kind: str | None = None
+    next_sequence_number = 0
     seen_text_delta_keys: set[tuple[str | None, int | None]] = set()
     # Collect output items from streamed ``response.output_item.added`` /
     # ``response.output_item.done`` events so the terminal
@@ -4963,6 +4963,29 @@ async def _normalize_public_responses_stream(
         finally:
             pre_created_buffer.clear()
 
+    def normalize_public_failure_sequence(
+        payload: dict[str, JsonValue],
+        *,
+        reserve_created_sequence: bool,
+    ) -> tuple[dict[str, JsonValue], int | None]:
+        nonlocal next_sequence_number
+        sequence_number = payload.get("sequence_number")
+        if isinstance(sequence_number, int) and not isinstance(sequence_number, bool):
+            next_sequence_number = max(next_sequence_number, sequence_number + 1)
+            if enforce_openai_sdk_contract and reserve_created_sequence and payload.get("type") == "response.failed":
+                return payload, sequence_number - 1
+            return payload, None
+        if enforce_openai_sdk_contract and payload.get("type") == "response.failed":
+            created_sequence_number: int | None = None
+            if reserve_created_sequence:
+                created_sequence_number = next_sequence_number
+                next_sequence_number += 1
+            normalized_payload = dict(payload)
+            normalized_payload["sequence_number"] = next_sequence_number
+            next_sequence_number += 1
+            return normalized_payload, created_sequence_number
+        return payload, None
+
     async for event_block in stream:
         if event_block.strip() == "data: [DONE]":
             done_seen = True
@@ -5005,6 +5028,20 @@ async def _normalize_public_responses_stream(
         if normalized_payload is None:
             continue
         event_type = normalized_payload.get("type")
+        synthetic_created = None
+        if (
+            enforce_openai_sdk_contract
+            and not created_emitted
+            and isinstance(event_type, str)
+            and event_type != "response.created"
+        ):
+            synthetic_created = _synthetic_response_created_envelope(normalized_payload)
+        normalized_payload, synthetic_created_sequence = normalize_public_failure_sequence(
+            normalized_payload,
+            reserve_created_sequence=synthetic_created is not None,
+        )
+        if synthetic_created is not None and synthetic_created_sequence is not None:
+            synthetic_created["sequence_number"] = synthetic_created_sequence
         if not enforce_openai_sdk_contract and (
             event_type == "error" or is_json_mapping(normalized_payload.get("error"))
         ):
@@ -5021,7 +5058,6 @@ async def _normalize_public_responses_stream(
                     yield formatted_payload
                 continue
 
-            synthetic_created = _synthetic_response_created_envelope(normalized_payload)
             if synthetic_created is not None:
                 yield format_sse_event(synthetic_created)
                 created_emitted = True
@@ -5031,7 +5067,11 @@ async def _normalize_public_responses_stream(
             elif _should_buffer_public_pre_created_event(event_type):
                 if len(pre_created_buffer) >= _PUBLIC_RESPONSES_PRE_CREATED_BUFFER_LIMIT:
                     error_kind = contract_violation_kind or "upstream_stream_truncated"
-                    for formatted_payload in _public_response_failed_event_blocks(error_kind, include_created=True):
+                    for formatted_payload in _public_response_failed_event_blocks(
+                        error_kind,
+                        include_created=True,
+                        sequence_number=next_sequence_number,
+                    ):
                         yield formatted_payload
                     return
                 pre_created_buffer.append(normalized_payload)
@@ -5041,11 +5081,16 @@ async def _normalize_public_responses_stream(
                     for formatted_payload in _public_response_failed_event_blocks_from_error(
                         normalized_payload,
                         include_created=True,
+                        sequence_number=next_sequence_number,
                     ):
                         yield formatted_payload
                     return
                 error_kind = contract_violation_kind or "upstream_stream_truncated"
-                for formatted_payload in _public_response_failed_event_blocks(error_kind, include_created=True):
+                for formatted_payload in _public_response_failed_event_blocks(
+                    error_kind,
+                    include_created=True,
+                    sequence_number=next_sequence_number,
+                ):
                     yield formatted_payload
                 return
 
@@ -5053,6 +5098,7 @@ async def _normalize_public_responses_stream(
             for formatted_payload in _public_response_failed_event_blocks_from_error(
                 normalized_payload,
                 include_created=not created_emitted,
+                sequence_number=next_sequence_number,
             ):
                 yield formatted_payload
             return
@@ -5072,7 +5118,11 @@ async def _normalize_public_responses_stream(
         "upstream_stream_truncated" if enforce_openai_sdk_contract else "stream_incomplete"
     )
     include_created = enforce_openai_sdk_contract and not created_emitted
-    for formatted_payload in _public_response_failed_event_blocks(error_kind, include_created=include_created):
+    for formatted_payload in _public_response_failed_event_blocks(
+        error_kind,
+        include_created=include_created,
+        sequence_number=next_sequence_number if enforce_openai_sdk_contract else None,
+    ):
         yield formatted_payload
 
 
@@ -5084,7 +5134,12 @@ def _should_buffer_public_pre_created_event(event_type: str) -> bool:
     )
 
 
-def _public_response_failed_event_blocks(error_kind: str, *, include_created: bool) -> list[str]:
+def _public_response_failed_event_blocks(
+    error_kind: str,
+    *,
+    include_created: bool,
+    sequence_number: int | None,
+) -> list[str]:
     failed_payload = cast(
         dict[str, JsonValue],
         response_failed_event(
@@ -5093,10 +5148,14 @@ def _public_response_failed_event_blocks(error_kind: str, *, include_created: bo
             response_id=f"resp_{error_kind}",
         ),
     )
+    if sequence_number is not None:
+        failed_payload["sequence_number"] = sequence_number + int(include_created)
     blocks: list[str] = []
     if include_created:
         synthetic_created = _synthetic_response_created_envelope(failed_payload)
         if synthetic_created is not None:
+            if sequence_number is not None:
+                synthetic_created["sequence_number"] = sequence_number
             blocks.append(format_sse_event(synthetic_created))
     blocks.append(format_sse_event(failed_payload))
     return blocks
@@ -5106,6 +5165,7 @@ def _public_response_failed_event_blocks_from_error(
     payload: dict[str, JsonValue],
     *,
     include_created: bool,
+    sequence_number: int,
 ) -> list[str]:
     envelope = _parse_event_error_envelope(payload)
     error = envelope.error
@@ -5132,10 +5192,12 @@ def _public_response_failed_event_blocks_from_error(
             error_param=error.param,
         ),
     )
+    failed_payload["sequence_number"] = sequence_number + int(include_created)
     blocks: list[str] = []
     if include_created:
         synthetic_created = _synthetic_response_created_envelope(failed_payload)
         if synthetic_created is not None:
+            synthetic_created["sequence_number"] = sequence_number
             blocks.append(format_sse_event(synthetic_created))
     blocks.append(format_sse_event(failed_payload))
     return blocks
