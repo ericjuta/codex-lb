@@ -112,7 +112,9 @@ Use External Secrets Operator to materialize credentials.
 Key properties:
 
 - `externalSecrets.enabled=true`
+- requires External Secrets Operator v0.17.0 or newer (the first release that serves `external-secrets.io/v1`)
 - DB credentials are not assumed to exist at render time
+- remote secret keys and optional JSON properties are configurable independently
 - migration Job remains `post-install,pre-upgrade`
 - application pods keep the schema gate initContainer enabled and wait for schema head before starting the app container
 
@@ -135,6 +137,26 @@ helm upgrade --install codex-lb deploy/helm/codex-lb/ \
 ```
 
 </details>
+
+By default, both values are read from JSON properties in a remote secret named
+after the release. Providers such as Infisical commonly store each value as an
+individual secret instead. Configure absolute keys and clear the property fields
+for that layout:
+
+```yaml
+externalSecrets:
+  enabled: true
+  secretStoreRef:
+    name: infisical
+    kind: ClusterSecretStore
+  remoteRefs:
+    databaseUrl:
+      key: /apps/codex-lb/DATABASE_URL
+      property: ""
+    encryptionKey:
+      key: /apps/codex-lb/ENCRYPTION_KEY
+      property: ""
+```
 
 ## Quick Start
 
@@ -235,6 +257,8 @@ networkPolicy:
     kubernetes.io/metadata.name: ingress-nginx
 ```
 
+`values-prod.yaml` ships this allowlist by default (matching an ingress-nginx controller in the `ingress-nginx` namespace); adjust the labels if your controller runs elsewhere. If you enable `networkPolicy` together with `ingress` in a hand-rolled overlay and omit the allowlist, external traffic through the controller is denied on port `2455` while pods stay Ready — the rendered install NOTES warn about this combination.
+
 ## Connection Pool Sizing
 
 Each pod keeps its own SQLAlchemy pool.
@@ -265,8 +289,8 @@ Single-replica deployments can use SQLite, but **multi-replica requires PostgreS
   
 - **Circuit Breaker**: Enabled by default (`config.circuitBreakerEnabled=true`)
   - Protects upstream API endpoints from cascading failures
-  - Opens after `config.circuitBreakerFailureThreshold=5` consecutive failures
-  - Enters half-open state after `config.circuitBreakerRecoveryTimeoutSeconds=60` seconds
+  - Opens after 5 consecutive failures; enters half-open state after 60
+    seconds (fixed application constants)
   - Prevents thundering herd when upstream is degraded
 
 ### Session Bridge Ring
@@ -296,25 +320,27 @@ The chart configures each pod with:
 clusterDomain: corp.internal
 ```
 
-In most clusters no extra values are required for `/responses` owner handoff. If pods must be reached through a different internal address, override:
+In most clusters no extra values are required for `/responses` owner handoff. If pods must be reached through a different internal address, the override must stay **per-pod**: the application refuses to start when the advertise hostname is not replica-specific, so a shared Service hostname crashloops every replica. Use the kubelet `$(POD_NAME)` expansion — the chart defines `POD_NAME` earlier in the container env list, so the kubelet expands it per pod:
 
 ```yaml
 config:
-  sessionBridgeAdvertiseBaseUrl: "http://codex-lb-internal.default.svc.cluster.local:2455"
+  sessionBridgeAdvertiseBaseUrl: "http://$(POD_NAME).codex-lb-bridge.default.svc.cluster.local:2455"
 ```
+
+Replace `codex-lb-bridge`, `default`, and `cluster.local` with your headless service name (`<release>-bridge` by default), namespace, and cluster domain. For a release named `codex-lb` the first pod then advertises `http://codex-lb-workload-0.codex-lb-bridge.default.svc.cluster.local:2455`.
 
 When `networkPolicy.enabled=true`, the chart also allows port `2455` traffic between codex-lb pods so owner handoff can work without extra rules.
 
 **Manual Ring Override (Advanced)**
 
-If you need to manually specify the pod ring (e.g., for testing or debugging):
+If you need to manually specify the pod ring (e.g., for testing or debugging), list the **bare StatefulSet pod names**. Each pod's bridge instance id is `$(POD_NAME)`, and the application requires its instance id to appear literally in the ring — FQDN entries fail Settings validation and crashloop the pods:
 
 ```yaml
 config:
-  sessionBridgeInstanceRing: "codex-lb-0.codex-lb.default.svc.cluster.local,codex-lb-1.codex-lb.default.svc.cluster.local"
+  sessionBridgeInstanceRing: "codex-lb-workload-0,codex-lb-workload-1"
 ```
 
-This is rarely needed in production; the database-backed discovery is preferred.
+A static ring is incompatible with autoscaling and must list exactly the StatefulSet pod names (`<workload-name>-0` through `<workload-name>-<replicaCount - 1>`); the chart refuses to render when `autoscaling.enabled=true`, when any expected pod name is missing from the ring, or when a ring entry does not match any expected pod name (for example FQDN-style entries). This is rarely needed in production; the database-backed discovery is preferred.
 
 ### Connection Pool Budget
 
@@ -365,6 +391,12 @@ topologySpreadConstraints:
     topologyKey: topology.kubernetes.io/zone  # Spread across zones
 networkPolicy:
   enabled: true                    # Restrict ingress/egress
+  ingressNSMatchLabels:            # REQUIRED with ingress: allow the controller namespace
+    kubernetes.io/metadata.name: ingress-nginx
+ingress:
+  enabled: true
+  nginx:
+    enabled: true                  # Streaming-safety + sticky-hash annotations as one set
 metrics:
   serviceMonitor:
     enabled: true                  # Prometheus scraping
@@ -489,7 +521,63 @@ gatewayApi:
       namespace: gateway-system
   hostnames:
     - codex-lb.example.com
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1
+        - path:
+            type: PathPrefix
+            value: /backend-api/codex
+        - path:
+            type: PathPrefix
+            value: /backend-api/wham
+        - path:
+            type: PathPrefix
+            value: /backend-api/transcribe
+        - path:
+            type: PathPrefix
+            value: /backend-api/files
+        - path:
+            type: PathPrefix
+            value: /api/codex
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: traefik.io
+            kind: Middleware
+            name: oauth-forward-auth
 ```
+
+When `rules` is empty, the chart renders the existing catch-all route. For
+custom rules, the chart preserves their order and adds the codex-lb Service as
+the backend of every rule. Referenced extension resources must be valid for the
+HTTPRoute namespace according to the selected Gateway implementation.
+
+For application-specific Gateway setup, see the
+[Kubernetes deployment guide](../../../docs/deployment/kubernetes.md#application-specific-gateway)
+and the [owning OpenSpec change](../../../openspec/changes/create-application-gateway/).
+
+### nginx annotations and responses sticky routing
+
+All nginx-specific annotations are gated behind `ingress.nginx.enabled=true` and render as **one coherent set**: the streaming-safety annotations (proxy buffering off, 3600s read/send timeouts, 50m body size, HTTP/1.1) and the sticky-hash annotations always appear together. Enabling ingress on an nginx class without `ingress.nginx.enabled=true` renders no nginx annotations at all — which means the controller's defaults (60s read timeout, 1m body cap) apply and will cut long-lived SSE/WebSocket streams.
+
+The dedicated responses ingress defaults to a snippet-free sticky key:
+
+```yaml
+ingress:
+  responses:
+    nginx:
+      upstreamHashBy: "$http_x_codex_session_id$http_authorization"
+```
+
+Undefined nginx `$http_*` variables render empty, so requests carrying `x-codex-session-id` hash by session (+API key) and requests without it hash by the Authorization header alone. This is admitted by stock ingress-nginx at the default `annotations-risk-level`.
+
+Advanced snippet-based keys via `ingress.responses.nginx.configurationSnippet` are opt-in only: stock ingress-nginx >= 1.12 rejects `configuration-snippet` at admission unless the controller runs with `--allow-snippet-annotations=true` and `annotations-risk-level: Critical`.
 
 ## Upgrade Contract
 
