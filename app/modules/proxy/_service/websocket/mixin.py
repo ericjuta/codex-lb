@@ -2116,7 +2116,13 @@ class _WebSocketMixin:
         if request_state.useragent is None and request_state.useragent_group is None:
             request_state.useragent, request_state.useragent_group = _request_log_useragent_fields(headers)
         base_settings = _facade().get_settings()
-        request_deadline = _websocket_connect_deadline(request_state, base_settings.proxy_request_budget_seconds)
+        request_deadline = _websocket_connect_deadline(
+            request_state,
+            _facade()._stream_request_budget_seconds(
+                base_settings,
+                request_transport="websocket",
+            ),
+        )
         connect_deadline = _websocket_connect_deadline(
             request_state,
             base_settings.proxy_websocket_connect_budget_seconds,
