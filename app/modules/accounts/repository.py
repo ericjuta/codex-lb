@@ -73,6 +73,12 @@ class AccountsRepository:
     async def get_by_id(self, account_id: str) -> Account | None:
         return await self._session.get(Account, account_id)
 
+    async def get_by_id_fresh(self, account_id: str) -> Account | None:
+        result = await self._session.execute(
+            select(Account).where(Account.id == account_id).execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
     async def list_accounts(self, *, refresh_existing: bool = False) -> list[Account]:
         stmt = select(Account).order_by(Account.email)
         if refresh_existing:

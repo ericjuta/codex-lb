@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -614,6 +615,91 @@ async def test_ensure_fresh_singleflight_coalesces_owned_and_nonowned_sessions(m
     assert request_repo.tokens_payload["account_id"] == "acc_sf_owner"
     assert owned_repo.tokens_payload is None
     assert scope_state == {"opened": False, "closed": False}
+
+
+@pytest.mark.asyncio
+async def test_refresh_singleflight_logs_stay_private_when_ordinary_caller_starts_first(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    refresh_calls = 0
+
+    async def _fake_refresh(_: str, **_kwargs: object) -> TokenRefreshResult:
+        nonlocal refresh_calls
+        refresh_calls += 1
+        started.set()
+        await release.wait()
+        return TokenRefreshResult(
+            access_token="new-access",
+            refresh_token="new-refresh",
+            id_token="new-id",
+            account_id="chatgpt-private",
+            plan_type="team",
+            email="private@example.com",
+            workspace_id="workspace-private",
+            workspace_label="Private Workspace",
+            seat_type="business",
+        )
+
+    monkeypatch.setattr(auth_manager_module, "refresh_access_token", _fake_refresh)
+
+    encryptor = TokenEncryptor()
+    stale_refresh = utcnow().replace(year=utcnow().year - 1)
+    account_payload = dict(
+        id="account-private",
+        email="private@example.com",
+        chatgpt_account_id="chatgpt-private",
+        plan_type="team",
+        workspace_id="workspace-current",
+        workspace_label="Current Workspace",
+        seat_type="business",
+        access_token_encrypted=encryptor.encrypt("access-old"),
+        refresh_token_encrypted=encryptor.encrypt("refresh-old"),
+        id_token_encrypted=encryptor.encrypt("id-old"),
+        last_refresh=stale_refresh,
+        status=AccountStatus.ACTIVE,
+        deactivation_reason=None,
+    )
+    ordinary_account = Account(**account_payload)
+    private_account = Account(**account_payload)
+    repo = _DummyRepo()
+    ordinary_manager = AuthManager(cast(AccountsRepositoryPort, repo))
+    private_manager = AuthManager(
+        cast(AccountsRepositoryPort, repo),
+        redact_sensitive_details=True,
+    )
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        ordinary_task = asyncio.create_task(
+            ordinary_manager.ensure_fresh(ordinary_account, force=True),
+        )
+        await started.wait()
+        private_task = asyncio.create_task(
+            private_manager.ensure_fresh(private_account, force=True),
+        )
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.gather(ordinary_task, private_task)
+
+    assert refresh_calls == 1
+    matching_records = [
+        record
+        for record in caplog.records
+        if record.name == auth_manager_module.__name__
+        and "Refresh payload reported workspace_id=" in record.getMessage()
+    ]
+    assert len(matching_records) == 1
+    assert "workspace_id=<redacted>" in matching_records[0].getMessage()
+    assert "account_id=<redacted>" in matching_records[0].getMessage()
+    for private_value in (
+        "account-private",
+        "workspace-private",
+        "workspace-current",
+    ):
+        assert private_value not in caplog.text
 
 
 @pytest.mark.asyncio

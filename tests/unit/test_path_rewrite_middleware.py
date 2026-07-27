@@ -178,3 +178,167 @@ async def test_middleware_does_not_mutate_caller_scope_on_rewrite() -> None:
 
     assert original_scope == snapshot
     assert inner.calls[0]["path"] == "/backend-api/codex/responses"
+
+
+@pytest.mark.parametrize(
+    ("path", "query_string", "redacted_path", "redacted_raw_path"),
+    [
+        (
+            "/backend-api/codex/rtc_unit_current",
+            b"intent=current-secret",
+            "/backend-api/codex/<redacted>",
+            b"/backend-api/codex/%3Credacted%3E",
+        ),
+        (
+            "/v1/live/rtc_unit_v3",
+            b"intent=v3-secret",
+            "/v1/live/<redacted>",
+            b"/v1/live/%3Credacted%3E",
+        ),
+        (
+            "/v1/live/",
+            b"intent=empty-suffix-secret",
+            "/v1/live/<redacted>",
+            b"/v1/live/%3Credacted%3E",
+        ),
+        (
+            "/v1/live/not/a-valid-call-id",
+            b"intent=malformed-secret",
+            "/v1/live/<redacted>",
+            b"/v1/live/%3Credacted%3E",
+        ),
+        (
+            f"/v1/live/rtc_{'x' * 253}",
+            b"intent=overlong-secret",
+            "/v1/live/<redacted>",
+            b"/v1/live/%3Credacted%3E",
+        ),
+        (
+            "/v1/realtime",
+            b"call_id=rtc_unit_legacy&intent=legacy-secret",
+            "/v1/realtime",
+            b"/v1/realtime",
+        ),
+    ],
+    ids=[
+        "current-app",
+        "v3",
+        "v3-empty-suffix",
+        "v3-malformed-suffix",
+        "v3-overlong-suffix",
+        "legacy",
+    ],
+)
+@pytest.mark.asyncio
+async def test_middleware_redacts_server_scope_while_routing_with_original_live_values(
+    path: str,
+    query_string: bytes,
+    redacted_path: str,
+    redacted_raw_path: bytes,
+) -> None:
+    inner = _RecordingApp()
+    middleware = BackendApiCodexV1AliasMiddleware(inner)
+    server_scope = {
+        "type": "websocket",
+        "path": path,
+        "raw_path": path.encode("ascii"),
+        "query_string": query_string,
+        "headers": [(b"authorization", b"Bearer live-key")],
+    }
+    routing_snapshot = dict(server_scope)
+
+    async def _receive():
+        return {"type": "websocket.connect"}
+
+    async def _send(message):
+        pass
+
+    await middleware(server_scope, _receive, _send)
+
+    assert inner.calls == [routing_snapshot]
+    assert inner.calls[0] is not server_scope
+    assert server_scope == {
+        **routing_snapshot,
+        "path": redacted_path,
+        "raw_path": redacted_raw_path,
+        "query_string": b"",
+    }
+
+
+@pytest.mark.asyncio
+async def test_middleware_routes_duplicated_live_alias_canonically_while_redacting_server_scope() -> None:
+    inner = _RecordingApp()
+    middleware = BackendApiCodexV1AliasMiddleware(inner)
+    server_scope = {
+        "type": "websocket",
+        "path": "/backend-api/codex/v1/rtc_unit_alias",
+        "raw_path": b"/backend-api/codex/v1/rtc_unit_alias",
+        "query_string": b"intent=alias-secret",
+        "headers": [(b"authorization", b"Bearer live-key")],
+    }
+
+    async def _receive():
+        return {"type": "websocket.connect"}
+
+    async def _send(message):
+        pass
+
+    await middleware(server_scope, _receive, _send)
+
+    assert inner.calls == [
+        {
+            **server_scope,
+            "path": "/backend-api/codex/rtc_unit_alias",
+            "raw_path": b"/backend-api/codex/rtc_unit_alias",
+            "query_string": b"intent=alias-secret",
+        }
+    ]
+    assert server_scope == {
+        "type": "websocket",
+        "path": "/backend-api/codex/v1/<redacted>",
+        "raw_path": b"/backend-api/codex/v1/%3Credacted%3E",
+        "query_string": b"",
+        "headers": [(b"authorization", b"Bearer live-key")],
+    }
+
+
+@pytest.mark.parametrize(
+    ("path", "routed_path"),
+    [
+        ("/v1/responses", "/v1/responses"),
+        ("/backend-api/codex/responses", "/backend-api/codex/responses"),
+        ("/backend-api/codex/v1/responses", "/backend-api/codex/responses"),
+        ("/backend-api/codex/rtc_", "/backend-api/codex/rtc_"),
+        ("/backend-api/codex/v1/rtc_", "/backend-api/codex/rtc_"),
+    ],
+    ids=[
+        "v1",
+        "current-app",
+        "duplicated-non-live-alias",
+        "malformed-current-app-call-id",
+        "malformed-duplicated-alias-call-id",
+    ],
+)
+@pytest.mark.asyncio
+async def test_middleware_leaves_non_live_server_scope_unchanged(path: str, routed_path: str) -> None:
+    inner = _RecordingApp()
+    middleware = BackendApiCodexV1AliasMiddleware(inner)
+    server_scope = {
+        "type": "websocket",
+        "path": path,
+        "raw_path": path.encode("ascii"),
+        "query_string": b"call_id=ordinary&intent=visible",
+    }
+    snapshot = dict(server_scope)
+
+    async def _receive():
+        return {"type": "websocket.connect"}
+
+    async def _send(message):
+        pass
+
+    await middleware(server_scope, _receive, _send)
+
+    assert server_scope == snapshot
+    assert inner.calls[0]["path"] == routed_path
+    assert inner.calls[0]["query_string"] == snapshot["query_string"]

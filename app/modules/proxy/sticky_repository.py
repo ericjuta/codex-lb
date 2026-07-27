@@ -14,6 +14,7 @@ from sqlalchemy.sql import Insert
 
 from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import Account, StickySession, StickySessionKind
+from app.db.session import sqlite_writer_section
 from app.db.sqlite_retry import retry_sqlite_write as retry_session_sqlite_write
 from app.modules.sticky_sessions.schemas import StickySessionSortBy, StickySessionSortDir
 
@@ -27,6 +28,10 @@ from app.modules.sticky_sessions.schemas import StickySessionSortBy, StickySessi
 _DELETE_ENTRIES_CHUNK_SIZE = 250
 _T = TypeVar("_T")
 logger = logging.getLogger(__name__)
+# Only the Live-call ownership namespace is reserved. Other LF-prefixed keys
+# (e.g. the pre-existing "\ncodex-lb-affinity-v1" selection affinities) remain
+# ordinary operator-manageable sessions.
+RESERVED_STICKY_SESSION_KEY_PREFIX = "\ncodex_live_call:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,12 +56,52 @@ class StickySessionsRepository:
         row = await self.get_entry(key, kind=kind)
         if row is None:
             return None
-        if max_age_seconds is not None:
-            cutoff = utcnow() - timedelta(seconds=max_age_seconds)
-            if to_utc_naive(row.updated_at) < cutoff:
-                await self.delete(key, kind=kind)
-                return None
-        return row.account_id
+        if max_age_seconds is None:
+            return row.account_id
+        cutoff = utcnow() - timedelta(seconds=max_age_seconds)
+        observed_updated_at = to_utc_naive(row.updated_at)
+        if observed_updated_at >= cutoff:
+            return row.account_id
+
+        # Release the read snapshot before attempting a SQLite write upgrade.
+        # The DELETE remains safe because every value observed above participates
+        # in the predicate; a concurrent rebind therefore wins the comparison.
+        await self._session.commit()
+        statement = (
+            delete(StickySession)
+            .where(
+                StickySession.key == key,
+                StickySession.kind == kind,
+                StickySession.account_id == row.account_id,
+                StickySession.updated_at == observed_updated_at,
+                StickySession.updated_at < cutoff,
+            )
+            .returning(StickySession.key)
+        )
+        current: tuple[str, datetime] | None = None
+        async with sqlite_writer_section():
+            deleted_key = (await self._session.execute(statement)).scalar_one_or_none()
+            if deleted_key is None:
+                current = (
+                    (
+                        await self._session.execute(
+                            select(StickySession.account_id, StickySession.updated_at).where(
+                                StickySession.key == key,
+                                StickySession.kind == kind,
+                            )
+                        )
+                    )
+                    .tuples()
+                    .one_or_none()
+                )
+            await self._session.commit()
+
+        if deleted_key is not None or current is None:
+            return None
+        current_account_id, current_updated_at = current
+        if to_utc_naive(current_updated_at) < cutoff:
+            return None
+        return current_account_id
 
     async def get_entry(self, key: str, *, kind: StickySessionKind) -> StickySession | None:
         if not key:
@@ -251,6 +296,22 @@ class StickySessionsRepository:
             },
         )
 
+    def _build_insert_do_nothing_statement(
+        self,
+        key: str,
+        account_id: str,
+        kind: StickySessionKind,
+    ) -> Insert:
+        dialect = self._session.get_bind().dialect.name
+        if dialect == "postgresql":
+            insert_fn = pg_insert
+        elif dialect == "sqlite":
+            insert_fn = sqlite_insert
+        else:
+            raise RuntimeError(f"StickySession insert unsupported for dialect={dialect!r}")
+        statement = insert_fn(StickySession).values(key=key, account_id=account_id, kind=kind)
+        return statement.on_conflict_do_nothing(index_elements=[StickySession.key, StickySession.kind])
+
     @staticmethod
     def _apply_filters(
         statement,
@@ -260,6 +321,7 @@ class StickySessionsRepository:
         account_query: str | None,
         key_query: str | None,
     ):
+        statement = statement.where(~StickySession.key.startswith(RESERVED_STICKY_SESSION_KEY_PREFIX, autoescape=True))
         if kind is not None:
             statement = statement.where(StickySession.kind == kind)
         if updated_before is not None:
@@ -308,6 +370,57 @@ class StickySessionsRepository:
             StickySession.created_at.desc(),
         )
 
+    async def insert_if_absent(self, key: str, account_id: str, kind: StickySessionKind) -> str:
+        """Insert immutable ownership and return the persisted owner."""
+
+        statement = self._build_insert_do_nothing_statement(key, account_id, kind).returning(StickySession.account_id)
+        async with sqlite_writer_section():
+            result = await self._session.execute(statement)
+            owner_id = result.scalar_one_or_none()
+            if owner_id is None:
+                owner_id = await self._session.scalar(
+                    select(StickySession.account_id).where(
+                        StickySession.key == key,
+                        StickySession.kind == kind,
+                    )
+                )
+            await self._session.commit()
+        if owner_id is None:
+            raise RuntimeError("StickySession immutable insert did not resolve an owner")
+        return owner_id
+
+    async def purge_before_for_key_prefix(
+        self,
+        cutoff: datetime,
+        *,
+        kind: StickySessionKind,
+        key_prefix: str,
+        limit: int = _DELETE_ENTRIES_CHUNK_SIZE,
+    ) -> int:
+        """Delete one bounded batch from a reserved key namespace."""
+
+        if limit <= 0:
+            return 0
+        target_keys = (
+            select(StickySession.key)
+            .where(
+                StickySession.kind == kind,
+                StickySession.key.startswith(key_prefix, autoescape=True),
+                StickySession.updated_at < to_utc_naive(cutoff),
+            )
+            .order_by(StickySession.updated_at.asc(), StickySession.key.asc())
+            .limit(limit)
+        )
+        stmt = delete(StickySession).where(
+            StickySession.kind == kind,
+            StickySession.key.in_(target_keys),
+        )
+        async with sqlite_writer_section():
+            result = await self._session.execute(stmt.returning(StickySession.key))
+            deleted = len(result.scalars().all())
+            await self._session.commit()
+        return deleted
+
 
 async def _retry_sqlite_write(
     session: AsyncSession,
@@ -316,3 +429,7 @@ async def _retry_sqlite_write(
     operation_name: str,
 ) -> _T:
     return await retry_session_sqlite_write(session, operation, operation_name=operation_name, logger=logger)
+
+
+def is_reserved_sticky_session_key(key: str) -> bool:
+    return key.startswith(RESERVED_STICKY_SESSION_KEY_PREFIX)

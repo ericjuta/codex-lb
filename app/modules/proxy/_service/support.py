@@ -9,12 +9,14 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from typing import Any, Literal, cast
+from typing import Any, Literal, NoReturn, Protocol, cast
 
 import anyio
 
 from app.core.balancer.types import UpstreamError
-from app.core.clients.proxy_websocket import UpstreamResponsesWebSocket
+from app.core.clients.proxy import CodexControlRequestPrivacyPolicy, ProxyResponseError
+from app.core.clients.proxy_websocket import UpstreamWebSocket
+from app.core.errors import openai_error
 from app.core.openai.model_registry import get_model_registry
 from app.core.openai.models import OpenAIEvent
 from app.core.plan_types import account_plan_matches_allowed
@@ -261,6 +263,73 @@ def _request_log_useragent_fields(headers: Mapping[str, str]) -> tuple[str | Non
     first_token = useragent.split(maxsplit=1)[0]
     useragent_group = first_token.split("/", 1)[0].strip() or None
     return useragent, useragent_group
+
+
+_FAILED_ACCOUNT_ATTR = "_codex_lb_failed_account"
+
+
+class _RefreshFailoverProxy(Protocol):
+    async def _handle_stream_error(
+        self,
+        account: Account,
+        error: Any,
+        code: str,
+        http_status: int | None = None,
+        *,
+        privacy_policy: CodexControlRequestPrivacyPolicy = CodexControlRequestPrivacyPolicy.STANDARD,
+    ) -> Any: ...
+
+
+def _raise_proxy_unavailable_for_account(message: str, account: Account) -> NoReturn:
+    exc = ProxyResponseError(502, openai_error("upstream_unavailable", message))
+    setattr(exc, _FAILED_ACCOUNT_ATTR, account)
+    raise exc
+
+
+async def failover_after_previsible_refresh_error(
+    proxy: _RefreshFailoverProxy,
+    exc: Exception,
+    current: Account,
+    *,
+    attempt: int,
+    max_account_attempts: int,
+    strict_account_id: str | None,
+    excluded_account_ids: set[str],
+    select_next_account: Callable[[set[str]], Awaitable[AccountSelection]],
+    request_id: str,
+    kind: str,
+    privacy_policy: CodexControlRequestPrivacyPolicy = CodexControlRequestPrivacyPolicy.STANDARD,
+) -> Account:
+    from app.modules.proxy._service.streaming.helpers import _should_retry_transient_stream_error
+
+    message = getattr(exc, "message", None) or str(exc) or "Request to upstream timed out"
+    logger.warning(
+        "%s refresh failed request_id=%s account_id=%s",
+        kind,
+        request_id,
+        "<redacted>" if privacy_policy.redacts_sensitive_details else current.id,
+        exc_info=None if privacy_policy.redacts_sensitive_details else True,
+    )
+    if not _should_retry_transient_stream_error("upstream_unavailable", message):
+        _raise_proxy_unavailable_for_account(message, current)
+    if (strict_account_id is not None and current.id == strict_account_id) or attempt >= max_account_attempts:
+        _raise_proxy_unavailable_for_account(message, current)
+    excluded_account_ids.add(current.id)
+    selection = await select_next_account(excluded_account_ids)
+    selected_account = selection.account
+    if selected_account is None:
+        _raise_proxy_unavailable_for_account(message, current)
+    assert selected_account is not None
+    if privacy_policy.redacts_sensitive_details:
+        await proxy._handle_stream_error(
+            current,
+            {"message": message},
+            "upstream_unavailable",
+            privacy_policy=privacy_policy,
+        )
+    else:
+        await proxy._handle_stream_error(current, {"message": message}, "upstream_unavailable")
+    return selected_account
 
 
 class _RetryableStreamError(Exception):
@@ -628,7 +697,7 @@ class _HTTPBridgeSession:
     affinity: _AffinityPolicy
     request_model: str | None
     account: Account
-    upstream: UpstreamResponsesWebSocket
+    upstream: UpstreamWebSocket
     upstream_control: _WebSocketUpstreamControl
     pending_requests: deque[_WebSocketRequestState]
     pending_lock: anyio.Lock
@@ -916,7 +985,7 @@ def _websocket_request_can_replay_before_visible_output(request_state: _WebSocke
 def _record_websocket_route_metadata(
     request_state: _WebSocketRequestState,
     *,
-    upstream: UpstreamResponsesWebSocket | None = None,
+    upstream: UpstreamWebSocket | None = None,
     route: ResolvedUpstreamRoute | None = None,
     fallback_used: bool | None = None,
 ) -> None:

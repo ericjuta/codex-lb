@@ -133,7 +133,10 @@ class _RefreshSingleflight:
                 else:
                     self._recent_failures.pop(key, None)
         except BaseException:
-            logger.exception("Refresh singleflight completion cleanup failed key=%s", key)
+            # A singleflight task may serve both ordinary and private requests.
+            # Its completion callback therefore has no request-local privacy
+            # policy and must keep diagnostics content-free.
+            logger.error("Refresh singleflight completion cleanup failed")
 
     def _purge_stale_versions(self, account_id: str, *, keep_key: _RefreshSingleflightKey) -> None:
         stale_failures = [key for key in self._recent_failures if key[0] == account_id and key != keep_key]
@@ -160,10 +163,12 @@ class AuthManager:
         *,
         acquire_refresh_admission: Callable[[], Awaitable[RefreshAdmissionLeasePort]] | None = None,
         refresh_repo_factory: Callable[[], AbstractAsyncContextManager[AccountsRepositoryPort]] | None = None,
+        redact_sensitive_details: bool = False,
     ) -> None:
         self._repo = repo
         self._encryptor = TokenEncryptor()
         self._acquire_refresh_admission = acquire_refresh_admission
+        self._redact_sensitive_details = redact_sensitive_details
         # Optional factory yielding a *fresh* accounts repo (own DB session) for
         # the detached, shielded refresh task. When set, the singleflight body
         # runs against this session instead of the request-scoped `repo`, so a
@@ -197,11 +202,31 @@ class AuthManager:
         repo (callers whose session is not client-cancellable, e.g. the usage
         refresh scheduler).
         """
+        # The process-global singleflight can be joined by an ordinary request
+        # and a private realtime request in either order. Task-internal logging
+        # cannot safely inherit the first caller's policy, so shared refresh
+        # work always uses the strict, content-free diagnostic mode. Per-caller
+        # work after the shared task (for example the account-id metadata
+        # backfill) retains the caller's explicit policy.
         if self._refresh_repo_factory is None:
-            return await self.refresh_account(account)
-        async with self._refresh_repo_factory() as repo:
-            owned = AuthManager(repo, acquire_refresh_admission=self._acquire_refresh_admission)
+            owned = AuthManager(
+                self._repo,
+                acquire_refresh_admission=self._acquire_refresh_admission,
+                redact_sensitive_details=True,
+            )
             return await owned.refresh_account(account)
+        async with self._refresh_repo_factory() as repo:
+            owned = AuthManager(
+                repo,
+                acquire_refresh_admission=self._acquire_refresh_admission,
+                redact_sensitive_details=True,
+            )
+            return await owned.refresh_account(account)
+
+    def _diagnostic_value(self, value: str | None) -> str | None:
+        if self._redact_sensitive_details and value is not None:
+            return "<redacted>"
+        return value
 
     async def refresh_account(self, account: Account) -> Account:
         refresh_token = self._encryptor.decrypt(account.refresh_token_encrypted)
@@ -247,9 +272,9 @@ class AuthManager:
             logger.warning(
                 "Refresh payload reported workspace_id=%s for account_id=%s while existing "
                 "workspace_id=%s is already set; keeping slot identity",
-                incoming_workspace_id,
-                account.id,
-                current_workspace_id,
+                self._diagnostic_value(incoming_workspace_id),
+                self._diagnostic_value(account.id),
+                self._diagnostic_value(current_workspace_id),
             )
             next_workspace_id = current_workspace_id
         elif not current_workspace_id and incoming_workspace_id:
@@ -263,8 +288,8 @@ class AuthManager:
                 logger.warning(
                     "Refresh payload reported workspace_id=%s for legacy account_id=%s, but that slot "
                     "is already owned by another account; keeping unknown workspace",
-                    incoming_workspace_id,
-                    account.id,
+                    self._diagnostic_value(incoming_workspace_id),
+                    self._diagnostic_value(account.id),
                 )
             else:
                 next_workspace_id = incoming_workspace_id
@@ -359,7 +384,11 @@ class AuthManager:
                 seat_type=account.seat_type,
             )
         except Exception:
-            logger.warning("Failed to persist chatgpt_account_id account_id=%s", account.id, exc_info=True)
+            logger.warning(
+                "Failed to persist chatgpt_account_id account_id=%s",
+                self._diagnostic_value(account.id),
+                exc_info=None if self._redact_sensitive_details else True,
+            )
         return account
 
 

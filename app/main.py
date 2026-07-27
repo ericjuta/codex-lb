@@ -163,10 +163,6 @@ async def lifespan(app: FastAPI):
     # accounts instead of all herding onto the lexicographically-first account.
     configure_replica_salt(settings.http_responses_session_bridge_instance_id)
     bridge_endpoint_base_url = settings.http_responses_session_bridge_advertise_base_url
-    if settings.otel_enabled:
-        from app.core.tracing.otel import init_tracing
-
-        init_tracing(service_name="codex-lb", endpoint=settings.otel_exporter_endpoint, app=app)
     await init_db()
     init_background_db()
     _auto_bootstrap_token = await ensure_auto_bootstrap_token()
@@ -416,6 +412,10 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         swagger_ui_parameters={"persistAuthorization": True},
     )
+    if settings.otel_enabled:
+        from app.core.tracing.otel import init_tracing
+
+        init_tracing(service_name="codex-lb", endpoint=settings.otel_exporter_endpoint, app=app)
 
     app.add_middleware(cast(Any, InFlightMiddleware))
     add_dashboard_gzip_middleware(app)
@@ -450,6 +450,7 @@ def create_app() -> FastAPI:
     add_app_version_middleware(app)
     add_exception_handlers(app)
 
+    app.include_router(proxy_api.realtime_call_router)
     app.include_router(proxy_api.router)
     app.include_router(proxy_api.internal_router)
     app.include_router(proxy_api.ws_router)

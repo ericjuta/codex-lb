@@ -12,8 +12,8 @@ from app.core.balancer.types import ClassifiedFailure, UpstreamError
 from app.core.clients.files import create_file as core_create_file  # noqa: F401
 from app.core.clients.files import finalize_file as core_finalize_file  # noqa: F401
 from app.core.clients.http import lease_http_session as lease_http_session  # noqa: F401
-from app.core.clients.proxy import CodexControlResponse as CodexControlResponse
 from app.core.clients.proxy import (  # noqa: F401  # noqa: F401
+    CodexControlRequestPrivacyPolicy,
     ImageFetchSession,
     ProxyResponseError,
     UpstreamProxyRouteTrace,
@@ -29,11 +29,12 @@ from app.core.clients.proxy import (  # noqa: F401  # noqa: F401
     push_stream_timeout_overrides,
     push_transcribe_timeout_overrides,
 )
+from app.core.clients.proxy import CodexControlResponse as CodexControlResponse
 from app.core.clients.proxy import codex_control_request as core_codex_control_request  # noqa: F401
 from app.core.clients.proxy import compact_responses as core_compact_responses  # noqa: F401
 from app.core.clients.proxy import transcribe_audio as core_transcribe_audio  # noqa: F401
 from app.core.clients.proxy_websocket import (
-    UpstreamResponsesWebSocket,
+    UpstreamWebSocket,
 )
 from app.core.errors import (
     PREVIOUS_RESPONSE_STALE_CODE as PREVIOUS_RESPONSE_STALE_CODE,
@@ -790,6 +791,8 @@ async def _handle_stream_error(
     code: str,
     http_status: int | None = None,
     phase: str = "first_event",
+    *,
+    privacy_policy: CodexControlRequestPrivacyPolicy = CodexControlRequestPrivacyPolicy.STANDARD,
 ) -> ClassifiedFailure:
     classified = _facade().classify_upstream_failure(
         error_code=code,
@@ -811,7 +814,7 @@ async def _handle_stream_error(
         _facade().logger.info(
             "Applied connect-phase forbidden cooldown account_id=%s request_id=%s code=%s "
             "status=%s cooldown_seconds=%.1f",
-            account.id,
+            "<redacted>" if privacy_policy.redacts_sensitive_details else account.id,
             get_request_id(),
             code,
             http_status,
@@ -822,7 +825,7 @@ async def _handle_stream_error(
         _record_transient_error_metric(code)
         _facade().logger.info(
             "Recorded transient account error account_id=%s request_id=%s code=%s",
-            account.id,
+            "<redacted>" if privacy_policy.redacts_sensitive_details else account.id,
             get_request_id(),
             code,
         )
@@ -843,7 +846,7 @@ def _should_retry_stream_error(code: str) -> bool:
     return code in _facade()._ACCOUNT_RECOVERY_RETRY_CODES
 
 
-def _upstream_turn_state_from_socket(upstream: UpstreamResponsesWebSocket | None) -> str | None:
+def _upstream_turn_state_from_socket(upstream: UpstreamWebSocket | None) -> str | None:
     if upstream is None:
         return None
     getter = getattr(upstream, "response_header", None)

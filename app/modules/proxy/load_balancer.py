@@ -292,7 +292,13 @@ class LoadBalancer:
         effective_cap = max(1, cap - max(0, stream_reserve_slots))
         return cap <= 0 or runtime.inflight_streams < effective_cap
 
-    def _release_account_lease_locked(self, lease: AccountLease, *, reason: str) -> bool:
+    def _release_account_lease_locked(
+        self,
+        lease: AccountLease,
+        *,
+        reason: str,
+        redact_sensitive_details: bool = False,
+    ) -> bool:
         runtime = self._runtime.get(lease.account_id)
         if runtime is None or runtime.leases is None:
             return False
@@ -310,13 +316,17 @@ class LoadBalancer:
             _record_account_lease_stale_reclaimed(current.kind)
             logger.warning(
                 "Reclaimed stale account lease account_id=%s kind=%s age_seconds=%.3f",
-                current.account_id,
+                "<redacted>" if redact_sensitive_details else current.account_id,
                 current.kind,
                 time.monotonic() - current.acquired_at,
             )
         return True
 
-    def _reclaim_stale_account_leases_locked(self) -> None:
+    def _reclaim_stale_account_leases_locked(
+        self,
+        *,
+        redact_sensitive_details: bool = False,
+    ) -> None:
         settings = get_settings()
         now = time.monotonic()
         for runtime in self._runtime.values():
@@ -328,7 +338,11 @@ class LoadBalancer:
                 if now - lease.acquired_at >= _account_lease_stale_ttl_seconds(lease.kind, settings)
             ]
             for lease in stale:
-                self._release_account_lease_locked(lease, reason="stale")
+                self._release_account_lease_locked(
+                    lease,
+                    reason="stale",
+                    redact_sensitive_details=redact_sensitive_details,
+                )
 
     async def select_account(
         self,
@@ -356,6 +370,7 @@ class LoadBalancer:
         stream_reserve_slots: int = 0,
         traffic_class: TrafficClass = TRAFFIC_CLASS_FOREGROUND,
         sticky_request_input_bytes: int | None = None,
+        redact_sensitive_details: bool = False,
     ) -> AccountSelection:
         excluded_ids = set(exclude_account_ids or ())
         scoped_account_ids = None if account_ids is None else set(account_ids)
@@ -452,7 +467,9 @@ class LoadBalancer:
             while True:
                 attempt += 1
                 async with self._runtime_lock:
-                    self._reclaim_stale_account_leases_locked()
+                    self._reclaim_stale_account_leases_locked(
+                        redact_sensitive_details=redact_sensitive_details,
+                    )
                     self._prune_runtime(selection_inputs.runtime_accounts or selection_inputs.accounts)
                     states, account_map = _build_states(
                         accounts=selection_inputs.accounts,
@@ -636,7 +653,9 @@ class LoadBalancer:
             while True:
                 attempt += 1
                 async with self._runtime_lock:
-                    self._reclaim_stale_account_leases_locked()
+                    self._reclaim_stale_account_leases_locked(
+                        redact_sensitive_details=redact_sensitive_details,
+                    )
                     self._prune_runtime(selection_inputs.runtime_accounts or selection_inputs.accounts)
                     states, account_map = _build_states(
                         accounts=selection_inputs.accounts,
@@ -829,7 +848,7 @@ class LoadBalancer:
             return AccountSelection(account=None, error_message=error_message, error_code=selection_error_code)
         logger.info(
             "Selected account_id=%s strategy=%s sticky=%s model=%s",
-            selected_snapshot.id,
+            "<redacted>" if redact_sensitive_details else selected_snapshot.id,
             routing_strategy,
             bool(sticky_key),
             model,
