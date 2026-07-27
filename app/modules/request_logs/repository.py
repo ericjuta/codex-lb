@@ -14,7 +14,6 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.usage.logs import RequestLogLike, calculated_cost_from_log
 from app.core.usage.types import (
-    BucketConversationAggregate,
     BucketModelAggregate,
     RequestActivityAggregate,
     UsageSummaryLogsAggregate,
@@ -100,14 +99,6 @@ class RequestLogsRepository:
     @staticmethod
     def _exclude_warmup_clause() -> ColumnElement[bool]:
         return RequestLog.request_kind.not_in((RequestKind.WARMUP.value, "limit_warmup"))
-
-    @staticmethod
-    def _conversation_id_expr() -> ColumnElement:
-        trimmed = func.ltrim(
-            func.rtrim(RequestLog.conversation_id, _CONVERSATION_WHITESPACE),
-            _CONVERSATION_WHITESPACE,
-        )
-        return func.nullif(trimmed, "")
 
     def _bucket_epoch_expr(self, bucket_seconds: int) -> ColumnElement:
         bind = self._session.get_bind()
@@ -285,36 +276,6 @@ class RequestLogsRepository:
             for key, entry in sorted(merged.items(), key=lambda item: (item[0][0], item[0][1], item[0][2] or ""))
         ]
 
-    async def aggregate_conversations_by_bucket(
-        self,
-        since: datetime,
-        bucket_seconds: int = 21600,
-    ) -> list[BucketConversationAggregate]:
-        bucket_expr = self._bucket_epoch_expr(bucket_seconds)
-        bucket_col = bucket_expr.label("bucket_epoch")
-        conversation_id = self._conversation_id_expr()
-        stmt = (
-            select(
-                bucket_col,
-                func.count(func.distinct(conversation_id)).label("conversation_count"),
-            )
-            .where(
-                RequestLog.requested_at >= since,
-                self._exclude_warmup_clause(),
-                conversation_id.is_not(None),
-            )
-            .group_by(bucket_col)
-            .order_by(bucket_col)
-        )
-        result = await self._session.execute(stmt)
-        return [
-            BucketConversationAggregate(
-                bucket_epoch=int(row.bucket_epoch),
-                conversation_count=int(row.conversation_count),
-            )
-            for row in result.all()
-        ]
-
     async def aggregate_activity_since(self, since: datetime) -> RequestActivityAggregate:
         return await self._aggregate_activity(since, None)
 
@@ -360,23 +321,6 @@ class RequestLogsRepository:
             cached_input_tokens += int(row.cached_input_tokens)
             cost_usd += float(row.cost_usd or 0.0)
 
-        # Distinct conversation counts are not additive across the fold
-        # boundary, so they always come from raw over the FULL window (a
-        # documented non-goal: they only reach as far back as retention keeps
-        # raw rows). This splits the legacy single-statement read in two —
-        # totals and conversation metrics can straddle a concurrent insert,
-        # which the periodically-polled dashboard tolerates.
-        conversation_stmt = select(
-            func.count(func.distinct(self._conversation_id_expr())).label("conversation_count"),
-            func.count(self._conversation_id_expr()).label("conversation_request_count"),
-        ).where(
-            RequestLog.requested_at >= since,
-            self._exclude_warmup_clause(),
-        )
-        if until is not None:
-            conversation_stmt = conversation_stmt.where(RequestLog.requested_at < until)
-        conversation_row = (await self._session.execute(conversation_stmt)).one()
-
         return RequestActivityAggregate(
             request_count=request_count,
             error_count=error_count,
@@ -384,8 +328,6 @@ class RequestLogsRepository:
             output_tokens=output_tokens,
             cached_input_tokens=cached_input_tokens,
             cost_usd=cost_usd,
-            conversation_count=int(conversation_row.conversation_count or 0),
-            conversation_request_count=int(conversation_row.conversation_request_count or 0),
         )
 
     async def top_error_since(self, since: datetime) -> str | None:
@@ -585,7 +527,6 @@ class RequestLogsRepository:
             resolved_useragent_group = (
                 useragent_group if not isinstance(useragent_group, str) or useragent_group.strip() else None
             )
-            resolved_conversation_id = (conversation_id or "").strip() or None
             resolved_client_ip = client_ip if not isinstance(client_ip, str) or client_ip.strip() else None
             log = RequestLog(
                 account_id=account_id,
@@ -603,7 +544,6 @@ class RequestLogsRepository:
                 request_kind=request_kind,
                 useragent=resolved_useragent,
                 useragent_group=resolved_useragent_group,
-                conversation_id=resolved_conversation_id,
                 client_ip=resolved_client_ip,
                 service_tier=service_tier,
                 requested_service_tier=requested_service_tier,

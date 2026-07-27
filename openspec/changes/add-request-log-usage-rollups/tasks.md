@@ -1,7 +1,7 @@
 ## 1. Pre-implementation evidence
 
 - [ ] 1.1 Measure production hourly distinct dimension-combination cardinality (`bucket, account_id, api_key_id, model, service_tier, request_kind, deleted?`); if >1,000/hour, demote `service_tier` to a satellite before authoring the schema.
-- [x] 1.2 Re-verify the Alembic single head is `20260722_000000_backfill_request_log_useragent_families` immediately before authoring the revision.
+- [x] 1.2 Re-verify the Alembic single head is `20260712_020000_add_api_key_usage_rollups` immediately before authoring the revision.
 
 ## 2. Schema and migration (PR1)
 

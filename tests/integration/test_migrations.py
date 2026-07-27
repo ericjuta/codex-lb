@@ -900,7 +900,7 @@ async def test_request_usage_time_rollups_migration_upgrade_and_downgrade(tmp_pa
     from app.db.migrate import _build_alembic_config
 
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'request-usage-time-rollups.sqlite'}"
-    parent_revision = "20260722_000000_backfill_request_log_useragent_families"
+    parent_revision = "20260712_020000_add_api_key_usage_rollups"
     rollups_revision = "20260724_000000_add_request_usage_time_rollups"
     rollup_tables = (
         "request_usage_hourly_rollups",

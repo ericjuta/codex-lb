@@ -32,29 +32,14 @@ from app.modules.accounts.usage_rollup import (
     lock_fold_state,
     merge_rollups_into,
 )
-from app.modules.usage.additional_quota_keys import normalize_additional_quota_routing_policy_overrides
-from app.modules.usage.repository import _clear_bulk_history_since_sqlite_cache
-
-_SETTINGS_ROW_ID = 1
-_DUPLICATE_ACCOUNT_SUFFIX = "__copy"
-_UNSET = object()
-
-
-from app.core.upstream_proxy.cache import get_upstream_route_cache
 from app.modules.accounts.usage_time_rollup import (
     merge_time_rollups_into,
     mirror_account_hard_delete_into_time_rollups,
     mirror_account_soft_delete_into_time_rollups,
 )
+from app.modules.usage.additional_quota_keys import normalize_additional_quota_routing_policy_overrides
+from app.modules.usage.repository import _clear_bulk_history_since_sqlite_cache
 
-_SETTINGS_ROW_ID = 1
-_DUPLICATE_ACCOUNT_SUFFIX = "__copy"
-_UNSET = object()
-
-
-_SETTINGS_ROW_ID = 1
-_DUPLICATE_ACCOUNT_SUFFIX = "__copy"
-_UNSET = object()
 _SETTINGS_ROW_ID = 1
 _DUPLICATE_ACCOUNT_SUFFIX = "__copy"
 _UNSET = object()

@@ -7,7 +7,7 @@ rollups (`account_usage_rollups`, `api_key_usage_rollups`) and their
 recomputed once retention has pruned raw request logs.
 
 Revision ID: 20260724_000000_add_request_usage_time_rollups
-Revises: 20260722_000000_backfill_request_log_useragent_families
+Revises: 20260712_020000_add_api_key_usage_rollups
 Create Date: 2026-07-24
 """
 
@@ -18,7 +18,7 @@ from alembic import op
 from sqlalchemy.engine import Connection
 
 revision = "20260724_000000_add_request_usage_time_rollups"
-down_revision = "20260722_000000_backfill_request_log_useragent_families"
+down_revision = "20260712_020000_add_api_key_usage_rollups"
 branch_labels = None
 depends_on = None
 

@@ -1,6 +1,6 @@
 ## Context
 
-Reference commit: `origin/main` 3e9e36aa. Verified surfaces: `app/modules/accounts/usage_rollup.py` (lifetime fold), `usage_rollup_scheduler.py`, `app/core/retention/job.py`, `AccountsRepository.delete()`/consolidation, `app/modules/request_logs/repository.py`, `app/modules/quota_planner/{repository,logic}.py`, `app/modules/api_keys/repository.py`, `app/modules/dashboard/service.py`, `app/db/models.py`, Makefile `POSTGRES_PYTEST_TARGETS`, Alembic single head `20260722_000000_backfill_request_log_useragent_families`.
+Reference commit: `origin/main` 3e9e36aa. Verified surfaces: `app/modules/accounts/usage_rollup.py` (lifetime fold), `usage_rollup_scheduler.py`, `app/core/retention/job.py`, `AccountsRepository.delete()`/consolidation, `app/modules/request_logs/repository.py`, `app/modules/quota_planner/{repository,logic}.py`, `app/modules/api_keys/repository.py`, `app/modules/dashboard/service.py`, `app/db/models.py`, Makefile `POSTGRES_PYTEST_TARGETS`, Alembic single head `20260712_020000_add_api_key_usage_rollups`.
 
 Time-series reads currently bucket raw `request_logs` at read time (`_bucket_epoch_expr`, planner `slot_epoch = floor(epoch/900)`). Production: 3.2M rows / 60 days, ~14 accounts, ~15 API keys, ~10 models; observed 10–37 s reads and PostgreSQL memcg OOM. The lifetime rollups have no time axis; retention (live since 20260716, dashboard-enable-able) deletes the only source of time-series history.
 
@@ -108,7 +108,7 @@ Constants (code, not settings): slice = 48 h, ≤20 slices per pass, `FOLD_LAG` 
 
 ## Migration Plan
 
-One revision `20260724_000000_add_request_usage_time_rollups` (parent: current single head `20260722_000000_backfill_request_log_useragent_families`; re-verify `alembic heads` before authoring). DDL only, no data manipulation, non-blocking at boot: guarded `CREATE TABLE` ×3 (`inspector.has_table`), guarded `ADD COLUMN hourly_folded_through` NOT NULL server_default epoch (`get_columns`; SQLite via `batch_alter_table`). `folded_through` and lifetime rollup rows untouched. Downgrade: guarded drops. Models declared in `app/db/models.py` in the same commit (PostgreSQL drift contract covers them; no partial/expression indexes, so no manual drift registration). No secondary indexes — every consumer leads with a bucket range on the PK; add only on post-deploy EXPLAIN evidence.
+One revision `20260724_000000_add_request_usage_time_rollups` (parent: current single head `20260712_020000_add_api_key_usage_rollups`; re-verify `alembic heads` before authoring). DDL only, no data manipulation, non-blocking at boot: guarded `CREATE TABLE` ×3 (`inspector.has_table`), guarded `ADD COLUMN hourly_folded_through` NOT NULL server_default epoch (`get_columns`; SQLite via `batch_alter_table`). `folded_through` and lifetime rollup rows untouched. Downgrade: guarded drops. Models declared in `app/db/models.py` in the same commit (PostgreSQL drift contract covers them; no partial/expression indexes, so no manual drift registration). No secondary indexes — every consumer leads with a bucket range on the PK; add only on post-deploy EXPLAIN evidence.
 
 Initial backfill is the fold job itself (D11). Runbook line: after deploy, confirm `hourly_folded_through` advances to ~now−24 h.
 
