@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.core.config.settings import get_settings
 from app.core.usage.logs import RequestLogLike, calculated_cost_from_log
 from app.core.usage.types import (
     BucketModelAggregate,
@@ -44,20 +45,12 @@ class _RequestLogFilters:
     needs_related_search_joins: bool
 
 
-@dataclass(frozen=True, slots=True)
-class RequestLogsResult:
-    logs: list[RequestLog]
-    total: int
-    aggregated_cost_usd: float | None = None
-
-
 # The exact COUNT(*) behind the request-log listing's "X-Y of N" scans the
 # whole filtered set on PostgreSQL; the dashboard re-runs it on every 30s
 # poll and every pagination click even though the displayed total is
 # tolerant of short staleness. Cache it per filter signature for a small
 # fixed TTL (issue #1340 / PRINCIPLES.md P2; the test suite patches the
 # TTL to 0 so totals stay exact within a test).
-_COUNT_CACHE_TTL_SECONDS = 30.0
 _COUNT_CACHE_MAX_ENTRIES = 256
 _CONVERSATION_WHITESPACE = " \t\n\v\f\r"
 _recent_count_cache: dict[tuple, tuple[int, float]] = {}
@@ -474,13 +467,14 @@ class RequestLogsRepository:
         status: str,
         error_code: str | None,
         latency_first_token_ms: int | None = None,
-        latency_queue_ms: int | None = None,
         latency_response_created_ms: int | None = None,
         latency_first_upstream_event_ms: int | None = None,
         latency_response_create_gate_wait_ms: int | None = None,
         latency_bridge_queue_wait_ms: int | None = None,
         prewarm_status: str | None = None,
         prewarm_latency_ms: int | None = None,
+        prewarm_canary_bucket: str | None = None,
+        prewarm_eligible_reason: str | None = None,
         session_previous_gap_ms: int | None = None,
         error_message: str | None = None,
         requested_at: datetime | None = None,
@@ -498,15 +492,12 @@ class RequestLogsRepository:
         source: str | None = None,
         useragent: str | None = None,
         useragent_group: str | None = None,
-        conversation_id: str | None = None,
         client_ip: str | None = None,
         failure_phase: str | None = None,
         failure_detail: str | None = None,
         failure_exception_type: str | None = None,
         upstream_status_code: int | None = None,
         upstream_error_code: str | None = None,
-        model_source_id: str | None = None,
-        model_source_kind: str | None = None,
         cost_usd: float | None = None,
         bridge_stage: str | None = None,
         request_kind: str = RequestKind.NORMAL.value,
@@ -530,8 +521,6 @@ class RequestLogsRepository:
             resolved_client_ip = client_ip if not isinstance(client_ip, str) or client_ip.strip() else None
             log = RequestLog(
                 account_id=account_id,
-                model_source_id=model_source_id,
-                model_source_kind=model_source_kind,
                 api_key_id=api_key_id,
                 session_id=session_id,
                 request_id=resolved_request_id,
@@ -556,13 +545,14 @@ class RequestLogsRepository:
                 reasoning_effort=reasoning_effort,
                 latency_ms=latency_ms,
                 latency_first_token_ms=latency_first_token_ms,
-                latency_queue_ms=latency_queue_ms,
                 latency_response_created_ms=latency_response_created_ms,
                 latency_first_upstream_event_ms=latency_first_upstream_event_ms,
                 latency_response_create_gate_wait_ms=latency_response_create_gate_wait_ms,
                 latency_bridge_queue_wait_ms=latency_bridge_queue_wait_ms,
                 prewarm_status=prewarm_status,
                 prewarm_latency_ms=prewarm_latency_ms,
+                prewarm_canary_bucket=prewarm_canary_bucket,
+                prewarm_eligible_reason=prewarm_eligible_reason,
                 session_previous_gap_ms=session_previous_gap_ms,
                 status=status,
                 error_code=error_code,
@@ -583,8 +573,6 @@ class RequestLogsRepository:
             log.cost_usd = (
                 cost_usd
                 if cost_usd is not None
-                else 0.0
-                if model_source_id is not None
                 else calculated_cost_from_log(typing_cast(RequestLogLike, log))
             )
             self._session.add(log)
@@ -677,7 +665,6 @@ class RequestLogsRepository:
         search: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
-        conversation_id: str | None = None,
         account_ids: list[str] | None = None,
         api_key_ids: list[str] | None = None,
         model_options: list[tuple[str, str | None]] | None = None,
@@ -687,12 +674,11 @@ class RequestLogsRepository:
         include_error_other: bool = True,
         error_codes_in: list[str] | None = None,
         error_codes_excluding: list[str] | None = None,
-    ) -> RequestLogsResult:
+    ) -> tuple[list[RequestLog], int]:
         filters = self._build_filters(
             search=search,
             since=since,
             until=until,
-            conversation_id=conversation_id,
             account_ids=account_ids,
             api_key_ids=api_key_ids,
             model_options=model_options,
@@ -716,18 +702,13 @@ class RequestLogsRepository:
         result = await self._session.execute(stmt)
         logs = list(result.scalars().all())
 
-        if conversation_id is not None:
-            total, aggregated_cost_usd = await self._count_and_sum_recent(filters)
-            return RequestLogsResult(logs=logs, total=total, aggregated_cost_usd=aggregated_cost_usd)
-
-        ttl_seconds = _COUNT_CACHE_TTL_SECONDS
+        ttl_seconds = get_settings().request_log_count_cache_ttl_seconds
         if ttl_seconds <= 0:
-            return RequestLogsResult(logs=logs, total=await self._count_recent(filters))
+            return logs, await self._count_recent(filters)
         cache_key = (
             search,
             since,
             until,
-            conversation_id,
             tuple(account_ids or ()),
             tuple(api_key_ids or ()),
             tuple(model_options or ()),
@@ -742,19 +723,7 @@ class RequestLogsRepository:
         if total is None:
             total = await self._count_recent(filters)
             _store_recent_count(cache_key, total, ttl_seconds)
-        return RequestLogsResult(logs=logs, total=total)
-
-    async def _count_and_sum_recent(self, filters: _RequestLogFilters) -> tuple[int, float]:
-        aggregate_stmt = select(
-            func.count(),
-            func.coalesce(func.sum(RequestLog.cost_usd), 0.0),
-        ).select_from(RequestLog)
-        aggregate_stmt = self._apply_related_search_joins(aggregate_stmt, filters.needs_related_search_joins)
-        if filters.conditions:
-            aggregate_stmt = aggregate_stmt.where(and_(*filters.conditions))
-        result = await self._session.execute(aggregate_stmt)
-        request_count, aggregated_cost_usd = result.one()
-        return int(request_count), float(aggregated_cost_usd)
+        return logs, total
 
     async def _count_recent(self, filters: _RequestLogFilters) -> int:
         count_stmt = select(func.count(RequestLog.id)).select_from(RequestLog)
@@ -922,7 +891,6 @@ class RequestLogsRepository:
         search: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
-        conversation_id: str | None = None,
         account_ids: list[str] | None = None,
         api_key_ids: list[str] | None = None,
         model_options: list[tuple[str, str | None]] | None = None,
@@ -941,8 +909,6 @@ class RequestLogsRepository:
             conditions.append(RequestLog.requested_at >= since)
         if until is not None:
             conditions.append(RequestLog.requested_at <= until)
-        if conversation_id is not None:
-            conditions.append(RequestLog.conversation_id == conversation_id)
         if account_ids:
             conditions.append(RequestLog.account_id.in_(account_ids))
         if api_key_ids:
