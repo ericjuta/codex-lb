@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from hashlib import sha256
@@ -33,6 +35,37 @@ def durable_bridge_hash(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
 
+def _encode_pending_tool_calls(response_id: str, value: Mapping[str, str] | None) -> str | None:
+    if value is None:
+        return None
+    return json.dumps(
+        {"response_id": response_id, "calls": dict(sorted(value.items()))},
+        separators=(",", ":"),
+    )
+
+
+def _decode_pending_tool_calls(response_id: str | None, value: str | None) -> dict[str, str] | None:
+    if response_id is None or value is None:
+        return None
+    try:
+        payload = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("response_id") != response_id:
+        return None
+    calls = payload.get("calls")
+    if not isinstance(calls, dict):
+        return None
+    result: dict[str, str] = {}
+    for call_id, call_type in calls.items():
+        if not isinstance(call_id, str) or not call_id.strip():
+            return None
+        if not isinstance(call_type, str) or not call_type.strip():
+            return None
+        result[call_id] = call_type
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class DurableBridgeSessionSnapshot:
     id: str
@@ -52,6 +85,7 @@ class DurableBridgeSessionSnapshot:
     latest_input_item_count: int | None
     latest_input_full_fingerprint: str | None
     closed_at: datetime | None
+    latest_pending_tool_calls: dict[str, str] | None = None
 
 
 class DurableBridgeRepository:
@@ -241,6 +275,7 @@ class DurableBridgeRepository:
                     existing.latest_response_id = latest_response_id
                     existing.latest_input_item_count = None
                     existing.latest_input_full_fingerprint = None
+                    existing.latest_pending_tool_calls_json = None
                 elif owner_changed:
                     if latest_turn_state is not None:
                         existing.latest_turn_state = latest_turn_state
@@ -248,6 +283,7 @@ class DurableBridgeRepository:
                         existing.latest_response_id = latest_response_id
                         existing.latest_input_item_count = None
                         existing.latest_input_full_fingerprint = None
+                        existing.latest_pending_tool_calls_json = None
                 else:
                     if latest_turn_state is not None:
                         existing.latest_turn_state = latest_turn_state
@@ -255,6 +291,7 @@ class DurableBridgeRepository:
                         existing.latest_response_id = latest_response_id
                         existing.latest_input_item_count = None
                         existing.latest_input_full_fingerprint = None
+                        existing.latest_pending_tool_calls_json = None
                 existing.last_seen_at = now
                 existing.closed_at = None
                 await self._session.commit()
@@ -273,6 +310,7 @@ class DurableBridgeRepository:
         latest_response_id: str | None = None,
         latest_input_item_count: int | None = None,
         latest_input_full_fingerprint: str | None = None,
+        latest_pending_tool_calls: Mapping[str, str] | None = None,
         state: HttpBridgeSessionState | None = None,
     ) -> DurableBridgeSessionSnapshot | None:
         row = await self._session.get(HttpBridgeSessionRecord, session_id)
@@ -287,6 +325,10 @@ class DurableBridgeRepository:
             row.latest_turn_state = latest_turn_state
         if latest_response_id is not None:
             row.latest_response_id = latest_response_id
+            row.latest_pending_tool_calls_json = _encode_pending_tool_calls(
+                latest_response_id,
+                latest_pending_tool_calls,
+            )
             if latest_input_item_count is None or latest_input_full_fingerprint is None:
                 row.latest_input_item_count = None
                 row.latest_input_full_fingerprint = None
@@ -465,6 +507,7 @@ class DurableBridgeRepository:
         latest_response_id: str | None = None,
         latest_input_item_count: int | None = None,
         latest_input_full_fingerprint: str | None = None,
+        latest_pending_tool_calls: Mapping[str, str] | None = None,
     ) -> bool:
         """Register continuity only while the caller still owns the durable row."""
 
@@ -478,6 +521,10 @@ class DurableBridgeRepository:
                 session_values["latest_turn_state"] = latest_turn_state
             if latest_response_id is not None:
                 session_values["latest_response_id"] = latest_response_id
+                session_values["latest_pending_tool_calls_json"] = _encode_pending_tool_calls(
+                    latest_response_id,
+                    latest_pending_tool_calls,
+                )
                 session_values["latest_input_item_count"] = latest_input_item_count
                 session_values["latest_input_full_fingerprint"] = latest_input_full_fingerprint
             elif latest_input_item_count is not None and latest_input_full_fingerprint is not None:
@@ -609,6 +656,10 @@ def _to_snapshot(row: HttpBridgeSessionRecord | None) -> DurableBridgeSessionSna
         latest_response_id=row.latest_response_id,
         latest_input_item_count=row.latest_input_item_count,
         latest_input_full_fingerprint=row.latest_input_full_fingerprint,
+        latest_pending_tool_calls=_decode_pending_tool_calls(
+            row.latest_response_id,
+            row.latest_pending_tool_calls_json,
+        ),
         closed_at=row.closed_at,
     )
 

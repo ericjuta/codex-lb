@@ -172,6 +172,96 @@ logger = logging.getLogger("app.modules.proxy.service")
 T = TypeVar("T")
 _TEXT_DELTA_EVENT_TYPES = frozenset({"response.output_text.delta", "response.refusal.delta"})
 _REQUEST_TRANSPORT_HTTP = "http"
+_DURABLE_TOOL_CALL_ITEM_TYPES = frozenset(
+    {
+        "apply_patch_call",
+        "custom_tool_call",
+        "function_call",
+    }
+)
+_UNSUPPORTED_DURABLE_TOOL_CALL_ITEM_TYPES = frozenset(
+    {
+        "computer_call",
+        "mcp_approval_request",
+    }
+)
+
+
+def _record_http_bridge_tool_call_lifecycle(
+    request_state: _WebSocketRequestState,
+    *,
+    event_type: str | None,
+    payload: dict[str, JsonValue] | None,
+) -> None:
+    if event_type not in {"response.output_item.added", "response.output_item.done"}:
+        return
+    item = payload.get("item") if isinstance(payload, dict) else None
+    if not isinstance(item, dict):
+        request_state.tool_call_manifest_invalid = True
+        return
+    item_type = item.get("type")
+    if not isinstance(item_type, str):
+        request_state.tool_call_manifest_invalid = True
+        return
+    if item_type in _UNSUPPORTED_DURABLE_TOOL_CALL_ITEM_TYPES:
+        request_state.tool_call_manifest_invalid = True
+        return
+    if item_type not in _DURABLE_TOOL_CALL_ITEM_TYPES:
+        return
+    call_id = item.get("call_id")
+    if not isinstance(call_id, str) or not call_id:
+        request_state.tool_call_manifest_invalid = True
+        return
+    target = (
+        request_state.added_tool_call_types
+        if event_type == "response.output_item.added"
+        else request_state.pending_tool_call_types
+    )
+    if call_id in target:
+        request_state.tool_call_manifest_invalid = True
+        return
+    target[call_id] = item_type
+
+
+def _response_completed_tool_call_types(
+    payload: dict[str, JsonValue] | None,
+) -> dict[str, str] | None:
+    response = payload.get("response") if isinstance(payload, dict) else None
+    output = response.get("output") if isinstance(response, dict) else None
+    if not isinstance(output, list):
+        return None
+    result: dict[str, str] = {}
+    for item in output:
+        if not isinstance(item, dict):
+            return None
+        item_type = item.get("type")
+        if not isinstance(item_type, str):
+            return None
+        if item_type in _UNSUPPORTED_DURABLE_TOOL_CALL_ITEM_TYPES:
+            return None
+        if item_type not in _DURABLE_TOOL_CALL_ITEM_TYPES:
+            continue
+        call_id = item.get("call_id")
+        if not isinstance(call_id, str) or not call_id or call_id in result:
+            return None
+        result[call_id] = item_type
+    return result
+
+
+def _durable_pending_tool_call_manifest(
+    request_state: _WebSocketRequestState,
+    payload: dict[str, JsonValue] | None,
+) -> dict[str, str] | None:
+    terminal_calls = _response_completed_tool_call_types(payload)
+    if request_state.tool_call_manifest_invalid or terminal_calls is None:
+        return None
+    if request_state.added_tool_call_types != request_state.pending_tool_call_types:
+        return None
+    if terminal_calls and terminal_calls != request_state.pending_tool_call_types:
+        return None
+    return dict(request_state.pending_tool_call_types)
+
+
 _UPSTREAM_CLOSE_CODES_SKIP_SAME_ACCOUNT_RETRY = frozenset({1011})
 _WEBSOCKET_AUTH_INVALIDATED_FAILURE_CODE = "account_auth_invalidated"
 _SECURITY_WORK_AUTHORIZATION_REQUIRED_CODE = "security_work_authorization_required"
@@ -638,6 +728,11 @@ class _HTTPBridgeUpstreamEventsMixin:
                 if actual_service_tier is not None:
                     matched_request_state.actual_service_tier = actual_service_tier
                     matched_request_state.service_tier = actual_service_tier
+                _record_http_bridge_tool_call_lifecycle(
+                    matched_request_state,
+                    event_type=event_type,
+                    payload=payload,
+                )
                 completed_tool_call = _response_output_item_done_tool_call(payload)
                 if completed_tool_call is not None:
                     completed_call_id, completed_call_type = completed_tool_call
@@ -1160,6 +1255,10 @@ class _HTTPBridgeUpstreamEventsMixin:
                     matched_request_state.input_full_fingerprint
                     if event_type == "response.completed" and matched_request_state.input_item_count > 0
                     else None
+                ),
+                pending_tool_calls=_durable_pending_tool_call_manifest(
+                    matched_request_state,
+                    payload,
                 ),
             )
 

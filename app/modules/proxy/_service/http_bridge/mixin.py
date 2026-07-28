@@ -106,7 +106,6 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _is_missing_durable_bridge_table_error,
     _log_http_bridge_event,
     _log_http_bridge_startup_wait_timeout,
-    _persist_http_bridge_previous_response_alias,
     _persist_http_bridge_turn_state_alias,
     _preferred_http_bridge_reconnect_turn_state,
     _raise_http_bridge_incompatible_admission_handoff,
@@ -114,6 +113,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _record_bridge_first_turn_timeout,
     _record_bridge_reattach,
     _refresh_reused_http_bridge_session_with_handoff,
+    _register_http_bridge_previous_response_id,
     _require_http_bridge_bound_account_not_excluded,
     _reserve_http_bridge_unanchored_handoff,
     _track_alias_registration,
@@ -1592,33 +1592,16 @@ class _HTTPBridgeMixin(
         *,
         input_item_count: int | None = None,
         input_full_fingerprint: str | None = None,
+        pending_tool_calls: dict[str, str] | None = None,
     ) -> None:
-        stripped_response_id = response_id.strip()
-        if not stripped_response_id:
-            return
-        async with self._http_bridge_lock:
-            if session.closed:
-                return
-            if (
-                session.upstream_control.retire_after_drain
-                and self._http_bridge_sessions.get(session.key) is not session
-            ):
-                return
-            alias_key = _http_bridge_previous_response_alias_key(stripped_response_id, session.key.api_key_id)
-            registration_generation = _track_alias_registration(session, stripped_response_id, turn_state=False)
-            self._http_bridge_previous_response_index[alias_key] = session.key
-            session.previous_response_ids.add(stripped_response_id)
-        if session.durable_session_id is not None and session.durable_owner_epoch is not None:
-            await _persist_http_bridge_previous_response_alias(
-                self,
-                session,
-                response_id=stripped_response_id,
-                registration_generation=registration_generation,
-                input_item_count=input_item_count,
-                input_full_fingerprint=input_full_fingerprint,
-                instance_id=_service_get_settings().http_responses_session_bridge_instance_id,
-                lease_ttl_seconds=_http_bridge_durable_lease_ttl_seconds(),
-            )
+        await _register_http_bridge_previous_response_id(
+            self,
+            session,
+            response_id,
+            input_item_count=input_item_count,
+            input_full_fingerprint=input_full_fingerprint,
+            pending_tool_calls=pending_tool_calls,
+        )
 
     async def _unregister_http_bridge_turn_states(self, session: "_HTTPBridgeSession") -> None:
         async with self._http_bridge_lock:

@@ -195,6 +195,11 @@ from app.modules.proxy.affinity import (
 )
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.durable_bridge_coordinator import DurableBridgeLookup
+from app.modules.proxy.fresh_resend_safety import (
+    project_responses_input_for_fresh_resend,
+    responses_input_suffix_matches_pending_tool_calls,
+    responses_input_suffix_retains_prior_output,
+)
 from app.modules.proxy.helpers import (
     _normalize_error_code,
 )
@@ -219,6 +224,42 @@ _SECURITY_WORK_NO_AUTHORIZED_ACCOUNTS_MESSAGE = (
 _HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS = 5.0
 _HTTP_BRIDGE_BACKGROUND_CLEANUP_WARN_THRESHOLD = 100
 _RESPONSE_CREATE_GATE_RETRY_SLEEP_SECONDS = 10.0
+
+
+def _classify_durable_full_resend(
+    payload: ResponsesRequest,
+    lookup: DurableBridgeLookup,
+) -> tuple[int | None, str | None, bool]:
+    stored_count = lookup.latest_input_item_count
+    if (
+        not _http_bridge_payload_looks_like_full_resend(payload)
+        or stored_count is None
+        or not isinstance(payload.input, list)
+        or not _input_prefix_matches_stored_context(
+            payload.input,
+            stored_count=stored_count,
+            stored_fingerprint=lookup.latest_input_full_fingerprint,
+        )
+    ):
+        return None, None, False
+    projection = project_responses_input_for_fresh_resend(
+        cast(list[JsonValue], payload.input),
+        stored_count=stored_count,
+    )
+    safe_fresh_context = False
+    if projection is not None:
+        safe_fresh_context = responses_input_suffix_retains_prior_output(
+            projection.input_items,
+            stored_count=projection.stored_prefix_count,
+        ) or (
+            lookup.latest_pending_tool_calls is not None
+            and responses_input_suffix_matches_pending_tool_calls(
+                projection.input_items,
+                stored_count=projection.stored_prefix_count,
+                pending_tool_calls=lookup.latest_pending_tool_calls,
+            )
+        )
+    return stored_count, lookup.latest_input_full_fingerprint, safe_fresh_context
 
 
 def _proxy_error_code_message(exc: ProxyResponseError) -> tuple[str | None, str | None]:
@@ -824,6 +865,8 @@ class _HTTPBridgeStreamingMixin:
         previous_response_trimmed_input_fingerprint: str | None = None
         durable_full_resend_anchor_count: int | None = None
         durable_full_resend_anchor_fingerprint: str | None = None
+        durable_full_resend_has_safe_fresh_context = False
+        payload_looks_like_full_resend = _http_bridge_payload_looks_like_full_resend(payload)
         durable_model_transition_lookup = (
             durable_lookup
             if durable_lookup is not None and not _http_bridge_models_compatible(durable_lookup.model, payload.model)
@@ -842,6 +885,11 @@ class _HTTPBridgeStreamingMixin:
             )
             durable_lookup = None
         if durable_lookup is not None:
+            (
+                durable_full_resend_anchor_count,
+                durable_full_resend_anchor_fingerprint,
+                durable_full_resend_has_safe_fresh_context,
+            ) = _classify_durable_full_resend(payload, durable_lookup)
             bridge_session_key = _HTTPBridgeSessionKey(
                 durable_lookup.canonical_kind,
                 durable_lookup.canonical_key,
@@ -853,19 +901,31 @@ class _HTTPBridgeStreamingMixin:
                 api_key=api_key,
             )
             forwards_to_active_owner = await self._http_bridge_can_forward_to_active_owner(durable_lookup)
-            durable_anchor_trimmable = _input_prefix_matches_stored_context(
-                payload.input,
-                stored_count=durable_lookup.latest_input_item_count or 0,
-                stored_fingerprint=durable_lookup.latest_input_full_fingerprint,
-            )
-            if (
+            durable_anchor_trimmable = durable_full_resend_anchor_count is not None
+            fresh_reattach_can_use_durable_anchor = (
                 not live_local_session_exists
                 and not forwards_to_active_owner
                 and payload.previous_response_id is None
+                and not payload.conversation
                 and bridge_session_key.strength == "hard"
                 and durable_lookup.latest_response_id is not None
-                and (not _http_bridge_payload_looks_like_full_resend(payload) or durable_anchor_trimmable)
+                and (not payload_looks_like_full_resend or durable_anchor_trimmable)
+            )
+            if (
+                fresh_reattach_can_use_durable_anchor
+                and payload_looks_like_full_resend
+                and durable_full_resend_has_safe_fresh_context
             ):
+                _log_http_bridge_event(
+                    "fresh_reattach_full_resend_preserved",
+                    bridge_session_key,
+                    account_id=durable_lookup.account_id,
+                    model=payload.model,
+                    detail="outcome=client_unanchored_full_resend",
+                    cache_key_family=bridge_session_key.affinity_kind,
+                    model_class=_extract_model_class(payload.model) if payload.model else None,
+                )
+            elif fresh_reattach_can_use_durable_anchor:
                 effective_payload = payload.model_copy(
                     update={"previous_response_id": durable_lookup.latest_response_id}
                 )
@@ -881,9 +941,7 @@ class _HTTPBridgeStreamingMixin:
                     cache_key_family=bridge_session_key.affinity_kind,
                     model_class=_extract_model_class(payload.model) if payload.model else None,
                 )
-                if _http_bridge_payload_looks_like_full_resend(payload):
-                    durable_full_resend_anchor_count = durable_lookup.latest_input_item_count
-                    durable_full_resend_anchor_fingerprint = durable_lookup.latest_input_full_fingerprint
+                if payload_looks_like_full_resend:
                     _log_http_bridge_event(
                         "durable_full_resend_anchor_injected",
                         bridge_session_key,
@@ -1098,6 +1156,7 @@ class _HTTPBridgeStreamingMixin:
                 previous_response_trimmed_input_fingerprint = None
                 durable_full_resend_anchor_count = None
                 durable_full_resend_anchor_fingerprint = None
+                durable_full_resend_has_safe_fresh_context = False
                 durable_lookup = None
                 continue
             break
@@ -1316,7 +1375,8 @@ class _HTTPBridgeStreamingMixin:
                 return
         session = session_or_forward
         if (
-            durable_full_resend_anchor_count is not None
+            not durable_full_resend_has_safe_fresh_context
+            and durable_full_resend_anchor_count is not None
             and durable_full_resend_anchor_fingerprint is not None
             and durable_lookup is not None
             and durable_lookup.latest_response_id is not None

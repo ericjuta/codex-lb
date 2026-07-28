@@ -1091,3 +1091,38 @@ async def test_request_usage_time_rollups_migration_upgrade_and_downgrade(tmp_pa
         assert survivor == 3
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_pending_tool_calls_migration_upgrade_and_downgrade(tmp_path):
+    from alembic import command
+    from sqlalchemy import inspect as sa_inspect
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'http-bridge-pending-tool-calls.sqlite'}"
+    parent_revision = "20260724_000000_add_request_usage_time_rollups"
+    manifest_revision = "20260728_000000_add_http_bridge_pending_tool_calls"
+    column_name = "latest_pending_tool_calls_json"
+
+    def _columns(sync_conn):
+        return {column["name"] for column in sa_inspect(sync_conn).get_columns("http_bridge_sessions")}
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=False))
+    engine = create_async_engine(db_url, future=True)
+    try:
+        async with engine.connect() as conn:
+            columns = await conn.run_sync(_columns)
+        assert column_name not in columns
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, manifest_revision, bootstrap_legacy=False))
+        async with engine.connect() as conn:
+            columns = await conn.run_sync(_columns)
+        assert column_name in columns
+
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        async with engine.connect() as conn:
+            columns = await conn.run_sync(_columns)
+        assert column_name not in columns
+    finally:
+        await engine.dispose()

@@ -552,11 +552,19 @@ async def test_durable_response_fence_rejection_rolls_back_local_alias(
     service._durable_bridge = SimpleNamespace(register_previous_response_id=AsyncMock(return_value=False))
     monkeypatch.setattr(http_bridge_helpers_module, "get_settings", _make_app_settings)
 
-    await service._register_http_bridge_previous_response_id(session, "resp-rejected")
+    await service._register_http_bridge_previous_response_id(
+        session,
+        "resp-rejected",
+        pending_tool_calls={"call_1": "function_call"},
+    )
 
     alias_key = proxy_service._http_bridge_previous_response_alias_key("resp-rejected", session.key.api_key_id)
     assert "resp-rejected" not in session.previous_response_ids
     assert alias_key not in service._http_bridge_previous_response_index
+    service._durable_bridge.register_previous_response_id.assert_awaited_once()
+    assert service._durable_bridge.register_previous_response_id.await_args.kwargs["pending_tool_calls"] == {
+        "call_1": "function_call"
+    }
 
 
 @pytest.mark.asyncio
@@ -5483,7 +5491,7 @@ async def test_stream_via_http_bridge_skips_session_anchor_injection_when_trim_w
 
 
 @pytest.mark.asyncio
-async def test_stream_via_http_bridge_does_not_inject_durable_previous_response_anchor_for_full_resend_payload(
+async def test_stream_via_http_bridge_preserves_verified_retained_output_full_resend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
@@ -5492,9 +5500,12 @@ async def test_stream_via_http_bridge_does_not_inject_durable_previous_response_
             "model": "gpt-5.4",
             "instructions": "hi",
             "input": [
-                {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "world"},
-                {"role": "user", "content": "follow up"},
+                {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "world"}],
+                },
+                {"role": "user", "content": [{"type": "input_text", "text": "follow up"}]},
             ],
         },
     )
@@ -5582,6 +5593,10 @@ async def test_stream_via_http_bridge_does_not_inject_durable_previous_response_
                 state=HttpBridgeSessionState.ACTIVE,
                 latest_turn_state="http_turn_1",
                 latest_response_id="resp_latest",
+                latest_input_item_count=1,
+                latest_input_full_fingerprint=proxy_service._fingerprint_input_items(
+                    cast(list[Any], payload.input)[:1]
+                ),
             )
         ),
     )
@@ -5610,6 +5625,10 @@ async def test_stream_via_http_bridge_does_not_inject_durable_previous_response_
 
     assert chunks == []
     assert captured["previous_response_id"] is None
+    get_or_create_call = cast(AsyncMock, service._get_or_create_http_bridge_session).await_args
+    assert get_or_create_call is not None
+    assert get_or_create_call.kwargs["previous_response_id"] is None
+    assert get_or_create_call.kwargs["preferred_account_id"] == "acc-1"
     # Full-resend payloads are explicitly excluded from durable anchor
     # injection, so the bridge prepares the original request exactly once.
     assert prepared_input_lengths == [3]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -40,6 +40,7 @@ class DurableBridgeLookup:
     latest_response_id: str | None
     latest_input_item_count: int | None = None
     latest_input_full_fingerprint: str | None = None
+    latest_pending_tool_calls: dict[str, str] | None = None
     model: str | None = None
 
     def lease_is_active(self, *, now: datetime) -> bool:
@@ -169,6 +170,7 @@ class DurableBridgeSessionCoordinator:
         latest_response_id: str | None = None,
         latest_input_item_count: int | None = None,
         latest_input_full_fingerprint: str | None = None,
+        latest_pending_tool_calls: Mapping[str, str] | None = None,
         state: HttpBridgeSessionState | None = None,
     ) -> DurableBridgeLookup | None:
         del api_key_id
@@ -183,6 +185,7 @@ class DurableBridgeSessionCoordinator:
                     latest_response_id=latest_response_id,
                     latest_input_item_count=latest_input_item_count,
                     latest_input_full_fingerprint=latest_input_full_fingerprint,
+                    latest_pending_tool_calls=latest_pending_tool_calls,
                     state=state,
                 )
             if snapshot is None:
@@ -269,6 +272,7 @@ class DurableBridgeSessionCoordinator:
         lease_ttl_seconds: float,
         input_item_count: int | None = None,
         input_full_fingerprint: str | None = None,
+        pending_tool_calls: Mapping[str, str] | None = None,
     ) -> bool:
         api_key_scope = durable_bridge_api_key_scope(api_key_id)
         async def _register_once() -> bool:
@@ -284,6 +288,7 @@ class DurableBridgeSessionCoordinator:
                     latest_response_id=response_id,
                     latest_input_item_count=input_item_count,
                     latest_input_full_fingerprint=input_full_fingerprint,
+                    latest_pending_tool_calls=pending_tool_calls,
                 )
 
         return await self._write_with_sqlite_retry("durable_bridge_previous_response", _register_once)
@@ -356,5 +361,6 @@ def _to_lookup(snapshot: DurableBridgeSessionSnapshot) -> DurableBridgeLookup:
         latest_response_id=snapshot.latest_response_id,
         latest_input_item_count=snapshot.latest_input_item_count,
         latest_input_full_fingerprint=snapshot.latest_input_full_fingerprint,
+        latest_pending_tool_calls=snapshot.latest_pending_tool_calls,
         model=snapshot.model,
     )

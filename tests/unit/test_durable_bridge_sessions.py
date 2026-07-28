@@ -644,6 +644,7 @@ async def test_durable_bridge_takeover_preserves_existing_anchor_when_replacemen
 @pytest.mark.asyncio
 async def test_durable_bridge_previous_response_records_completed_input_prefix(
     coordinator: DurableBridgeSessionCoordinator,
+    async_session_factory: Callable[[], AsyncSession],
 ) -> None:
     claimed = await coordinator.claim_live_session(
         session_key_kind="session_header",
@@ -668,6 +669,7 @@ async def test_durable_bridge_previous_response_records_completed_input_prefix(
         lease_ttl_seconds=60.0,
         input_item_count=3,
         input_full_fingerprint="a" * 64,
+        pending_tool_calls={"call_1": "function_call"},
     )
 
     lookup = await coordinator.lookup_request_targets(
@@ -683,6 +685,48 @@ async def test_durable_bridge_previous_response_records_completed_input_prefix(
     assert lookup.latest_response_id == "resp_prefix"
     assert lookup.latest_input_item_count == 3
     assert lookup.latest_input_full_fingerprint == "a" * 64
+    assert lookup.latest_pending_tool_calls == {"call_1": "function_call"}
+
+    async with async_session_factory() as session:
+        await session.execute(
+            update(HttpBridgeSessionRecord)
+            .where(HttpBridgeSessionRecord.id == claimed.session_id)
+            .values(latest_pending_tool_calls_json='{"response_id":"resp_other","calls":{"call_1":"function_call"}}')
+        )
+        await session.commit()
+
+    mismatched = await coordinator.lookup_request_targets(
+        session_key_kind="session_header",
+        session_key_value="sid-prefix",
+        api_key_id="key-1",
+        turn_state=None,
+        session_header="sid-prefix",
+        previous_response_id=None,
+    )
+    assert mismatched is not None
+    assert mismatched.latest_pending_tool_calls is None
+
+    await coordinator.register_previous_response_id(
+        session_id=claimed.session_id,
+        api_key_id="key-1",
+        instance_id="instance-a",
+        owner_epoch=claimed.owner_epoch,
+        response_id="resp_next",
+        lease_ttl_seconds=60.0,
+        input_item_count=4,
+        input_full_fingerprint="b" * 64,
+    )
+    refreshed = await coordinator.lookup_request_targets(
+        session_key_kind="session_header",
+        session_key_value="sid-prefix",
+        api_key_id="key-1",
+        turn_state=None,
+        session_header="sid-prefix",
+        previous_response_id=None,
+    )
+    assert refreshed is not None
+    assert refreshed.latest_response_id == "resp_next"
+    assert refreshed.latest_pending_tool_calls is None
 
 
 @pytest.mark.asyncio
@@ -717,6 +761,7 @@ async def test_durable_bridge_takeover_with_account_change_clears_stale_aliases(
         owner_epoch=claimed.owner_epoch,
         response_id="resp_old",
         lease_ttl_seconds=60.0,
+        pending_tool_calls={"call_old": "function_call"},
     )
     await coordinator.release_live_session(
         session_id=claimed.session_id,
@@ -742,6 +787,7 @@ async def test_durable_bridge_takeover_with_account_change_clears_stale_aliases(
     assert reclaimed.owner_instance_id == "instance-b"
     assert reclaimed.latest_turn_state is None
     assert reclaimed.latest_response_id is None
+    assert reclaimed.latest_pending_tool_calls is None
 
     stale_by_turn_state = await coordinator.lookup_request_targets(
         session_key_kind="request",

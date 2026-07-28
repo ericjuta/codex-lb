@@ -1372,6 +1372,7 @@ async def _persist_http_bridge_previous_response_alias(
     registration_generation: int,
     input_item_count: int | None,
     input_full_fingerprint: str | None,
+    pending_tool_calls: Mapping[str, str] | None,
     instance_id: str,
     lease_ttl_seconds: float,
 ) -> None:
@@ -1386,6 +1387,7 @@ async def _persist_http_bridge_previous_response_alias(
             lease_ttl_seconds=lease_ttl_seconds,
             input_item_count=input_item_count,
             input_full_fingerprint=input_full_fingerprint,
+            pending_tool_calls=pending_tool_calls,
         )
     except Exception:
         logger.warning("Failed to persist durable HTTP bridge previous_response_id alias", exc_info=True)
@@ -1410,6 +1412,44 @@ async def _persist_http_bridge_previous_response_alias(
             and service._http_bridge_previous_response_index.get(alias_key) == session.key
         ):
             service._http_bridge_previous_response_index.pop(alias_key, None)
+
+
+async def _register_http_bridge_previous_response_id(
+    service: _HTTPBridgeServiceProtocol,
+    session: _HTTPBridgeSession,
+    response_id: str,
+    *,
+    input_item_count: int | None = None,
+    input_full_fingerprint: str | None = None,
+    pending_tool_calls: Mapping[str, str] | None = None,
+) -> None:
+    stripped_response_id = response_id.strip()
+    if not stripped_response_id:
+        return
+    async with service._http_bridge_lock:
+        if session.closed:
+            return
+        if (
+            session.upstream_control.retire_after_drain
+            and service._http_bridge_sessions.get(session.key) is not session
+        ):
+            return
+        alias_key = _http_bridge_previous_response_alias_key(stripped_response_id, session.key.api_key_id)
+        registration_generation = _track_alias_registration(session, stripped_response_id, turn_state=False)
+        service._http_bridge_previous_response_index[alias_key] = session.key
+        session.previous_response_ids.add(stripped_response_id)
+    if session.durable_session_id is not None and session.durable_owner_epoch is not None:
+        await _persist_http_bridge_previous_response_alias(
+            service,
+            session,
+            response_id=stripped_response_id,
+            registration_generation=registration_generation,
+            input_item_count=input_item_count,
+            input_full_fingerprint=input_full_fingerprint,
+            pending_tool_calls=pending_tool_calls,
+            instance_id=_service_get_settings().http_responses_session_bridge_instance_id,
+            lease_ttl_seconds=_http_bridge_durable_lease_ttl_seconds(),
+        )
 
 
 def _forwarded_http_bridge_session_key(
