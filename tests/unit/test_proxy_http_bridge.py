@@ -251,7 +251,7 @@ async def test_http_bridge_failed_send_disarms_eventless_deadline(
     )
 
 
-def test_responses_request_budget_seconds_uses_codex_http_budget() -> None:
+def test_responses_request_budget_seconds_uses_codex_budget_only_for_http() -> None:
     settings = Settings(
         proxy_request_budget_seconds=600.0,
         http_responses_session_bridge_codex_request_budget_seconds=600.0,
@@ -279,7 +279,7 @@ def test_responses_request_budget_seconds_uses_codex_http_budget() -> None:
             codex_session_affinity=True,
             request_transport="websocket",
         )
-        == 600.0
+        == 7200.0
     )
 
 
@@ -6540,7 +6540,7 @@ async def test_http_bridge_reader_retirement_removes_session_and_releases_durabl
 
     assert session.closed is True
     assert key not in service._http_bridge_sessions
-    upstream.close.assert_awaited_once()
+    cast(AsyncMock, upstream.close).assert_awaited_once()
     release_live_session.assert_awaited_once()
 
 
@@ -15150,7 +15150,7 @@ async def test_reconnect_http_bridge_session_fails_over_on_upstream_websocket_op
         ("upstream_websocket_open_timeout", 502, "connect"),
         ("upstream_websocket_open_timeout", 502, "connect"),
     ]
-    old_upstream.close.assert_awaited_once()
+    cast(AsyncMock, old_upstream.close).assert_awaited_once()
 
 
 @pytest.mark.asyncio

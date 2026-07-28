@@ -105,9 +105,7 @@ class PromptCacheCanaryScheduler:
             if PROMETHEUS_AVAILABLE and prompt_cache_ratio is not None:
                 prompt_cache_ratio.labels(model=model).set(ratio)
             if PROMETHEUS_AVAILABLE and prompt_cache_uncached_tokens_per_request is not None:
-                prompt_cache_uncached_tokens_per_request.labels(model=model).set(
-                    uncached_tokens_per_request
-                )
+                prompt_cache_uncached_tokens_per_request.labels(model=model).set(uncached_tokens_per_request)
             if input_tokens < self.min_input_tokens:
                 continue
             ratio_threshold = self.model_ratio_thresholds.get(model, self.ratio_threshold)
@@ -120,9 +118,7 @@ class PromptCacheCanaryScheduler:
                     ratio_threshold,
                     self.window_seconds,
                 )
-            uncached_threshold = self.model_uncached_tokens_thresholds.get(
-                model, self.uncached_tokens_threshold
-            )
+            uncached_threshold = self.model_uncached_tokens_thresholds.get(model, self.uncached_tokens_threshold)
             if uncached_threshold > 0 and uncached_tokens_per_request > uncached_threshold:
                 logger.warning(
                     "Prompt-cache uncached tokens regressed model=%s"

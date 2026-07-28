@@ -7,6 +7,7 @@ single source of truth) and are re-exported here so ``middleware.app`` /
 The synthetic continue-pair helpers below are used only by this standalone
 proxy, so they stay local.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -111,11 +112,7 @@ def repair_followup_input(
             continue
         call_id = continue_call_id(rid)
         nxt = input_items[i + 1] if i + 1 < n else None
-        already = (
-            isinstance(nxt, dict)
-            and nxt.get("type") == "function_call"
-            and nxt.get("call_id") == call_id
-        )
+        already = isinstance(nxt, dict) and nxt.get("type") == "function_call" and nxt.get("call_id") == call_id
         if already:
             continue
         call, output = continue_pair(rid, tool_name=tool_name, output_text=output_text)

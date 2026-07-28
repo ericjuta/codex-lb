@@ -50,6 +50,9 @@ class _ScalarRows:
     def __init__(self, rows: list[RequestLog]) -> None:
         self._rows = rows
 
+    def first(self) -> None:
+        return None
+
     def scalars(self) -> list[RequestLog]:
         return self._rows
 
@@ -69,6 +72,8 @@ class _RetryUpdateSession:
 
     async def execute(self, _: object) -> _ScalarRows:
         self.execute_calls += 1
+        if self.execute_calls % 2 == 1:
+            return _ScalarRows([])
         log = RequestLog(
             account_id=None,
             request_id="req_retry_model_update",
@@ -176,13 +181,14 @@ async def test_add_log_retries_sqlite_lock_with_rollback(monkeypatch: pytest.Mon
 @pytest.mark.asyncio
 async def test_update_model_for_request_retries_sqlite_lock_with_rollback(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.db.sqlite_retry.asyncio.sleep", _no_sleep)
+    monkeypatch.setattr("app.modules.request_logs.repository.lock_fold_state", AsyncMock(return_value=None))
     session = _RetryUpdateSession()
     repo = RequestLogsRepository(cast(AsyncSession, session))
 
     updated = await repo.update_model_for_request("req_retry_model_update", "gpt-5.4")
 
     assert updated == 1
-    assert session.execute_calls == 2
+    assert session.execute_calls == 4
     assert session.commits == 2
     assert session.rollbacks == 1
     assert session.logs[-1].model == "gpt-5.4"
@@ -274,11 +280,11 @@ async def test_find_latest_account_id_for_response_id_prefers_session_then_falls
     executed_sql: list[str] = []
     returned_values = iter(
         [
-            "acc_latest",
-            "acc_scoped",
-            "acc_session",
+            ("acc_latest", None, None),
+            ("acc_scoped", None, None),
+            ("acc_session", None, "sid_terminal_a"),
             None,
-            "acc_scoped",
+            ("acc_scoped", None, None),
             None,
         ]
     )
@@ -286,7 +292,7 @@ async def test_find_latest_account_id_for_response_id_prefers_session_then_falls
     async def _execute(statement):
         executed_sql.append(str(statement))
         value = next(returned_values)
-        return SimpleNamespace(scalar_one_or_none=lambda: value)
+        return SimpleNamespace(one_or_none=lambda: value)
 
     session.execute.side_effect = _execute
 
@@ -348,7 +354,7 @@ async def test_find_latest_account_id_for_response_id_ignores_blank_session_id_s
 
     async def _execute(statement):
         executed_sql.append(str(statement))
-        return SimpleNamespace(scalar_one_or_none=lambda: "acc_scoped")
+        return SimpleNamespace(one_or_none=lambda: ("acc_scoped", None, None))
 
     session.execute.side_effect = _execute
 
@@ -368,11 +374,11 @@ async def test_find_latest_account_id_for_response_id_falls_back_when_session_sc
     session = AsyncMock()
     repo = RequestLogsRepository(session)
     executed_sql: list[str] = []
-    returned_values = iter(["   ", "acc_fallback"])
+    returned_values = iter([("   ", None, "sid_terminal_a"), ("acc_fallback", None, None)])
 
     async def _execute(statement):
         executed_sql.append(str(statement))
-        return SimpleNamespace(scalar_one_or_none=lambda: next(returned_values))
+        return SimpleNamespace(one_or_none=lambda: next(returned_values))
 
     session.execute.side_effect = _execute
 

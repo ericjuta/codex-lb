@@ -198,7 +198,7 @@ def test_request_logs_snapshot_includes_latency_transport_and_tiers(tmp_path: Pa
 
 
 def test_request_logs_uses_container_postgres_when_live_env_is_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
-    expected = {"source": {"backend": "postgresql", "container": "codex-lb-direct"}}
+    expected: dict[str, object] = {"source": {"backend": "postgresql", "container": "codex-lb-direct"}}
     calls: list[tuple[str, int]] = []
 
     monkeypatch.setattr(snapshot.shutil, "which", lambda name: "/usr/bin/docker")

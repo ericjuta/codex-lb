@@ -119,6 +119,7 @@ def test_main_reports_non_positive_ws_max_size(monkeypatch):
     with pytest.raises(SystemExit, match="--ws-max-size/UVICORN_WS_MAX_SIZE must be positive"):
         cli.main()
 
+
 @pytest.mark.parametrize("source", ["flag", "env"])
 def test_main_reports_invalid_server_port_before_loading_uvicorn(monkeypatch, source):
     def fail_load_uvicorn():
@@ -137,6 +138,7 @@ def test_main_reports_invalid_server_port_before_loading_uvicorn(monkeypatch, so
 
     assert str(exc_info.value) == ("--port/PORT must be an integer between 0 and 65535 inclusive, got 'not-a-port'.")
 
+
 @pytest.mark.parametrize("source", ["flag", "env"])
 @pytest.mark.parametrize("raw_port", ["-1", "65536", "70000"])
 def test_main_rejects_out_of_range_server_port_before_loading_uvicorn(monkeypatch, source, raw_port):
@@ -153,6 +155,7 @@ def test_main_rejects_out_of_range_server_port_before_loading_uvicorn(monkeypatc
 
     with pytest.raises(SystemExit, match=r"--port/PORT must be between 0 and 65535 inclusive"):
         cli.main(argv)
+
 
 @pytest.mark.parametrize("source", ["flag", "env"])
 @pytest.mark.parametrize("raw_port", ["0", "65535"])
@@ -173,6 +176,8 @@ def test_main_forwards_server_port_boundaries(monkeypatch, source, raw_port):
     cli.main(argv)
 
     assert captured["kwargs"]["port"] == int(raw_port)
+
+
 def test_main_reports_invalid_keep_alive_timeout_env(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["codex-lb"])
     monkeypatch.setenv("UVICORN_TIMEOUT_KEEP_ALIVE", "not-a-timeout")

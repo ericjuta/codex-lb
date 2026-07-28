@@ -6,6 +6,7 @@ calls of each round are buffered as *tentative output* and either discarded
 synthetic continue machinery never reaches the agent. Truncation is the SOLE
 gate — message and function_call output are treated identically.
 """
+
 from __future__ import annotations
 
 import json
@@ -117,9 +118,7 @@ class _Seq:
         return s
 
 
-def _flush_entry(
-    entry: dict[str, Any], ds_oi: int, seq: _Seq, cfg: Config
-) -> Iterator[bytes]:
+def _flush_entry(entry: dict[str, Any], ds_oi: int, seq: _Seq, cfg: Config) -> Iterator[bytes]:
     """Emit a buffered (message | function_call) item's events downstream,
     rewriting output_index/sequence_number. Optionally re-chunk message text."""
     events: list[dict[str, Any]] = entry["events"]
@@ -134,9 +133,7 @@ def _flush_entry(
         return
 
     # Re-chunk: replace the original output_text.delta run with uniform slices.
-    full_text = "".join(
-        e.get("delta", "") for e in events if e.get("type") == "response.output_text.delta"
-    )
+    full_text = "".join(e.get("delta", "") for e in events if e.get("type") == "response.output_text.delta")
     emitted = False
     for ev in events:
         if ev.get("type") == "response.output_text.delta":
@@ -172,14 +169,28 @@ def _commentary_events(item: dict[str, Any], ds_oi: int, seq: _Seq) -> Iterator[
     head = {"id": iid, "type": "message", "role": "assistant", "phase": "commentary"}
     evs = [
         {"type": "response.output_item.added", "output_index": ds_oi, "item": head},
-        {"type": "response.content_part.added", "output_index": ds_oi, "item_id": iid,
-         "content_index": 0, "part": {"type": "output_text", "text": ""}},
-        {"type": "response.output_text.delta", "output_index": ds_oi, "item_id": iid,
-         "content_index": 0, "delta": text},
-        {"type": "response.output_text.done", "output_index": ds_oi, "item_id": iid,
-         "content_index": 0, "text": text},
-        {"type": "response.content_part.done", "output_index": ds_oi, "item_id": iid,
-         "content_index": 0, "part": {"type": "output_text", "text": text}},
+        {
+            "type": "response.content_part.added",
+            "output_index": ds_oi,
+            "item_id": iid,
+            "content_index": 0,
+            "part": {"type": "output_text", "text": ""},
+        },
+        {
+            "type": "response.output_text.delta",
+            "output_index": ds_oi,
+            "item_id": iid,
+            "content_index": 0,
+            "delta": text,
+        },
+        {"type": "response.output_text.done", "output_index": ds_oi, "item_id": iid, "content_index": 0, "text": text},
+        {
+            "type": "response.content_part.done",
+            "output_index": ds_oi,
+            "item_id": iid,
+            "content_index": 0,
+            "part": {"type": "output_text", "text": text},
+        },
         {"type": "response.output_item.done", "output_index": ds_oi, "item": item},
     ]
     for ev in evs:
@@ -369,9 +380,7 @@ async def fold_stream(
                         yield serialize_event(ev)
                     else:  # message | function_call → buffer (tentative output)
                         item_kind[up_oi] = "buffered"
-                        out_buffer.append(
-                            {"oi": up_oi, "itype": item.get("type"), "events": [ev], "item": item}
-                        )
+                        out_buffer.append({"oi": up_oi, "itype": item.get("type"), "events": [ev], "item": item})
                     continue
 
                 kind = item_kind.get(up_oi)
@@ -429,13 +438,10 @@ async def fold_stream(
                     stopped_reason = "tier_out_of_window"
 
             buffered = [e["itype"] for e in out_buffer]
-            decision = (
-                "continue" if do_continue
-                else "upstream_eof" if not saw_terminal
-                else stopped_reason or "clean"
+            decision = "continue" if do_continue else "upstream_eof" if not saw_terminal else stopped_reason or "clean"
+            log.info(
+                "round %d: %s | n=%s buffered=%s -> %s", round_no, _fmt_usage(usage), n, buffered or "[]", decision
             )
-            log.info("round %d: %s | n=%s buffered=%s -> %s",
-                     round_no, _fmt_usage(usage), n, buffered or "[]", decision)
 
             await response.aclose()
 
@@ -481,15 +487,22 @@ async def fold_stream(
                 if response.status_code >= 400:
                     body = (await response.aread())[:2000]
                     await response.aclose()
-                    log.warning("continuation round %d failed: %s %s", round_no + 1,
-                                response.status_code, body)
-                    log.info("done: %d round(s) | %s | status=incomplete stop=upstream_error",
-                             round_no, _fmt_usage(total_usage))
+                    log.warning("continuation round %d failed: %s %s", round_no + 1, response.status_code, body)
+                    log.info(
+                        "done: %d round(s) | %s | status=incomplete stop=upstream_error",
+                        round_no,
+                        _fmt_usage(total_usage),
+                    )
                     yield serialize_event(
                         _synthetic_incomplete(
-                            base_response, final_output,
+                            base_response,
+                            final_output,
                             _agent_usage(first_usage, total_usage, usage, flushed_final=False),
-                            seq(), "upstream_error", rounds_info, total_usage)
+                            seq(),
+                            "upstream_error",
+                            rounds_info,
+                            total_usage,
+                        )
                     )
                     return
                 continue
@@ -501,13 +514,19 @@ async def fold_stream(
                 # real final answer. Keep only the reasoning already live-streamed
                 # and mark the response incomplete (#7).
                 log.warning("round %d: upstream EOF with no terminal event", round_no)
-                log.info("done: %d round(s) | %s | status=incomplete stop=upstream_eof",
-                         round_no, _fmt_usage(total_usage))
+                log.info(
+                    "done: %d round(s) | %s | status=incomplete stop=upstream_eof", round_no, _fmt_usage(total_usage)
+                )
                 yield serialize_event(
                     _synthetic_incomplete(
-                        base_response, final_output,
+                        base_response,
+                        final_output,
                         _agent_usage(first_usage, total_usage, usage, flushed_final=False),
-                        seq(), "upstream_eof", rounds_info, total_usage)
+                        seq(),
+                        "upstream_eof",
+                        rounds_info,
+                        total_usage,
+                    )
                 )
                 return
 
@@ -519,13 +538,24 @@ async def fold_stream(
                 final_output.append(entry["item"])
 
             status = ((terminal or {}).get("response") or {}).get("status", "completed")
-            log.info("done: %d round(s) | %s | status=%s stop=%s",
-                     round_no, _fmt_usage(total_usage), status, stopped_reason or "natural")
+            log.info(
+                "done: %d round(s) | %s | status=%s stop=%s",
+                round_no,
+                _fmt_usage(total_usage),
+                status,
+                stopped_reason or "natural",
+            )
             yield serialize_event(
                 _reconstruct_terminal(
-                    terminal, base_response, final_output,
+                    terminal,
+                    base_response,
+                    final_output,
                     _agent_usage(first_usage, total_usage, usage, flushed_final=True),
-                    seq(), rounds_info, stopped_reason, total_usage)
+                    seq(),
+                    rounds_info,
+                    stopped_reason,
+                    total_usage,
+                )
             )
             if saw_done:
                 yield serialize_done()
@@ -533,13 +563,17 @@ async def fold_stream(
 
     except (httpx.HTTPError, ConnectionError) as exc:
         log.warning("upstream error mid-stream (round %d): %r", round_no, exc)
-        log.info("done: %d round(s) | %s | status=incomplete stop=upstream_error",
-                 round_no, _fmt_usage(total_usage))
+        log.info("done: %d round(s) | %s | status=incomplete stop=upstream_error", round_no, _fmt_usage(total_usage))
         yield serialize_event(
             _synthetic_incomplete(
-                base_response, final_output,
+                base_response,
+                final_output,
                 _agent_usage(first_usage, total_usage, None, flushed_final=False),
-                seq(), "upstream_error", rounds_info, total_usage)
+                seq(),
+                "upstream_error",
+                rounds_info,
+                total_usage,
+            )
         )
         return
     finally:

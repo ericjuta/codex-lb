@@ -5,7 +5,7 @@ import contextlib
 import importlib
 import logging
 import time
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, AsyncIterator, Protocol, cast
@@ -262,7 +262,15 @@ class UsageRefreshScheduler:
         return accounts[index], next_index == 0
 
 
-def publish_usage_gauges(rows_by_window: dict[str, dict[str, UsageHistory]]) -> None:
+class _UsageGaugeRow(Protocol):
+    @property
+    def used_percent(self) -> float | None: ...
+
+    @property
+    def reset_at(self) -> int | None: ...
+
+
+def publish_usage_gauges(rows_by_window: Mapping[str, Mapping[str, _UsageGaugeRow | None]]) -> None:
     """Publish latest per-account usage rows as Prometheus gauges."""
     if not PROMETHEUS_AVAILABLE or account_usage_percent is None or account_usage_reset_seconds is None:
         return

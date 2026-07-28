@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 from pydantic import ValidationError
 
@@ -9,7 +11,7 @@ pytestmark = pytest.mark.unit
 
 
 def test_direct_websocket_liveness_settings_defaults() -> None:
-    settings = Settings()
+    settings = cast(Any, Settings)(_env_file=None)
 
     assert settings.proxy_websocket_connect_attempt_timeout_seconds == 10.0
     assert settings.proxy_websocket_connect_budget_seconds == 20.0

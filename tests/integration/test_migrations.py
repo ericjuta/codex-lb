@@ -892,6 +892,7 @@ async def test_free_account_monthly_migration_renames_only_free_usage_windows(tm
     assert free_windows == ["old-primary", "old-secondary", "old-primary"]
     assert paid_windows == ["primary", "secondary", None]
 
+
 @pytest.mark.asyncio
 async def test_request_usage_time_rollups_migration_upgrade_and_downgrade(tmp_path):
     from alembic import command

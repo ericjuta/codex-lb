@@ -134,10 +134,13 @@ async def retry_sqlite_write(
     operation_name: str,
     delays_seconds: Sequence[float] = SQLITE_LOCK_RETRY_DELAYS_SECONDS,
     logger: logging.Logger | None = None,
+    serialize_writes: bool | None = None,
 ) -> _T:
     async def _rollback() -> None:
         with contextlib.suppress(BaseException):
             await session.rollback()
+
+    should_serialize_writes = session_uses_sqlite(session) if serialize_writes is None else serialize_writes
 
     try:
         return await retry_sqlite_lock(
@@ -146,7 +149,7 @@ async def retry_sqlite_write(
             on_retry=_rollback,
             delays_seconds=delays_seconds,
             logger=logger,
-            serialize_writes=session_uses_sqlite(session),
+            serialize_writes=should_serialize_writes,
         )
     except BaseException:
         await _rollback()

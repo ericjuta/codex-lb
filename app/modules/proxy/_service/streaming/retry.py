@@ -78,8 +78,6 @@ _HTTP_DOWNSTREAM_TRANSPORT_POLICIES = frozenset({"smart", "always_http", "always
 logger = logging.getLogger(__name__)
 
 
-from app.modules.proxy.continuity import resolve_required_account_id
-
 # pyright: reportGeneralTypeIssues=false
 _REQUEST_TRANSPORT_HTTP = "http"
 _REQUEST_TRANSPORT_WEBSOCKET = "websocket"

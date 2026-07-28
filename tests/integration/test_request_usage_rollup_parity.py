@@ -7,7 +7,7 @@ identical single raw query the legacy readers ran — and re-asserted after
 folding to a mid-history hour and to the full target, plus under a
 concurrently-advancing fold, after the operator escape hatch, and after
 retention physically pruned the folded raw rows (the headline: statistics
-survive raw deletion; conversation metrics are expectedly raw-bound).
+survive raw deletion).
 """
 
 from __future__ import annotations
@@ -93,7 +93,6 @@ def _log(requested_at: datetime, **overrides) -> RequestLog:
         "reasoning_tokens": None,
         "cached_input_tokens": 20,
         "cost_usd": 0.01,
-        "conversation_id": None,
         "requested_at": requested_at,
         "deleted_at": None,
     }
@@ -123,7 +122,6 @@ def _corpus() -> list[RequestLog]:
                     reasoning_tokens=17 + index if index % 5 == 0 else None,
                     cached_input_tokens=None if index % 7 == 0 else (index * 11) % 260,
                     cost_usd=None if index % 6 == 0 else 0.001 * (index % 9),
-                    conversation_id=("conv_a", "conv_b", None, " \t")[index % 4],
                     status="error" if index % 4 == 3 else "success",
                     error_code=("e_rate", "e_upstream", "e_zzz")[index % 3] if index % 4 == 3 else None,
                 )
@@ -232,7 +230,7 @@ def _corpus() -> list[RequestLog]:
         UNTIL_UNALIGNED,
         NOW - timedelta(minutes=1),
     ):
-        rows.append(_log(exact, request_id_suffix="edge", conversation_id="conv_edge"))
+        rows.append(_log(exact, request_id_suffix="edge"))
     # Duplicate request_id (#904-style): both rows count everywhere.
     dup_at = BASE + timedelta(days=4, hours=9, minutes=3)
     rows.append(_log(dup_at, request_id="r_dup", input_tokens=5))
@@ -498,13 +496,8 @@ async def test_statistics_survive_retention_pruning_folded_raw(db_setup):
         ("activity_folded_only", reference),
     ):
         actual, wanted = pruned[key], baseline[key]
-        assert replace(actual, cost_usd=0.0, conversation_count=0, conversation_request_count=0) == replace(
-            wanted, cost_usd=0.0, conversation_count=0, conversation_request_count=0
-        ), key
+        assert replace(actual, cost_usd=0.0) == replace(wanted, cost_usd=0.0), key
         assert actual.cost_usd == pytest.approx(wanted.cost_usd, rel=1e-9), key
-        assert actual.conversation_count <= wanted.conversation_count, key
-        assert actual.conversation_request_count <= wanted.conversation_request_count, key
-    assert pruned["activity_folded_only"].conversation_count == 0  # fully pruned window
     # earliest_activity_at: raw min is gone; the rollup fallback reports the
     # first countable bucket at hour precision.
     assert pruned["earliest"] == floor_to_hour(reference["earliest"])
@@ -533,7 +526,6 @@ async def test_dashboard_overview_json_is_identical_before_and_after_fold(async_
                     service_tier="flex" if hour % 2 else None,
                     status="error" if hour % 3 == 0 else "success",
                     error_code="e_api" if hour % 3 == 0 else None,
-                    conversation_id="conv_api",
                 )
                 for hour in range(12)
             ]

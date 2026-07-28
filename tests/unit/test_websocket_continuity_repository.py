@@ -5,6 +5,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select, update
 
+from app.core.types import JsonValue
 from app.core.utils.time import utcnow
 from app.db.models import WebsocketContinuityStateRecord
 from app.db.session import SessionLocal
@@ -13,7 +14,7 @@ from app.modules.proxy.continuity_repository import WebsocketContinuityStatesRep
 pytestmark = pytest.mark.unit
 
 
-def _snapshot(response_id: str) -> dict[str, object]:
+def _snapshot(response_id: str) -> dict[str, JsonValue]:
     return {
         "last_completed_input_count": 2,
         "last_completed_response_id": response_id,

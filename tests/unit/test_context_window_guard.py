@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from app.core.exceptions import ContextWindowExceededError
+from app.core.openai.model_registry import ModelRegistry
 from app.core.openai.requests import ResponsesRequest
+from app.core.types import JsonObject
 from app.modules.proxy import request_policy
 
 
-def _registry() -> SimpleNamespace:
+def _registry() -> ModelRegistry:
     model = SimpleNamespace(slug="gpt-5.3-codex-spark", context_window=128_000)
-    return SimpleNamespace(get_models_with_fallback=lambda: {model.slug: model})
+    return cast(ModelRegistry, SimpleNamespace(get_models_with_fallback=lambda: {model.slug: model}))
 
 
 def _settings() -> SimpleNamespace:
@@ -75,7 +78,7 @@ def test_context_guard_skips_opaque_context(monkeypatch: pytest.MonkeyPatch) -> 
     request_policy.enforce_context_window(payload, registry=_registry())
 
 
-def _additional_tools_item_with_schema_typed_object() -> dict[str, object]:
+def _additional_tools_item_with_schema_typed_object() -> JsonObject:
     # Function-tool JSON Schema legitimately nests objects under a "type" key
     # (e.g. a discriminated-union property named "type"). The guard walker must
     # traverse these without classifying them as opaque content items.
@@ -156,7 +159,7 @@ def test_context_guard_still_skips_opaque_file_reference(
     request_policy.enforce_context_window(payload, registry=_registry())
 
 
-def _oversized_input_items() -> list[dict[str, object]]:
+def _oversized_input_items() -> list[JsonObject]:
     return [{"role": "user", "content": "x" * 500_000}]
 
 

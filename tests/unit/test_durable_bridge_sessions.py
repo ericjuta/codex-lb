@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
 from datetime import timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy import delete, select, update
@@ -21,7 +22,6 @@ from app.modules.proxy.durable_bridge_coordinator import DurableBridgeSessionCoo
 from app.modules.proxy.durable_bridge_repository import DurableBridgeRepository
 
 pytestmark = pytest.mark.unit
-
 
 
 pytestmark = pytest.mark.unit
@@ -389,7 +389,7 @@ async def test_durable_bridge_claim_retries_sqlite_locked_write(
     original_claim = DurableBridgeRepository.claim_session
     attempts = 0
 
-    async def claim_with_one_lock(self: DurableBridgeRepository, *args: object, **kwargs: object):
+    async def claim_with_one_lock(self: DurableBridgeRepository, *args: Any, **kwargs: Any):
         nonlocal attempts
         attempts += 1
         if attempts == 1:
@@ -1003,6 +1003,7 @@ async def test_mark_instance_draining_keeps_current_owner_lease_active(
     assert lookup.lease_expires_at == claimed.lease_expires_at
     assert lookup.lease_is_active(now=utcnow()) is True
 
+
 @pytest.mark.asyncio
 async def test_startup_purges_owned_bridge_rows(
     coordinator: DurableBridgeSessionCoordinator,
@@ -1057,6 +1058,7 @@ async def test_startup_purges_owned_bridge_rows(
         )
         assert sticky is not None
 
+
 @pytest.mark.asyncio
 async def test_startup_purges_ownerless_stale_rows(
     coordinator: DurableBridgeSessionCoordinator,
@@ -1101,6 +1103,7 @@ async def test_startup_purges_ownerless_stale_rows(
         is None
     )
 
+
 @pytest.mark.asyncio
 async def test_startup_preserves_ownerless_rows_without_retention_cutoff(
     coordinator: DurableBridgeSessionCoordinator,
@@ -1135,6 +1138,7 @@ async def test_startup_preserves_ownerless_rows_without_retention_cutoff(
             select(HttpBridgeSessionRecord).where(HttpBridgeSessionRecord.session_key_value == "sid-ownerless-default")
         )
     assert row is not None
+
 
 @pytest.mark.asyncio
 async def test_startup_purge_batches_owned_rows(
@@ -1181,6 +1185,7 @@ async def test_startup_purge_batches_owned_rows(
         assert remaining.scalars().all() == []
         remaining_aliases = await session.execute(select(HttpBridgeSessionAlias.session_id))
         assert remaining_aliases.scalars().all() == []
+
 
 @pytest.mark.asyncio
 async def test_startup_preserves_recent_ownerless_drain_rows(
@@ -1229,6 +1234,7 @@ async def test_startup_preserves_recent_ownerless_drain_rows(
     assert lookup is not None
     assert lookup.session_id == claimed.session_id
     assert lookup.state == HttpBridgeSessionState.DRAINING
+
 
 @pytest.mark.asyncio
 async def test_startup_rechecks_ownerless_stale_rows_before_delete(

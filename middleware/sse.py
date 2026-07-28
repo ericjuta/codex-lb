@@ -9,6 +9,7 @@ Yields:
   - DONE  : the sentinel for a `data: [DONE]` terminal line
 Malformed JSON data lines are skipped (lenient, matching PoC behavior).
 """
+
 from __future__ import annotations
 
 import json

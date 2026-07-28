@@ -50,6 +50,7 @@ async def _import_account(async_client, account_id: str, email: str) -> None:
     response = await async_client.post("/api/accounts/import", files=files)
     assert response.status_code == 200
 
+
 async def _enable_api_key_auth(async_client) -> None:
     response = await async_client.put(
         "/api/settings",
@@ -61,6 +62,8 @@ async def _enable_api_key_auth(async_client) -> None:
         },
     )
     assert response.status_code == 200
+
+
 def _make_upstream_model(slug: str) -> UpstreamModel:
     return UpstreamModel(
         slug=slug,
@@ -81,6 +84,7 @@ def _make_upstream_model(slug: str) -> UpstreamModel:
         available_in_plans=frozenset({"plus"}),
         raw={},
     )
+
 
 @pytest.mark.asyncio
 async def test_transcription_openapi_preserves_explicit_multipart_contract(app_instance) -> None:
@@ -126,6 +130,7 @@ async def test_transcription_openapi_preserves_explicit_multipart_contract(app_i
         assert request_body["required"] is True
         assert request_body["content"]["multipart/form-data"]["schema"] == expected_schema
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["/backend-api/transcribe", "/v1/audio/transcriptions"])
 async def test_transcription_auth_rejection_does_not_consume_multipart_body(async_client, endpoint: str) -> None:
@@ -141,6 +146,7 @@ async def test_transcription_auth_rejection_does_not_consume_multipart_body(asyn
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "invalid_api_key"
     assert body.iterations == 0
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["/backend-api/transcribe", "/v1/audio/transcriptions"])
@@ -169,6 +175,7 @@ async def test_transcription_encoded_body_rejects_after_auth_without_consuming_b
     assert payload["error"]["type"] == "invalid_request_error"
     assert body.iterations == 0
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("endpoint", "expected_param"),
@@ -186,6 +193,7 @@ async def test_transcription_missing_content_type_retains_openai_validation(
     assert error["code"] == "invalid_request_error"
     assert error["type"] == "invalid_request_error"
     assert error["param"] == expected_param
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["/backend-api/transcribe", "/v1/audio/transcriptions"])
@@ -218,6 +226,8 @@ async def test_transcription_declared_body_limit_rejects_before_reservation_or_b
     assert payload["error"]["type"] == "invalid_request_error"
     assert body.iterations == 0
     assert reservation_calls == 0
+
+
 @pytest.mark.asyncio
 async def test_backend_transcribe_forwards_file_and_prompt(async_client, monkeypatch):
     await _import_account(async_client, "acc_transcribe_backend", "backend-transcribe@example.com")
@@ -259,6 +269,7 @@ async def test_backend_transcribe_forwards_file_and_prompt(async_client, monkeyp
     assert captured["prompt"] == "speaker says hello"
     assert captured["access_token"] == "access-token"
     assert captured["account_id"] == "acc_transcribe_backend"
+
 
 @pytest.mark.asyncio
 async def test_backend_transcribe_exact_file_limit_closes_spool_before_reservation_and_service(
@@ -309,6 +320,7 @@ async def test_backend_transcribe_exact_file_limit_closes_spool_before_reservati
     assert response.json() == {"text": "exact upload accepted"}
     assert events == ["reservation", "service"]
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["/backend-api/transcribe", "/v1/audio/transcriptions"])
 async def test_transcription_file_limit_rejects_before_selection_reservation_or_upstream(
@@ -323,7 +335,6 @@ async def test_transcription_file_limit_rejects_before_selection_reservation_or_
         calls.append("unexpected")
         raise AssertionError("oversized upload must not invoke route side effects")
 
-    monkeypatch.setattr(proxy_api, "_select_audio_transcriptions_model_source", unexpected_call)
     monkeypatch.setattr(proxy_api, "_enforce_request_limits", unexpected_call)
     monkeypatch.setattr(proxy_module.ProxyService, "transcribe", unexpected_call)
     payload = b"x" * (TRANSCRIPTION_MULTIPART_POLICY.max_file_bytes + 1)
@@ -342,6 +353,7 @@ async def test_transcription_file_limit_rejects_before_selection_reservation_or_
     assert error["param"] == "file"
     assert calls == []
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["/backend-api/transcribe", "/v1/audio/transcriptions"])
 @pytest.mark.parametrize("invalid_shape", ["missing_file", "extra_file"])
@@ -358,7 +370,6 @@ async def test_transcription_invalid_file_shape_has_no_route_side_effects(
         calls.append("unexpected")
         raise AssertionError("invalid multipart shape must not invoke route side effects")
 
-    monkeypatch.setattr(proxy_api, "_select_audio_transcriptions_model_source", unexpected_call)
     monkeypatch.setattr(proxy_api, "_enforce_request_limits", unexpected_call)
     monkeypatch.setattr(proxy_module.ProxyService, "transcribe", unexpected_call)
     fields = [("model", (None, "gpt-4o-transcribe"))] if endpoint.startswith("/v1/") else []
@@ -380,6 +391,8 @@ async def test_transcription_invalid_file_shape_has_no_route_side_effects(
     if invalid_shape == "missing_file":
         assert error["param"] == "file"
     assert calls == []
+
+
 @pytest.mark.asyncio
 async def test_v1_audio_transcriptions_rejects_unsupported_model(async_client):
     response = await async_client.post(
@@ -702,6 +715,7 @@ async def test_transcription_routing_ignores_model_registry_filter(async_client,
     assert response.status_code == 200
     assert response.json()["text"] == "registry bypass works"
 
+
 class _CountingBody(AsyncByteStream):
     def __init__(self, body: bytes) -> None:
         self.body = body
@@ -710,6 +724,7 @@ class _CountingBody(AsyncByteStream):
     async def __aiter__(self) -> AsyncIterator[bytes]:
         self.iterations += 1
         yield self.body
+
 
 def _record_spools(monkeypatch: pytest.MonkeyPatch) -> list[SpooledTemporaryFile[bytes]]:
     original = starlette_formparsers.SpooledTemporaryFile

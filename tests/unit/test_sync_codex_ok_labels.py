@@ -46,11 +46,13 @@ def decision(module: ModuleType, **overrides: Any) -> Any:
     values.update(overrides)
     return module.SyncDecision(**values)
 
+
 @pytest.mark.parametrize("merge_state", ["CONFLICTING", "DIRTY"])
 def test_needs_rebase_label_target_adds_for_confirmed_conflicts(merge_state: str) -> None:
     module = load_sync_module()
 
     assert module.needs_rebase_label_target(merge_state, has_label=False) is True
+
 
 @pytest.mark.parametrize("merge_state", ["BEHIND", "BLOCKED", "CLEAN", "DRAFT", "HAS_HOOKS", "UNSTABLE"])
 def test_needs_rebase_label_target_removes_for_known_non_conflict_states(merge_state: str) -> None:
@@ -58,11 +60,14 @@ def test_needs_rebase_label_target_removes_for_known_non_conflict_states(merge_s
 
     assert module.needs_rebase_label_target(merge_state, has_label=True) is False
 
+
 @pytest.mark.parametrize("has_label", [False, True])
 def test_needs_rebase_label_target_preserves_unknown_state(has_label: bool) -> None:
     module = load_sync_module()
 
     assert module.needs_rebase_label_target("UNKNOWN", has_label=has_label) is has_label
+
+
 def test_apply_decision_adds_needs_rebase_label(monkeypatch: pytest.MonkeyPatch) -> None:
     module = load_sync_module()
     calls: list[tuple[str, str, Any | None]] = []
@@ -91,6 +96,7 @@ def test_apply_decision_adds_needs_rebase_label(monkeypatch: pytest.MonkeyPatch)
         )
     ]
 
+
 def test_apply_decision_removes_stale_needs_rebase_label(monkeypatch: pytest.MonkeyPatch) -> None:
     module = load_sync_module()
     calls: list[tuple[str, str, Any | None]] = []
@@ -118,6 +124,8 @@ def test_apply_decision_removes_stale_needs_rebase_label(monkeypatch: pytest.Mon
             None,
         )
     ]
+
+
 def test_classify_check_state_uses_latest_run_for_duplicate_check_names() -> None:
     module = load_sync_module()
 

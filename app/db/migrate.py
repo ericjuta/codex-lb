@@ -824,10 +824,13 @@ def wait_for_head(
             )
         time.sleep(min(interval_seconds, timeout_seconds - elapsed))
 
+
 def _non_empty_database_url(value: str) -> str:
     if value == "":
         raise argparse.ArgumentTypeError("database URL must not be empty")
     return value
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Database migration utility for codex-lb.")
     parser.add_argument(

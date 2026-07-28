@@ -261,6 +261,7 @@ class _V1ResetCreditFreshCredentials:
         self.access_token_encrypted = access_token_encrypted
         self.chatgpt_account_id = chatgpt_account_id
 
+
 _TRANSCRIPTION_MODEL = "gpt-4o-transcribe"
 _OPENAPI_VALIDATION_ERROR_RESPONSE: Final[dict[str, Any]] = {
     "description": "Validation Error",
@@ -435,6 +436,8 @@ class _ParsedTranscriptionMultipart:
     model: str | None
     prompt: str | None
     ordered_text_fields: tuple[tuple[str, str], ...]
+
+
 router = APIRouter(
     prefix="/backend-api/codex",
     tags=["proxy"],
@@ -1763,6 +1766,7 @@ def _record_images_edit_early_rejection(
         started_at=started_at,
     )
 
+
 def _images_edit_invalid_request_response(
     request: Request,
     *,
@@ -1782,6 +1786,8 @@ def _images_edit_invalid_request_response(
         400,
         images_service_module.make_invalid_request_error(message, param=param),
     )
+
+
 @v1_router.post(
     "/images/edits",
     response_model=None,
@@ -3091,6 +3097,7 @@ async def v1_chat_completions(
         status_code=200,
         headers=rate_limit_headers,
     )
+
 
 async def _parse_transcription_multipart(
     request: Request,

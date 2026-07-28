@@ -3,10 +3,11 @@
 One central config controls everything. Missing keys fall back to the defaults
 baked in here, so a partial (or absent) config.toml still works.
 """
+
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -92,7 +93,7 @@ def _section(data: dict[str, Any], name: str) -> dict[str, Any]:
 
 def _only_known(cls: type, data: dict[str, Any]) -> dict[str, Any]:
     """Keep only keys that map to dataclass fields (ignore stray keys)."""
-    known = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+    known = {item.name for item in fields(cls)}
     return {k: v for k, v in data.items() if k in known}
 
 

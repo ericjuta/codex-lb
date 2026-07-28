@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -71,7 +71,7 @@ def test_parse_rate_limit_headers_rejects_non_finite_values() -> None:
 
 
 def test_parse_rate_limit_headers_rejects_numeric_overflow() -> None:
-    assert parse_rate_limit_headers({"x-codex-primary-used-percent": 10**10000}) is None
+    assert parse_rate_limit_headers(cast(Any, {"x-codex-primary-used-percent": 10**10000})) is None
 
 
 def test_parse_rate_limit_event_text_rejects_json_integer_overflow() -> None:

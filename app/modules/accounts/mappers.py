@@ -417,14 +417,8 @@ def _rate_limited_recovery_entry(
     if long_window_usage is None:
         return primary_usage
     primary_window_expired = primary_usage.reset_at is not None and primary_usage.reset_at <= now_epoch
-    long_window_available = (
-        long_window_usage.used_percent is not None and float(long_window_usage.used_percent) < 100.0
-    )
-    if (
-        primary_window_expired
-        and long_window_available
-        and long_window_usage.recorded_at > primary_usage.recorded_at
-    ):
+    long_window_available = long_window_usage.used_percent is not None and float(long_window_usage.used_percent) < 100.0
+    if primary_window_expired and long_window_available and long_window_usage.recorded_at > primary_usage.recorded_at:
         return long_window_usage
     return primary_usage
 

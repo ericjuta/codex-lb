@@ -5,7 +5,7 @@ import os
 import signal
 import ssl
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import FrameType
 from typing import TYPE_CHECKING
@@ -51,7 +51,7 @@ class BridgeWorkerConfig:
     base_url: str
 
 
-def run_bridge_worker_pool(options: RuntimeOptions, *, log_config: dict[str, object] | None = None) -> None:
+def run_bridge_worker_pool(options: RuntimeOptions, *, log_config: Mapping[str, object] | None = None) -> None:
     del log_config
     raise SystemExit(asyncio.run(BridgeWorkerPool(options).serve()))
 
@@ -167,7 +167,7 @@ class BridgeWorkerPool:
         def _stop(_: int, __: FrameType | None = None) -> None:
             stop_event.set()
 
-        previous_handlers: dict[int, object] = {}
+        previous_handlers: dict[int, Callable[[int, FrameType | None], object] | int | None] = {}
         for sig in (signal.SIGINT, signal.SIGTERM):
             previous_handlers[sig] = signal.getsignal(sig)
             try:

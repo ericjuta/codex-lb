@@ -122,6 +122,7 @@ async def test_reports_api_rejects_oversized_date_ranges_with_default_end_date(a
     assert response.status_code == 400
     assert response.json()["error"]["message"] == "report date range must be 730 days or less"
 
+
 async def test_reports_api_rejects_inverted_range_and_preserves_valid_one_day(
     async_client,
     db_setup,
@@ -167,6 +168,7 @@ async def test_reports_api_rejects_inverted_range_and_preserves_valid_one_day(
         }
     }
 
+
 async def test_reports_api_accepts_inclusive_730_day_range(async_client, db_setup):
     end_date = date(2026, 1, 1)
     start_date = end_date - timedelta(days=729)
@@ -177,6 +179,8 @@ async def test_reports_api_accepts_inclusive_730_day_range(async_client, db_setu
     )
 
     assert response.status_code == 200
+
+
 async def test_reports_api_includes_preserved_deleted_account_history(async_client, db_setup):
     start_at = _naive_utc(datetime(2026, 6, 1, 11, 0, 0, tzinfo=timezone.utc))
     deleted_at = _naive_utc(datetime(2026, 6, 2, 9, 0, 0, tzinfo=timezone.utc))

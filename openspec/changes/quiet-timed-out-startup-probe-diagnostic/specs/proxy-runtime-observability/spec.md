@@ -2,9 +2,9 @@
 
 ### Requirement: Startup probe timeouts do not emit shielded-future diagnostics
 
-When the streaming proxy's startup probe times out waiting for the first upstream
-event and the probed task later fails with an upstream error, the system SHALL
-deliver that error through the streamed response without emitting an
+The system SHALL deliver a later upstream failure through the streamed response
+when the streaming proxy's startup probe times out waiting for the first upstream
+event, without emitting an
 `exception in shielded future` or `exception was never retrieved` diagnostic to
 the asyncio loop exception handler.
 

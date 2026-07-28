@@ -2,8 +2,8 @@
 
 ### Requirement: Upstream rate-limit cooldown honors the Retry-After hint duration
 
-When an upstream rate-limit error carries a "try again in" hint, the account
-cooldown SHALL last for the full duration the hint expresses. The parser SHALL
+The account cooldown SHALL last for the full duration expressed by an upstream
+rate-limit error's "try again in" hint. The parser SHALL
 recognize hour, minute, second, and millisecond units, including their word
 forms, and SHALL sum compound hints such as `1h2m3s` into a single duration.
 A unit token SHALL be recognized only when it is not immediately followed by

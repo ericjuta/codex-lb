@@ -1320,9 +1320,7 @@ async def test_accounts_list_requires_post_block_usage_before_credit_backed_reco
 
     response = await async_client.get("/api/accounts")
     assert response.status_code == 200
-    account_payload = next(
-        item for item in response.json()["accounts"] if item["accountId"] == account.id
-    )
+    account_payload = next(item for item in response.json()["accounts"] if item["accountId"] == account.id)
     assert account_payload["status"] == "rate_limited"
 
 

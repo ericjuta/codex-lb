@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 from pydantic import ValidationError
 
@@ -11,7 +13,7 @@ pytestmark = pytest.mark.unit
 
 def test_settings_multi_replica_defaults(monkeypatch):
     monkeypatch.delenv("CODEX_LB_METRICS_ENABLED", raising=False)
-    settings = Settings(_env_file=None)
+    settings = cast(Any, Settings)(_env_file=None)
     assert settings.metrics_enabled is False
     assert settings.metrics_port == 9090
     assert settings.log_format == "text"

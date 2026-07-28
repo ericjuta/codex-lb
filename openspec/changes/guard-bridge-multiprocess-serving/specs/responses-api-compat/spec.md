@@ -1,3 +1,5 @@
+## ADDED Requirements
+
 ### Requirement: HTTP bridge serving is single-worker unless bridge ownership is worker-addressable
 
 When the HTTP responses session bridge is enabled, application startup MUST refuse Uvicorn worker counts greater than one unless bridge ownership and forwarding can target the worker-local session owner. The service MUST fail closed before serving traffic rather than allowing multiple worker processes to share one bridge instance id with separate in-memory session maps.

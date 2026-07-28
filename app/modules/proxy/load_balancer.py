@@ -1572,8 +1572,7 @@ class LoadBalancer:
                 unsaturated = [
                     state
                     for state in states
-                    if self.active_large_family_count(state.account_id, exclude_key=sticky_key)
-                    < concentration_limit
+                    if self.active_large_family_count(state.account_id, exclude_key=sticky_key) < concentration_limit
                 ]
                 if unsaturated and len(unsaturated) < len(states):
                     placement_states = unsaturated
@@ -1613,9 +1612,7 @@ class LoadBalancer:
             await sticky_repo.upsert(sticky_key, chosen.account.account_id, kind=sticky_kind)
         if chosen.account is not None:
             if sticky_kind == StickySessionKind.PROMPT_CACHE:
-                self._note_sticky_large_activity(
-                    chosen.account.account_id, sticky_key, sticky_request_input_bytes
-                )
+                self._note_sticky_large_activity(chosen.account.account_id, sticky_key, sticky_request_input_bytes)
             if existing and chosen.account.account_id == existing:
                 _record_sticky_selection(sticky_kind, "hit")
             elif not persist_fallback:

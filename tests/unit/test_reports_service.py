@@ -37,6 +37,7 @@ async def test_get_reports_rejects_oversized_range_after_applying_default_end_da
     repo.aggregate_by_account.assert_not_awaited()
     repo.earliest_report_activity_at.assert_not_awaited()
 
+
 @pytest.mark.asyncio
 async def test_get_reports_rejects_inverted_defaulted_range_before_repository_work(
     monkeypatch: pytest.MonkeyPatch,
@@ -65,6 +66,8 @@ async def test_get_reports_rejects_inverted_defaulted_range_before_repository_wo
     repo.aggregate_by_account.assert_not_awaited()
     repo.aggregate_by_useragent.assert_not_awaited()
     repo.earliest_report_activity_at.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_get_reports_serializes_useragent_breakdown_and_model_request_counts() -> None:
     repo = SimpleNamespace(

@@ -1467,7 +1467,10 @@ class _WebSocketMixin:
                             upstream_control=upstream_control,
                             response_create_gate=response_create_gate,
                             continuity_state=continuity_state,
-                            proxy_request_budget_seconds=runtime_settings.proxy_request_budget_seconds,
+                            proxy_request_budget_seconds=_facade()._stream_request_budget_seconds(
+                                runtime_settings,
+                                request_transport="websocket",
+                            ),
                             stream_idle_timeout_seconds=runtime_settings.stream_idle_timeout_seconds,
                             downstream_activity=downstream_activity,
                             codex_session_affinity=codex_session_affinity,
@@ -2123,10 +2126,12 @@ class _WebSocketMixin:
                 request_transport="websocket",
             ),
         )
-        connect_deadline = _websocket_connect_deadline(
-            request_state,
-            base_settings.proxy_websocket_connect_budget_seconds,
+        connect_budget_started_at = (
+            time.monotonic() if request_state.request_stage == "reattach" else request_state.started_at
         )
+        if connect_budget_started_at <= 0:
+            connect_budget_started_at = time.monotonic()
+        connect_deadline = connect_budget_started_at + base_settings.proxy_websocket_connect_budget_seconds
         deadline = min(request_deadline, connect_deadline)
         max_attempts = _facade()._WEBSOCKET_MAX_ACCOUNT_ATTEMPTS
         excluded_account_ids: set[str] = set(request_state.excluded_account_ids)

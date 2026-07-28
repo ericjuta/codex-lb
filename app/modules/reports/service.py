@@ -158,5 +158,6 @@ def _resolve_timezone(timezone_name: str | None) -> ZoneInfo | timezone:
 def _local_midnight_to_utc_naive(value: date, timezone_info: ZoneInfo | timezone) -> datetime:
     return to_utc_naive(datetime.combine(value, datetime.min.time(), tzinfo=timezone_info))
 
+
 class InvalidReportDateRangeError(ValueError):
     """Raised when a report starts after it ends."""

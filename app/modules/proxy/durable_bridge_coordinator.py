@@ -138,6 +138,7 @@ class DurableBridgeSessionCoordinator:
         force_owner_epoch_advance: bool = False,
     ) -> DurableBridgeLookup:
         api_key_scope = durable_bridge_api_key_scope(api_key_id)
+
         async def _claim_once() -> DurableBridgeLookup:
             async with self._session() as session:
                 snapshot = await DurableBridgeRepository(session).claim_session(
@@ -174,6 +175,7 @@ class DurableBridgeSessionCoordinator:
         state: HttpBridgeSessionState | None = None,
     ) -> DurableBridgeLookup | None:
         del api_key_id
+
         async def _renew_once() -> DurableBridgeLookup | None:
             async with self._session() as session:
                 snapshot = await DurableBridgeRepository(session).renew_session(
@@ -246,6 +248,7 @@ class DurableBridgeSessionCoordinator:
         lease_ttl_seconds: float,
     ) -> bool:
         api_key_scope = durable_bridge_api_key_scope(api_key_id)
+
         async def _register_once() -> bool:
             async with self._session() as session:
                 return await DurableBridgeRepository(session).register_owned_alias(
@@ -275,6 +278,7 @@ class DurableBridgeSessionCoordinator:
         pending_tool_calls: Mapping[str, str] | None = None,
     ) -> bool:
         api_key_scope = durable_bridge_api_key_scope(api_key_id)
+
         async def _register_once() -> bool:
             async with self._session() as session:
                 return await DurableBridgeRepository(session).register_owned_alias(
@@ -301,6 +305,7 @@ class DurableBridgeSessionCoordinator:
         session_header: str,
     ) -> None:
         api_key_scope = durable_bridge_api_key_scope(api_key_id)
+
         async def _register_once() -> None:
             async with self._session() as session:
                 await DurableBridgeRepository(session).upsert_alias(

@@ -28,7 +28,7 @@ class _ObservedCounter:
         self.samples.append(sample)
 
         def inc(amount: float = 1.0) -> None:
-            sample["value"] = float(sample["value"]) + amount
+            sample["value"] = cast(float, sample["value"]) + amount
 
         return SimpleNamespace(inc=inc)
 

@@ -23,6 +23,7 @@ from app.core.utils.request_id import ensure_request_id
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountUsageRollupState, ApiKey, RequestKind, RequestLog, RequestUsageHourlyRollup
 from app.db.session import sqlite_writer_section
+from app.db.sqlite_retry import retry_sqlite_write
 from app.modules.accounts.usage_rollup import lock_fold_state
 from app.modules.accounts.usage_time_rollup import (
     HOURLY_BUCKET_SECONDS,
@@ -519,74 +520,81 @@ class RequestLogsRepository:
                 useragent_group if not isinstance(useragent_group, str) or useragent_group.strip() else None
             )
             resolved_client_ip = client_ip if not isinstance(client_ip, str) or client_ip.strip() else None
-            log = RequestLog(
-                account_id=account_id,
-                api_key_id=api_key_id,
-                session_id=session_id,
-                request_id=resolved_request_id,
-                archive_request_id=resolved_archive_request_id,
-                model=model,
-                plan_type=resolved_plan_type,
-                source=source,
-                transport=transport,
-                upstream_transport=upstream_transport,
-                request_kind=request_kind,
-                useragent=resolved_useragent,
-                useragent_group=resolved_useragent_group,
-                client_ip=resolved_client_ip,
-                service_tier=service_tier,
-                requested_service_tier=requested_service_tier,
-                actual_service_tier=actual_service_tier,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cached_input_tokens=cached_input_tokens,
-                reasoning_tokens=reasoning_tokens,
-                cost_usd=None,
-                reasoning_effort=reasoning_effort,
-                latency_ms=latency_ms,
-                latency_first_token_ms=latency_first_token_ms,
-                latency_response_created_ms=latency_response_created_ms,
-                latency_first_upstream_event_ms=latency_first_upstream_event_ms,
-                latency_response_create_gate_wait_ms=latency_response_create_gate_wait_ms,
-                latency_bridge_queue_wait_ms=latency_bridge_queue_wait_ms,
-                prewarm_status=prewarm_status,
-                prewarm_latency_ms=prewarm_latency_ms,
-                prewarm_canary_bucket=prewarm_canary_bucket,
-                prewarm_eligible_reason=prewarm_eligible_reason,
-                session_previous_gap_ms=session_previous_gap_ms,
-                status=status,
-                error_code=error_code,
-                error_message=error_message,
-                failure_phase=failure_phase,
-                failure_detail=failure_detail,
-                failure_exception_type=failure_exception_type,
-                upstream_status_code=upstream_status_code,
-                upstream_error_code=upstream_error_code,
-                bridge_stage=bridge_stage,
-                upstream_proxy_route_mode=upstream_proxy_route_mode,
-                upstream_proxy_pool_id=upstream_proxy_pool_id,
-                upstream_proxy_endpoint_id=upstream_proxy_endpoint_id,
-                upstream_proxy_fallback_used=upstream_proxy_fallback_used,
-                upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
-                requested_at=requested_at or utcnow(),
+            resolved_requested_at = requested_at or utcnow()
+
+            async def _add_once() -> RequestLog:
+                log = RequestLog(
+                    account_id=account_id,
+                    api_key_id=api_key_id,
+                    session_id=session_id,
+                    request_id=resolved_request_id,
+                    archive_request_id=resolved_archive_request_id,
+                    model=model,
+                    plan_type=resolved_plan_type,
+                    source=source,
+                    transport=transport,
+                    upstream_transport=upstream_transport,
+                    request_kind=request_kind,
+                    useragent=resolved_useragent,
+                    useragent_group=resolved_useragent_group,
+                    client_ip=resolved_client_ip,
+                    service_tier=service_tier,
+                    requested_service_tier=requested_service_tier,
+                    actual_service_tier=actual_service_tier,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cached_input_tokens=cached_input_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    cost_usd=None,
+                    reasoning_effort=reasoning_effort,
+                    latency_ms=latency_ms,
+                    latency_first_token_ms=latency_first_token_ms,
+                    latency_response_created_ms=latency_response_created_ms,
+                    latency_first_upstream_event_ms=latency_first_upstream_event_ms,
+                    latency_response_create_gate_wait_ms=latency_response_create_gate_wait_ms,
+                    latency_bridge_queue_wait_ms=latency_bridge_queue_wait_ms,
+                    prewarm_status=prewarm_status,
+                    prewarm_latency_ms=prewarm_latency_ms,
+                    prewarm_canary_bucket=prewarm_canary_bucket,
+                    prewarm_eligible_reason=prewarm_eligible_reason,
+                    session_previous_gap_ms=session_previous_gap_ms,
+                    status=status,
+                    error_code=error_code,
+                    error_message=error_message,
+                    failure_phase=failure_phase,
+                    failure_detail=failure_detail,
+                    failure_exception_type=failure_exception_type,
+                    upstream_status_code=upstream_status_code,
+                    upstream_error_code=upstream_error_code,
+                    bridge_stage=bridge_stage,
+                    upstream_proxy_route_mode=upstream_proxy_route_mode,
+                    upstream_proxy_pool_id=upstream_proxy_pool_id,
+                    upstream_proxy_endpoint_id=upstream_proxy_endpoint_id,
+                    upstream_proxy_fallback_used=upstream_proxy_fallback_used,
+                    upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
+                    requested_at=resolved_requested_at,
+                )
+                log.cost_usd = (
+                    cost_usd if cost_usd is not None else calculated_cost_from_log(typing_cast(RequestLogLike, log))
+                )
+                self._session.add(log)
+                try:
+                    await self._session.commit()
+                    # No refresh: every column is set explicitly before insert and
+                    # expire_on_commit=False, so the round trip was pure overhead
+                    # on every request's log write.
+                    return log
+                except sa_exc.ResourceClosedError:
+                    return log
+
+            return await retry_sqlite_write(
+                self._session,
+                _add_once,
+                operation_name="request_log_add",
+                # ``sqlite_writer_section`` already owns local serialization;
+                # acquiring the retry lock here would invert the durable-write lock order.
+                serialize_writes=False,
             )
-            log.cost_usd = (
-                cost_usd
-                if cost_usd is not None
-                else calculated_cost_from_log(typing_cast(RequestLogLike, log))
-            )
-            self._session.add(log)
-            try:
-                await self._session.commit()
-                # No refresh: every column is set explicitly before insert and
-                # expire_on_commit=False, so the round trip was pure overhead
-                # on every request's log write.
-                return log
-            except sa_exc.ResourceClosedError:
-                return log
-            except BaseException:
-                await _safe_rollback(self._session)
-                raise
 
     async def update_model_for_request(self, request_id: str, model: str) -> int:
         """Override the ``model`` field of any logs matching ``request_id``.
@@ -613,50 +621,58 @@ class RequestLogsRepository:
         """
         async with sqlite_writer_section():
             resolved_request_id = ensure_request_id(request_id)
-            try:
-                await lock_fold_state(self._session)
-                watermarks = (
-                    await self._session.execute(
-                        select(
-                            AccountUsageRollupState.folded_through,
-                            AccountUsageRollupState.hourly_folded_through,
-                        ).where(AccountUsageRollupState.id == 1)
-                    )
-                ).first()
-                # Fetch the affected rows so we can recompute ``cost_usd``
-                # from the new model. ``add_log`` derives the cost at insert
-                # time from the original (host) model; without recomputing
-                # here, dashboards would mix the public ``gpt-image-*`` model
-                # label with host-model pricing and report inaccurate cost.
-                stmt = select(RequestLog).where(RequestLog.request_id == resolved_request_id)
-                if watermarks is not None:
-                    # A row is un-folded by EVERY rollup only when it clears
-                    # both bounds, each matching its fold's own interval
-                    # convention: the lifetime fold is `(start, end]`
-                    # (inclusive end — a row AT the watermark is folded), the
-                    # hourly fold is `[start, end)`.
-                    folded_through, hourly_folded_through = watermarks
-                    stmt = stmt.where(
-                        RequestLog.requested_at > folded_through,
-                        RequestLog.requested_at >= hourly_folded_through,
-                    )
-                result_rows = await self._session.execute(stmt)
-                logs = list(result_rows.scalars())
-                if not logs:
-                    # End the transaction: the fold-state row lock (and the
-                    # bootstrap insert behind it) must not outlive this call.
-                    await _safe_rollback(self._session)
+
+            async def _update_once() -> int:
+                try:
+                    await lock_fold_state(self._session)
+                    watermarks = (
+                        await self._session.execute(
+                            select(
+                                AccountUsageRollupState.folded_through,
+                                AccountUsageRollupState.hourly_folded_through,
+                            ).where(AccountUsageRollupState.id == 1)
+                        )
+                    ).first()
+                    # Fetch the affected rows so we can recompute ``cost_usd``
+                    # from the new model. ``add_log`` derives the cost at insert
+                    # time from the original (host) model; without recomputing
+                    # here, dashboards would mix the public ``gpt-image-*`` model
+                    # label with host-model pricing and report inaccurate cost.
+                    stmt = select(RequestLog).where(RequestLog.request_id == resolved_request_id)
+                    if watermarks is not None:
+                        # A row is un-folded by EVERY rollup only when it clears
+                        # both bounds, each matching its fold's own interval
+                        # convention: the lifetime fold is `(start, end]`
+                        # (inclusive end — a row AT the watermark is folded), the
+                        # hourly fold is `[start, end)`.
+                        folded_through, hourly_folded_through = watermarks
+                        stmt = stmt.where(
+                            RequestLog.requested_at > folded_through,
+                            RequestLog.requested_at >= hourly_folded_through,
+                        )
+                    result_rows = await self._session.execute(stmt)
+                    logs = list(result_rows.scalars())
+                    if not logs:
+                        # End the transaction: the fold-state row lock (and the
+                        # bootstrap insert behind it) must not outlive this call.
+                        await _safe_rollback(self._session)
+                        return 0
+                    for log in logs:
+                        log.model = model
+                        log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
+                    await self._session.commit()
+                except sa_exc.ResourceClosedError:
                     return 0
-                for log in logs:
-                    log.model = model
-                    log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
-                await self._session.commit()
-            except sa_exc.ResourceClosedError:
-                return 0
-            except BaseException:
-                await _safe_rollback(self._session)
-                raise
-            return len(logs)
+                return len(logs)
+
+            return await retry_sqlite_write(
+                self._session,
+                _update_once,
+                operation_name="request_log_update_model",
+                # ``sqlite_writer_section`` already owns local serialization;
+                # acquiring the retry lock here would invert the durable-write lock order.
+                serialize_writes=False,
+            )
 
     async def list_recent(
         self,

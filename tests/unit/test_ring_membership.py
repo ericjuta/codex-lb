@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from datetime import timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from sqlalchemy.exc import OperationalError
@@ -84,7 +84,7 @@ async def test_heartbeat_retries_sqlite_locked_write(monkeypatch: pytest.MonkeyP
     def session_factory() -> _LockedOnceAsyncSession:
         return _LockedOnceAsyncSession(state)
 
-    service = RingMembershipService(session_factory)  # type: ignore[arg-type]
+    service = RingMembershipService(cast(Callable[[], AsyncSession], session_factory))
 
     await service.heartbeat("pod-new")
 

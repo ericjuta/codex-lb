@@ -12,6 +12,7 @@ from starlette.websockets import WebSocketDisconnect
 
 import app.modules.proxy.api as proxy_api_module
 import app.modules.proxy.service as proxy_module
+from app.core.types import JsonValue
 from app.core.utils.request_id import get_request_id
 
 pytestmark = pytest.mark.integration
@@ -2045,7 +2046,7 @@ def test_backend_responses_websocket_hydrates_persisted_continuity_state_for_fre
     # empty in-memory index must hydrate the state at connection setup so the
     # follow-up chaining the folded (visible) id is rewritten to the final
     # hidden round's upstream id without a fail-closed retry.
-    from sqlalchemy import create_engine
+    from sqlalchemy import create_engine, insert
 
     from app.core.config.settings import get_settings
     from app.db.migration_url import to_sync_database_url
@@ -2065,7 +2066,7 @@ def test_backend_responses_websocket_hydrates_persisted_continuity_state_for_fre
     try:
         with sync_engine.begin() as connection:
             connection.execute(
-                WebsocketContinuityStateRecord.__table__.insert().values(
+                insert(WebsocketContinuityStateRecord).values(
                     session_key=turn_state,
                     api_key_id="",
                     state=json.dumps(persisted_state),
@@ -9814,17 +9815,20 @@ async def test_websocket_prepare_exempts_compaction_trigger_from_context_guard(a
         {"role": "assistant", "content": [{"type": "output_text", "text": f"chunk {index} " + "y" * 20_000}]}
         for index in range(30)
     ]
-    ws_payload = {
-        "type": "response.create",
-        "model": "gpt-5.3-codex-spark",
-        "instructions": "compact this turn",
-        "input": [
-            {"role": "user", "content": [{"type": "input_text", "text": "initial instructions"}]},
-            *oversized_history,
-            {"type": "compaction_trigger"},
-        ],
-        "stream": True,
-    }
+    ws_payload = cast(
+        dict[str, JsonValue],
+        {
+            "type": "response.create",
+            "model": "gpt-5.3-codex-spark",
+            "instructions": "compact this turn",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "initial instructions"}]},
+                *oversized_history,
+                {"type": "compaction_trigger"},
+            ],
+            "stream": True,
+        },
+    )
 
     prepared = await service._prepare_websocket_response_create_request(
         ws_payload,

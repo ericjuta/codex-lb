@@ -6,7 +6,7 @@ import logging
 import socket
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
@@ -16,6 +16,7 @@ from aiohttp.client_reqrep import ConnectionKey
 import app.core.auth.refresh as refresh_module
 import app.core.clients.model_fetcher as model_fetcher_module
 import app.core.openai.model_refresh_scheduler as scheduler_module
+from app.core.crypto import TokenEncryptor
 from app.core.openai.model_registry import ReasoningLevel, UpstreamModel
 from app.core.upstream_proxy import ResolvedProxyEndpoint, ResolvedUpstreamRoute
 from app.db.models import Account, AccountStatus
@@ -577,13 +578,16 @@ async def test_fetch_with_failover_skips_all_accounts_in_cooldown(monkeypatch: p
     monkeypatch.setattr(scheduler_module.time, "monotonic", lambda: 100.0)
     scheduler_module._model_refresh_auth_cooldowns["acc_cooldown"] = 120.0
 
-    account = SimpleNamespace(
-        id="acc_cooldown",
-        plan_type="pro",
-        access_token_encrypted=b"encrypted",
-        chatgpt_account_id="workspace-1",
+    account = cast(
+        Account,
+        SimpleNamespace(
+            id="acc_cooldown",
+            plan_type="pro",
+            access_token_encrypted=b"encrypted",
+            chatgpt_account_id="workspace-1",
+        ),
     )
-    encryptor = SimpleNamespace(decrypt=lambda _: "token")
+    encryptor = cast(TokenEncryptor, SimpleNamespace(decrypt=lambda _: "token"))
 
     result = await scheduler_module._fetch_with_failover([account], encryptor)
 
@@ -624,19 +628,25 @@ async def test_fetch_with_failover_skips_cooled_down_account_and_uses_next_candi
     monkeypatch.setattr(scheduler_module, "fetch_models_for_plan", fake_fetch_models_for_plan)
     scheduler_module._model_refresh_auth_cooldowns["acc_a"] = 140.0
 
-    account_a = SimpleNamespace(
-        id="acc_a",
-        plan_type="pro",
-        access_token_encrypted=b"a",
-        chatgpt_account_id="workspace-a",
+    account_a = cast(
+        Account,
+        SimpleNamespace(
+            id="acc_a",
+            plan_type="pro",
+            access_token_encrypted=b"a",
+            chatgpt_account_id="workspace-a",
+        ),
     )
-    account_b = SimpleNamespace(
-        id="acc_b",
-        plan_type="pro",
-        access_token_encrypted=b"b",
-        chatgpt_account_id="workspace-b",
+    account_b = cast(
+        Account,
+        SimpleNamespace(
+            id="acc_b",
+            plan_type="pro",
+            access_token_encrypted=b"b",
+            chatgpt_account_id="workspace-b",
+        ),
     )
-    encryptor = SimpleNamespace(decrypt=lambda _: "token")
+    encryptor = cast(TokenEncryptor, SimpleNamespace(decrypt=lambda _: "token"))
 
     result = await scheduler_module._fetch_with_failover([account_a, account_b], encryptor)
 

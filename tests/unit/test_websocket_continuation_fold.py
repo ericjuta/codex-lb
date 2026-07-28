@@ -7,6 +7,7 @@ import pytest
 
 import app.core.clients.codex_continuation as codex_continuation_module
 from app.core.clients.codex_continuation import CodexContinuationConfig
+from app.core.types import JsonValue
 from app.modules.proxy._service.websocket.continuation import _WebSocketContinuationFold
 from app.modules.proxy._service.websocket.helpers import _folded_terminal_function_call_ids
 
@@ -22,7 +23,7 @@ class _ObservedCounter:
         self.samples.append(sample)
 
         def inc(amount: float = 1.0) -> None:
-            sample["value"] = float(sample["value"]) + amount
+            sample["value"] = cast(float, sample["value"]) + amount
 
         return SimpleNamespace(inc=inc)
 
@@ -391,7 +392,7 @@ def test_folded_terminal_function_call_ids_prune_only_delivered_calls() -> None:
     # calls present in the folded terminal's delivered output. No fold mode
     # discards buffered tool calls anymore, but a regression that did must not
     # have the undelivered call treated as interrupted on the follow-up turn.
-    terminal_payload = {
+    terminal_payload: dict[str, JsonValue] = {
         "type": "response.completed",
         "response": {
             "id": "resp_folded",

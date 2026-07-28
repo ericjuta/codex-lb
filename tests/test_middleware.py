@@ -4,6 +4,7 @@
 Run: .venv/Scripts/python.exe tests/test_middleware.py
 No pytest dependency — a tiny runner prints PASS/FAIL per check.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +12,9 @@ import json
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
+import httpx
 from starlette.datastructures import Headers
 
 from middleware.app import _make_client, _resolve_upstream_url, _url_is_from_header
@@ -100,7 +103,7 @@ class FakeClient:
 async def run_fold(cfg, base_body, first_resp, later_resps) -> list:
     client = FakeClient(later_resps)
     out = b""
-    async for chunk in fold_stream(client, cfg, base_body, {}, first_resp):
+    async for chunk in fold_stream(cast(httpx.AsyncClient, client), cfg, base_body, {}, first_resp):
         out += chunk
     return await parse_events(out)
 
@@ -179,22 +182,29 @@ async def test_fold_real_captures():
 
     check("fold one created", types.count("response.created") == 1)
     check("fold one in_progress", types.count("response.in_progress") == 1)
-    check("fold one terminal", sum(types.count(t) for t in
-          ("response.completed", "response.failed", "response.incomplete")) == 1)
+    check(
+        "fold one terminal",
+        sum(types.count(t) for t in ("response.completed", "response.failed", "response.incomplete")) == 1,
+    )
 
     seqs = [e["sequence_number"] for e in dict_evs]
     check("fold seq monotonic 0..n", seqs == list(range(len(dict_evs))), str(seqs[:5]))
 
     # reasoning items forwarded at ds_oi 0 then 1
-    rdone = [e for e in dict_evs if e.get("type") == "response.output_item.done"
-             and (e.get("item") or {}).get("type") == "reasoning"]
+    rdone = [
+        e
+        for e in dict_evs
+        if e.get("type") == "response.output_item.done" and (e.get("item") or {}).get("type") == "reasoning"
+    ]
     check("fold 2 reasoning items", len(rdone) == 2, str(len(rdone)))
-    check("fold reasoning oi 0,1", [e["output_index"] for e in rdone] == [0, 1],
-          str([e.get("output_index") for e in rdone]))
+    check(
+        "fold reasoning oi 0,1",
+        [e["output_index"] for e in rdone] == [0, 1],
+        str([e.get("output_index") for e in rdone]),
+    )
 
     # message flushed (r2) at ds_oi 2; r1 message discarded
-    deltas = "".join(e.get("delta", "") for e in dict_evs
-                     if e.get("type") == "response.output_text.delta")
+    deltas = "".join(e.get("delta", "") for e in dict_evs if e.get("type") == "response.output_text.delta")
     check("fold r2 answer present", "答案是" in deltas or "21" in deltas, deltas[:40])
     check("fold r1 message discarded", "最少需要取出" not in deltas)
 
@@ -202,32 +212,36 @@ async def test_fold_real_captures():
     completed = dict_evs[-1]
     created_id = (created.get("response") or {}).get("id")
     completed_id = (completed.get("response") or {}).get("id")
-    check("fold created/completed share id", created_id == completed_id,
-          f"{created_id} vs {completed_id}")
+    check("fold created/completed share id", created_id == completed_id, f"{created_id} vs {completed_id}")
     out_items = (completed.get("response") or {}).get("output") or []
     check("fold reconstructed output non-empty (3 items)", len(out_items) == 3, str(len(out_items)))
     # Agent-facing usage = single-response equivalent (NOT summed input).
     usage = (completed.get("response") or {}).get("usage") or {}
-    check("fold input = round1 (4582, not summed)", usage.get("input_tokens") == 4582,
-          str(usage.get("input_tokens")))
-    check("fold cached = round1 (3840)",
-          (usage.get("input_tokens_details") or {}).get("cached_tokens") == 3840)
+    check("fold input = round1 (4582, not summed)", usage.get("input_tokens") == 4582, str(usage.get("input_tokens")))
+    check("fold cached = round1 (3840)", (usage.get("input_tokens_details") or {}).get("cached_tokens") == 3840)
     rt = (usage.get("output_tokens_details") or {}).get("reasoning_tokens")
     check("fold reasoning summed 3104", rt == 516 + 2588, str(rt))
     # output = summed reasoning + final round's non-reasoning (2947-2588=359)
-    check("fold output = reasoning + final msg",
-          usage.get("output_tokens") == 3104 + (2947 - 2588), str(usage.get("output_tokens")))
-    check("fold total = input + output",
-          usage.get("total_tokens") == 4582 + 3104 + (2947 - 2588), str(usage.get("total_tokens")))
+    check(
+        "fold output = reasoning + final msg",
+        usage.get("output_tokens") == 3104 + (2947 - 2588),
+        str(usage.get("output_tokens")),
+    )
+    check(
+        "fold total = input + output",
+        usage.get("total_tokens") == 4582 + 3104 + (2947 - 2588),
+        str(usage.get("total_tokens")),
+    )
 
     md = (completed.get("response") or {}).get("metadata") or {}
-    check("fold proxy_rounds has 2 entries", len(md.get("proxy_rounds") or []) == 2,
-          str(md.get("proxy_rounds")))
-    check("fold stopped_reason max_continue", md.get("proxy_stopped_reason") == "max_continue",
-          str(md.get("proxy_stopped_reason")))
+    check("fold proxy_rounds has 2 entries", len(md.get("proxy_rounds") or []) == 2, str(md.get("proxy_rounds")))
+    check(
+        "fold stopped_reason max_continue",
+        md.get("proxy_stopped_reason") == "max_continue",
+        str(md.get("proxy_stopped_reason")),
+    )
     billed = md.get("proxy_billed_usage") or {}
-    check("fold billed input summed 9722", billed.get("input_tokens") == 4582 + 5140,
-          str(billed.get("input_tokens")))
+    check("fold billed input summed 9722", billed.get("input_tokens") == 4582 + 5140, str(billed.get("input_tokens")))
 
 
 # --- 3b. truncated tool call is discarded; clean tool call flushes ----------
@@ -235,41 +249,84 @@ async def test_fold_real_captures():
 
 def _round(rs_id, enc, reasoning_tokens_val, *, extra_items=None, msg=None):
     evs = [
-        {"type": "response.created", "response": {"id": "resp_x", "status": "in_progress",
-         "model": "gpt-5.5", "metadata": {}}},
+        {
+            "type": "response.created",
+            "response": {"id": "resp_x", "status": "in_progress", "model": "gpt-5.5", "metadata": {}},
+        },
         {"type": "response.in_progress", "response": {"id": "resp_x"}},
-        {"type": "response.output_item.added", "output_index": 0,
-         "item": {"id": rs_id, "type": "reasoning"}},
-        {"type": "response.output_item.done", "output_index": 0,
-         "item": {"id": rs_id, "type": "reasoning", "encrypted_content": enc}},
+        {"type": "response.output_item.added", "output_index": 0, "item": {"id": rs_id, "type": "reasoning"}},
+        {
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {"id": rs_id, "type": "reasoning", "encrypted_content": enc},
+        },
     ]
     oi = 1
-    for it in (extra_items or []):
+    for it in extra_items or []:
         evs.append({"type": "response.output_item.added", "output_index": oi, "item": it})
         if it["type"] == "function_call":
-            evs.append({"type": "response.function_call_arguments.delta", "output_index": oi,
-                        "item_id": it["id"], "delta": it.get("arguments", "{}")})
+            evs.append(
+                {
+                    "type": "response.function_call_arguments.delta",
+                    "output_index": oi,
+                    "item_id": it["id"],
+                    "delta": it.get("arguments", "{}"),
+                }
+            )
         evs.append({"type": "response.output_item.done", "output_index": oi, "item": it})
         oi += 1
     if msg is not None:
         evs += [
-            {"type": "response.output_item.added", "output_index": oi,
-             "item": {"id": "msg_x", "type": "message"}},
-            {"type": "response.content_part.added", "output_index": oi, "item_id": "msg_x",
-             "content_index": 0, "part": {"type": "output_text"}},
-            {"type": "response.output_text.delta", "output_index": oi, "item_id": "msg_x",
-             "content_index": 0, "delta": msg},
-            {"type": "response.output_text.done", "output_index": oi, "item_id": "msg_x",
-             "content_index": 0, "text": msg},
-            {"type": "response.content_part.done", "output_index": oi, "item_id": "msg_x",
-             "content_index": 0, "part": {"type": "output_text", "text": msg}},
-            {"type": "response.output_item.done", "output_index": oi,
-             "item": {"id": "msg_x", "type": "message",
-                      "content": [{"type": "output_text", "text": msg}]}},
+            {"type": "response.output_item.added", "output_index": oi, "item": {"id": "msg_x", "type": "message"}},
+            {
+                "type": "response.content_part.added",
+                "output_index": oi,
+                "item_id": "msg_x",
+                "content_index": 0,
+                "part": {"type": "output_text"},
+            },
+            {
+                "type": "response.output_text.delta",
+                "output_index": oi,
+                "item_id": "msg_x",
+                "content_index": 0,
+                "delta": msg,
+            },
+            {
+                "type": "response.output_text.done",
+                "output_index": oi,
+                "item_id": "msg_x",
+                "content_index": 0,
+                "text": msg,
+            },
+            {
+                "type": "response.content_part.done",
+                "output_index": oi,
+                "item_id": "msg_x",
+                "content_index": 0,
+                "part": {"type": "output_text", "text": msg},
+            },
+            {
+                "type": "response.output_item.done",
+                "output_index": oi,
+                "item": {"id": "msg_x", "type": "message", "content": [{"type": "output_text", "text": msg}]},
+            },
         ]
-    evs.append({"type": "response.completed", "response": {"id": "resp_x", "status": "completed",
-                "usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150,
-                          "output_tokens_details": {"reasoning_tokens": reasoning_tokens_val}}}})
+    evs.append(
+        {
+            "type": "response.completed",
+            "response": {
+                "id": "resp_x",
+                "status": "completed",
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "total_tokens": 150,
+                    "output_tokens_details": {"reasoning_tokens": reasoning_tokens_val},
+                },
+            },
+        }
+    )
     return make_sse(evs)
 
 
@@ -278,8 +335,7 @@ async def test_truncated_tool_call_discarded():
     base_body = {"model": "gpt-5.5", "input": [{"role": "user", "content": "q"}]}
 
     # Round A: truncated (516) + a real tool call. Round B: clean message.
-    tool = {"id": "fc_a", "type": "function_call", "name": "shell", "call_id": "call_a",
-            "arguments": "{\"cmd\":\"ls\"}"}
+    tool = {"id": "fc_a", "type": "function_call", "name": "shell", "call_id": "call_a", "arguments": '{"cmd":"ls"}'}
     rA = FakeResp(_round("rs_a", "ENC_A", 516, extra_items=[tool]))
     rB = FakeResp(_round("rs_b", "ENC_B", 999, msg="done"))
 
@@ -288,8 +344,7 @@ async def test_truncated_tool_call_discarded():
     fc_args = any(e.get("type") == "response.function_call_arguments.delta" for e in evs)
     check("truncated tool call discarded (no fc item)", not has_fc)
     check("truncated tool call discarded (no fc args)", not fc_args)
-    deltas = "".join(e.get("delta", "") for e in evs
-                     if e.get("type") == "response.output_text.delta")
+    deltas = "".join(e.get("delta", "") for e in evs if e.get("type") == "response.output_text.delta")
     check("clean round message flushed", deltas == "done", deltas)
 
     # Clean round ending in a tool call → must flush it through.
@@ -306,27 +361,32 @@ async def test_commentary_continuation_payload():
     cfg = load_config(ROOT / "config.toml")  # method = "commentary" by default
     base_body = {"model": "gpt-5.5", "input": [{"role": "user", "content": "q"}]}
     rA = FakeResp(_round("rs_a", "ENC_A", 516, msg="trunc"))  # truncated → continue
-    rB = FakeResp(_round("rs_b", "ENC_B", 999, msg="done"))   # clean → stop
+    rB = FakeResp(_round("rs_b", "ENC_B", 999, msg="done"))  # clean → stop
     client = FakeClient([rB])
     evs = [e for e in await run_fold_capture(cfg, base_body, rA, client) if isinstance(e, dict)]
 
-    check("commentary: one continuation round opened", len(client.payloads) == 1,
-          str(len(client.payloads)))
+    check("commentary: one continuation round opened", len(client.payloads) == 1, str(len(client.payloads)))
     inp = (client.payloads[0].get("input") if client.payloads else []) or []
     last = inp[-1] if inp else {}
-    check("commentary: marker is a phase:commentary assistant message",
-          last.get("type") == "message" and last.get("role") == "assistant"
-          and last.get("phase") == "commentary", str(last))
-    check("commentary: marker text from config",
-          (last.get("content") or [{}])[0].get("text") == cfg.cont.marker_text)
-    check("commentary: no function_call injected in replay",
-          not any(isinstance(x, dict) and x.get("type") == "function_call" for x in inp))
-    check("commentary: prior reasoning replayed (encrypted)",
-          any(isinstance(x, dict) and x.get("type") == "reasoning"
-              and x.get("encrypted_content") for x in inp))
+    check(
+        "commentary: marker is a phase:commentary assistant message",
+        last.get("type") == "message" and last.get("role") == "assistant" and last.get("phase") == "commentary",
+        str(last),
+    )
+    check("commentary: marker text from config", (last.get("content") or [{}])[0].get("text") == cfg.cont.marker_text)
+    check(
+        "commentary: no function_call injected in replay",
+        not any(isinstance(x, dict) and x.get("type") == "function_call" for x in inp),
+    )
+    check(
+        "commentary: prior reasoning replayed (encrypted)",
+        any(isinstance(x, dict) and x.get("type") == "reasoning" and x.get("encrypted_content") for x in inp),
+    )
     # forward_marker defaults false → marker stays hidden from the downstream stream
-    check("commentary: marker hidden downstream by default",
-          not any((e.get("item") or {}).get("phase") == "commentary" for e in evs))
+    check(
+        "commentary: marker hidden downstream by default",
+        not any((e.get("item") or {}).get("phase") == "commentary" for e in evs),
+    )
 
 
 async def test_tool_pair_continuation_payload():
@@ -340,10 +400,15 @@ async def test_tool_pair_continuation_payload():
 
     inp = (client.payloads[0].get("input") if client.payloads else []) or []
     types = [x.get("type") for x in inp if isinstance(x, dict)]
-    check("tool_pair: function_call + output injected",
-          "function_call" in types and "function_call_output" in types, str(types))
-    check("tool_pair: no commentary message in replay",
-          not any(isinstance(x, dict) and x.get("phase") == "commentary" for x in inp))
+    check(
+        "tool_pair: function_call + output injected",
+        "function_call" in types and "function_call_output" in types,
+        str(types),
+    )
+    check(
+        "tool_pair: no commentary message in replay",
+        not any(isinstance(x, dict) and x.get("phase") == "commentary" for x in inp),
+    )
 
 
 async def test_forward_marker_emits_downstream():
@@ -354,25 +419,26 @@ async def test_forward_marker_emits_downstream():
     rB = FakeResp(_round("rs_b", "ENC_B", 999, msg="done"))
     evs = [e for e in await run_fold(cfg, base_body, rA, [rB]) if isinstance(e, dict)]
 
-    done = [e for e in evs if e.get("type") == "response.output_item.done"
-            and (e.get("item") or {}).get("phase") == "commentary"]
-    check("forward_marker: one commentary item emitted downstream", len(done) == 1,
-          str(len(done)))
-    delta = "".join(e.get("delta", "") for e in evs
-                    if e.get("type") == "response.output_text.delta"
-                    and e.get("item_id", "").startswith("msg_continue_"))
-    check("forward_marker: commentary delta carries marker text",
-          delta == cfg.cont.marker_text, delta)
+    done = [
+        e
+        for e in evs
+        if e.get("type") == "response.output_item.done" and (e.get("item") or {}).get("phase") == "commentary"
+    ]
+    check("forward_marker: one commentary item emitted downstream", len(done) == 1, str(len(done)))
+    delta = "".join(
+        e.get("delta", "")
+        for e in evs
+        if e.get("type") == "response.output_text.delta" and e.get("item_id", "").startswith("msg_continue_")
+    )
+    check("forward_marker: commentary delta carries marker text", delta == cfg.cont.marker_text, delta)
     # reconstructed output carries the commentary item (so the agent echoes it)
     completed = evs[-1]
     out_items = (completed.get("response") or {}).get("output") or []
     phases = [it.get("phase") for it in out_items if isinstance(it, dict)]
-    check("forward_marker: commentary in reconstructed output", "commentary" in phases,
-          str(phases))
+    check("forward_marker: commentary in reconstructed output", "commentary" in phases, str(phases))
     # sequence numbers stay monotonic 0..n despite the injected item
     seqs = [e["sequence_number"] for e in evs]
-    check("forward_marker: seq monotonic with injected marker",
-          seqs == list(range(len(evs))), str(seqs[:6]))
+    check("forward_marker: seq monotonic with injected marker", seqs == list(range(len(evs))), str(seqs[:6]))
 
 
 # --- 2-fix. header transparency (#2) ----------------------------------------
@@ -420,24 +486,29 @@ def test_upstream_url_resolution():
     no_hdr = _Req({})
 
     check("fixed ignores header", _resolve_upstream_url(fixed, with_hdr) == "https://cfg/responses")
-    check("header appends /responses to base",
-          _resolve_upstream_url(header, with_hdr) == "https://override/v1/responses")
-    check("header falls back to url",
-          _resolve_upstream_url(header, no_hdr) == "https://cfg/responses")
-    check("header trims trailing slash + case-insensitive",
-          _resolve_upstream_url(header, _Req({"responses-api-base": "https://low/v1/"})) == "https://low/v1/responses")
-    check("header full endpoint left as-is",
-          _resolve_upstream_url(header, _Req({"Responses-API-Base": "https://x/v1/responses"})) == "https://x/v1/responses")
-    check("header blank → fallback",
-          _resolve_upstream_url(header, _Req({"Responses-API-Base": "   "})) == "https://cfg/responses")
+    check(
+        "header appends /responses to base", _resolve_upstream_url(header, with_hdr) == "https://override/v1/responses"
+    )
+    check("header falls back to url", _resolve_upstream_url(header, no_hdr) == "https://cfg/responses")
+    check(
+        "header trims trailing slash + case-insensitive",
+        _resolve_upstream_url(header, _Req({"responses-api-base": "https://low/v1/"})) == "https://low/v1/responses",
+    )
+    check(
+        "header full endpoint left as-is",
+        _resolve_upstream_url(header, _Req({"Responses-API-Base": "https://x/v1/responses"}))
+        == "https://x/v1/responses",
+    )
+    check(
+        "header blank → fallback",
+        _resolve_upstream_url(header, _Req({"Responses-API-Base": "   "})) == "https://cfg/responses",
+    )
 
     # header_required: present → use it; absent/blank → None (caller returns 400)
     req = replace(base, upstream=replace(base.upstream, mode="header_required", url="https://cfg/responses"))
-    check("required appends /responses",
-          _resolve_upstream_url(req, with_hdr) == "https://override/v1/responses")
+    check("required appends /responses", _resolve_upstream_url(req, with_hdr) == "https://override/v1/responses")
     check("required missing → None", _resolve_upstream_url(req, no_hdr) is None)
-    check("required blank → None",
-          _resolve_upstream_url(req, _Req({"Responses-API-Base": " "})) is None)
+    check("required blank → None", _resolve_upstream_url(req, _Req({"Responses-API-Base": " "})) is None)
 
 
 # --- security guard: never send config creds to a header-supplied URL --------
@@ -459,33 +530,24 @@ def test_auth_safety_guard():
             h["Authorization"] = "Bearer agent"
         rq = _Req(h)
         from_hdr = _url_is_from_header(cfg, rq)
-        inj = would_inject_authorization(
-            cfg, agent_has_authorization=rq.headers.get("authorization") is not None
-        )
+        inj = would_inject_authorization(cfg, agent_has_authorization=rq.headers.get("authorization") is not None)
         return from_hdr and inj  # the exact condition handle_responses rejects on
 
     # fixed url → always safe
     check("guard: fixed+inject allow", not blocked("fixed", "inject", "TOK", True, False))
     # header + passthrough → never injects → allow
-    check("guard: header+passthrough allow",
-          not blocked("header", "passthrough", "TOK", True, False))
+    check("guard: header+passthrough allow", not blocked("header", "passthrough", "TOK", True, False))
     # header + inject + header present → block (even if agent has its own auth)
-    check("guard: header+inject+hdr block (noauth)",
-          blocked("header", "inject", "TOK", True, False))
-    check("guard: header+inject+hdr block (auth)",
-          blocked("header", "inject", "TOK", True, True))
+    check("guard: header+inject+hdr block (noauth)", blocked("header", "inject", "TOK", True, False))
+    check("guard: header+inject+hdr block (auth)", blocked("header", "inject", "TOK", True, True))
     # header + inject, no header → config url → allow
-    check("guard: header+inject no-hdr allow",
-          not blocked("header", "inject", "TOK", False, False))
+    check("guard: header+inject no-hdr allow", not blocked("header", "inject", "TOK", False, False))
     # header + PtI + header + agent has own auth → allow (uses agent's)
-    check("guard: header+PtI+hdr+auth allow",
-          not blocked("header", "passthrough_then_inject", "TOK", True, True))
+    check("guard: header+PtI+hdr+auth allow", not blocked("header", "passthrough_then_inject", "TOK", True, True))
     # header + PtI + header + no agent auth → block (would inject config)
-    check("guard: header+PtI+hdr+noauth block",
-          blocked("header", "passthrough_then_inject", "TOK", True, False))
+    check("guard: header+PtI+hdr+noauth block", blocked("header", "passthrough_then_inject", "TOK", True, False))
     # header_required + inject + header → block
-    check("guard: required+inject+hdr block",
-          blocked("header_required", "inject", "TOK", True, False))
+    check("guard: required+inject+hdr block", blocked("header_required", "inject", "TOK", True, False))
     # empty configured token → nothing to leak → allow
     check("guard: empty token allow", not blocked("header", "inject", "", True, False))
 
@@ -500,8 +562,9 @@ def test_auth_injection():
         return {k.lower(): v for k, v in build_upstream_headers(agent, cfg).items()}
 
     # passthrough_then_inject: inject token when agent sends none; empty account → no header
-    cfg = replace(base, auth=replace(base.auth, mode="passthrough_then_inject",
-                                     access_token="TOK", chatgpt_account_id=""))
+    cfg = replace(
+        base, auth=replace(base.auth, mode="passthrough_then_inject", access_token="TOK", chatgpt_account_id="")
+    )
     out = hdrs(cfg, [("x", "1")])
     check("inject token when missing", out.get("authorization") == "Bearer TOK")
     check("no account header when empty", "chatgpt-account-id" not in out)
@@ -511,15 +574,13 @@ def test_auth_injection():
     check("fallback keeps agent auth", out2.get("authorization") == "Bearer AGENT")
 
     # inject: config overrides agent + adds account
-    cfg2 = replace(base, auth=replace(base.auth, mode="inject",
-                                      access_token="TOK", chatgpt_account_id="acct1"))
+    cfg2 = replace(base, auth=replace(base.auth, mode="inject", access_token="TOK", chatgpt_account_id="acct1"))
     out3 = hdrs(cfg2, [("Authorization", "Bearer AGENT")])
     check("inject overrides agent auth", out3.get("authorization") == "Bearer TOK")
     check("inject adds account", out3.get("chatgpt-account-id") == "acct1")
 
     # passthrough: never inject anything
-    cfg3 = replace(base, auth=replace(base.auth, mode="passthrough",
-                                      access_token="TOK", chatgpt_account_id="acct1"))
+    cfg3 = replace(base, auth=replace(base.auth, mode="passthrough", access_token="TOK", chatgpt_account_id="acct1"))
     out4 = hdrs(cfg3, [("x", "1")])
     check("passthrough never injects", "authorization" not in out4 and "chatgpt-account-id" not in out4)
 
@@ -550,21 +611,22 @@ def test_stateful_repair():
     out = repair_followup_input(inp, store, tool_name="continue_thinking", output_text="go")
 
     # pair inserted right after rs_keep only
-    idx = next(i for i, x in enumerate(out)
-               if isinstance(x, dict) and x.get("id") == "rs_keep")
+    idx = next(i for i, x in enumerate(out) if isinstance(x, dict) and x.get("id") == "rs_keep")
     nxt = out[idx + 1]
     nxt2 = out[idx + 2]
     cid = continue_call_id("rs_keep")
-    check("stateful inserts call after recorded id",
-          nxt.get("type") == "function_call" and nxt.get("call_id") == cid, str(nxt))
-    check("stateful inserts output after call",
-          nxt2.get("type") == "function_call_output" and nxt2.get("call_id") == cid)
+    check(
+        "stateful inserts call after recorded id",
+        nxt.get("type") == "function_call" and nxt.get("call_id") == cid,
+        str(nxt),
+    )
+    check(
+        "stateful inserts output after call", nxt2.get("type") == "function_call_output" and nxt2.get("call_id") == cid
+    )
 
     # natural-consecutive reasoning (unrecorded) gets NO splice
-    nidx = next(i for i, x in enumerate(out)
-                if isinstance(x, dict) and x.get("id") == "rs_natural")
-    check("stateful no splice for unrecorded id",
-          out[nidx + 1].get("type") == "message", str(out[nidx + 1]))
+    nidx = next(i for i, x in enumerate(out) if isinstance(x, dict) and x.get("id") == "rs_natural")
+    check("stateful no splice for unrecorded id", out[nidx + 1].get("type") == "message", str(out[nidx + 1]))
 
     # idempotent: re-running adds nothing
     out2 = repair_followup_input(out, store, tool_name="continue_thinking", output_text="go")
@@ -581,23 +643,26 @@ async def test_eof_incomplete():
     events = [
         {"type": "response.created", "response": {"id": "resp_e", "status": "in_progress"}},
         {"type": "response.in_progress", "response": {"id": "resp_e"}},
-        {"type": "response.output_item.added", "output_index": 0,
-         "item": {"id": "rs_e", "type": "reasoning"}},
-        {"type": "response.output_item.done", "output_index": 0,
-         "item": {"id": "rs_e", "type": "reasoning", "encrypted_content": "E"}},
-        {"type": "response.output_item.added", "output_index": 1,
-         "item": {"id": "msg_e", "type": "message"}},
-        {"type": "response.output_text.delta", "output_index": 1, "item_id": "msg_e",
-         "content_index": 0, "delta": "partial"},
-        {"type": "response.output_item.done", "output_index": 1,
-         "item": {"id": "msg_e", "type": "message"}},
+        {"type": "response.output_item.added", "output_index": 0, "item": {"id": "rs_e", "type": "reasoning"}},
+        {
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {"id": "rs_e", "type": "reasoning", "encrypted_content": "E"},
+        },
+        {"type": "response.output_item.added", "output_index": 1, "item": {"id": "msg_e", "type": "message"}},
+        {
+            "type": "response.output_text.delta",
+            "output_index": 1,
+            "item_id": "msg_e",
+            "content_index": 0,
+            "delta": "partial",
+        },
+        {"type": "response.output_item.done", "output_index": 1, "item": {"id": "msg_e", "type": "message"}},
         # <-- no response.completed
     ]
-    evs = [e for e in await run_fold(cfg, base_body, FakeResp(make_sse(events)), [])
-           if isinstance(e, dict)]
+    evs = [e for e in await run_fold(cfg, base_body, FakeResp(make_sse(events)), []) if isinstance(e, dict)]
     term = evs[-1]
-    check("eof terminal is incomplete", term.get("type") == "response.incomplete",
-          term.get("type"))
+    check("eof terminal is incomplete", term.get("type") == "response.incomplete", term.get("type"))
     reason = ((term.get("response") or {}).get("incomplete_details") or {}).get("reason")
     check("eof reason upstream_eof", reason == "upstream_eof", str(reason))
 
@@ -605,9 +670,11 @@ async def test_eof_incomplete():
     leaked = any(e.get("type") == "response.output_text.delta" for e in evs)
     check("eof does not leak buffered message", not leaked)
     out_items = (term.get("response") or {}).get("output") or []
-    check("eof output is reasoning only",
-          all(it.get("type") == "reasoning" for it in out_items) and len(out_items) == 1,
-          str([it.get("type") for it in out_items]))
+    check(
+        "eof output is reasoning only",
+        all(it.get("type") == "reasoning" for it in out_items) and len(out_items) == 1,
+        str([it.get("type") for it in out_items]),
+    )
 
 
 # --- runner -----------------------------------------------------------------

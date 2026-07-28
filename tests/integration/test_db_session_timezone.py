@@ -62,7 +62,7 @@ async def test_postgres_asyncpg_engine_pins_session_timezone_to_utc_despite_data
         await _set_database_timezone_default(url, database_name, "Europe/Amsterdam")
         engine = create_async_engine(
             url,
-            **session_module._postgres_async_engine_kwargs(url),
+            **session_module._postgres_async_engine_kwargs(url, background=False),
         )
         try:
             async with engine.connect() as conn:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,28 +12,6 @@ from app.modules.accounts.usage_rollup_scheduler import AccountUsageRollupSchedu
 pytestmark = pytest.mark.unit
 
 
-class _GateLeader:
-    """Leader stub mirroring ``run_if_leader``: heartbeat gate, not one-shot.
-
-    A one-time ``try_acquire`` would leave a fold backfill that outlives the
-    60s lease unprotected; ``try_acquire`` therefore asserts if the scheduler
-    ever falls back to it.
-    """
-
-    def __init__(self, *, leader: bool) -> None:
-        self.leader = leader
-        self.run_if_leader_calls = 0
-
-    async def run_if_leader(self, fn: Callable[[], Awaitable[object]]) -> object | None:
-        self.run_if_leader_calls += 1
-        if not self.leader:
-            return None
-        return await fn()
-
-    async def try_acquire(self) -> bool:  # pragma: no cover - must not be used
-        raise AssertionError("usage rollup scheduler must gate via run_if_leader, not try_acquire")
-
-
 def test_build_account_usage_rollup_scheduler_uses_constant_interval() -> None:
     scheduler = rollup_scheduler.build_account_usage_rollup_scheduler()
     assert scheduler.interval_seconds == rollup_scheduler.FOLD_INTERVAL_SECONDS
@@ -41,7 +19,7 @@ def test_build_account_usage_rollup_scheduler_uses_constant_interval() -> None:
 
 @pytest.mark.asyncio
 async def test_fold_once_skips_when_not_leader(monkeypatch) -> None:
-    leader = _GateLeader(leader=False)
+    leader = SimpleNamespace(try_acquire=AsyncMock(return_value=False))
     monkeypatch.setattr(rollup_scheduler, "_get_leader_election", lambda: leader)
     fold = AsyncMock()
     hourly = AsyncMock()
@@ -52,15 +30,12 @@ async def test_fold_once_skips_when_not_leader(monkeypatch) -> None:
 
     fold.assert_not_called()
     hourly.assert_not_called()
-    assert leader.run_if_leader_calls == 1
+    leader.try_acquire.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_fold_once_gates_via_run_if_leader_heartbeat(monkeypatch) -> None:
-    """The fold pass must run under the heartbeat-renewed ``run_if_leader``
-    gate, not a one-time ``try_acquire`` that leaves a long backfill
-    unprotected once the lease expires mid-pass."""
-    leader = _GateLeader(leader=True)
+async def test_fold_once_runs_both_passes_as_leader(monkeypatch) -> None:
+    leader = SimpleNamespace(try_acquire=AsyncMock(return_value=True))
     monkeypatch.setattr(rollup_scheduler, "_get_leader_election", lambda: leader)
     fold = AsyncMock(return_value=2)
     hourly = AsyncMock(return_value=1)
@@ -71,12 +46,12 @@ async def test_fold_once_gates_via_run_if_leader_heartbeat(monkeypatch) -> None:
 
     fold.assert_awaited_once()
     hourly.assert_awaited_once()
-    assert leader.run_if_leader_calls == 1
+    leader.try_acquire.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_fold_once_swallows_fold_errors(monkeypatch) -> None:
-    leader = _GateLeader(leader=True)
+    leader = SimpleNamespace(try_acquire=AsyncMock(return_value=True))
     monkeypatch.setattr(rollup_scheduler, "_get_leader_election", lambda: leader)
     fold = AsyncMock(side_effect=RuntimeError("db down"))
     hourly = AsyncMock(side_effect=RuntimeError("db down"))
@@ -94,7 +69,7 @@ async def test_fold_once_runs_hourly_pass_even_when_lifetime_pass_fails(monkeypa
     """Blast-radius isolation: a lifetime-fold failure must not stop the
     hourly time-axis fold (and vice versa) — each has its own watermark and
     retention only pauses via the min-gate."""
-    leader = _GateLeader(leader=True)
+    leader = SimpleNamespace(try_acquire=AsyncMock(return_value=True))
     monkeypatch.setattr(rollup_scheduler, "_get_leader_election", lambda: leader)
     fold = AsyncMock(side_effect=RuntimeError("lifetime fold broken"))
     hourly = AsyncMock(return_value=3)
@@ -109,7 +84,7 @@ async def test_fold_once_runs_hourly_pass_even_when_lifetime_pass_fails(monkeypa
 
 @pytest.mark.asyncio
 async def test_start_folds_immediately_and_stop_cancels(monkeypatch) -> None:
-    leader = _GateLeader(leader=True)
+    leader = SimpleNamespace(try_acquire=AsyncMock(return_value=True))
     monkeypatch.setattr(rollup_scheduler, "_get_leader_election", lambda: leader)
     folded = asyncio.Event()
 

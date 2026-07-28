@@ -829,6 +829,7 @@ async def test_api_key_enforces_service_tier_for_responses(async_client, monkeyp
 
     assert seen["service_tier"] == "ultrafast"
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("requested_service_tier", [None, "auto", "default"])
 async def test_enforced_unadvertised_tier_uses_effective_tier_for_accounting_and_forwarding(
@@ -926,6 +927,8 @@ async def test_enforced_unadvertised_tier_uses_effective_tier_for_accounting_and
         latest_log = result.scalars().first()
         assert latest_log is not None
         assert latest_log.requested_service_tier is None
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["/backend-api/codex/responses/compact", "/v1/responses/compact"])
 async def test_api_key_enforces_model_and_reasoning_for_compact_responses(async_client, monkeypatch, endpoint):

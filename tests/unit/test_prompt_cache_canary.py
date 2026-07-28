@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,7 +13,7 @@ pytestmark = pytest.mark.unit
 
 
 def _make_scheduler(**overrides) -> canary_module.PromptCacheCanaryScheduler:
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "interval_seconds": 300,
         "window_seconds": 3600,
         "min_input_tokens": 1_000_000,
@@ -182,6 +183,7 @@ async def test_null_model_and_zero_input_are_skipped(caplog) -> None:
     assert gauge.samples == {}
     assert not caplog.records
 
+
 def _patched_sample(scheduler, rows, ratio_gauge, uncached_gauge, caplog):
     leader = AsyncMock()
     leader.try_acquire = AsyncMock(return_value=True)
@@ -242,9 +244,7 @@ async def test_uncached_regression_alerts_despite_healthy_ratio(caplog) -> None:
     # Ratio 0.9 is healthy, but 100k uncached tokens/request exceeds the model threshold.
     ratio_gauge, uncached_gauge = _FakeGauge(), _FakeGauge()
     scheduler = _make_scheduler(model_uncached_tokens_thresholds={"gpt-5.6-sol": 50_000})
-    ctxs = _patched_sample(
-        scheduler, [("gpt-5.6-sol", 10_000_000, 9_000_000, 10)], ratio_gauge, uncached_gauge, caplog
-    )
+    ctxs = _patched_sample(scheduler, [("gpt-5.6-sol", 10_000_000, 9_000_000, 10)], ratio_gauge, uncached_gauge, caplog)
     with ctxs[0], ctxs[1], ctxs[2], ctxs[3], ctxs[4], ctxs[5]:
         await scheduler._sample_once()
     messages = [r.getMessage() for r in caplog.records]
@@ -257,10 +257,7 @@ async def test_uncached_regression_alerts_despite_healthy_ratio(caplog) -> None:
 async def test_zero_uncached_threshold_disables_alerting(caplog) -> None:
     ratio_gauge, uncached_gauge = _FakeGauge(), _FakeGauge()
     scheduler = _make_scheduler(uncached_tokens_threshold=0)
-    ctxs = _patched_sample(
-        scheduler, [("gpt-5.6-sol", 10_000_000, 9_000_000, 10)], ratio_gauge, uncached_gauge, caplog
-    )
+    ctxs = _patched_sample(scheduler, [("gpt-5.6-sol", 10_000_000, 9_000_000, 10)], ratio_gauge, uncached_gauge, caplog)
     with ctxs[0], ctxs[1], ctxs[2], ctxs[3], ctxs[4], ctxs[5]:
         await scheduler._sample_once()
     assert not caplog.records
-

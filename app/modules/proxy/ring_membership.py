@@ -41,6 +41,7 @@ class RingMembershipService:
 
     async def register(self, instance_id: str, *, endpoint_base_url: str | None = None) -> None:
         """Upsert pod into ring. Safe to call multiple times."""
+
         async def _register_once() -> None:
             async with self._session() as session:
                 # Dialect-specific upsert
@@ -99,6 +100,7 @@ class RingMembershipService:
 
     async def heartbeat(self, instance_id: str, *, endpoint_base_url: str | None = None) -> None:
         """Upsert heartbeat — recovers from mark_stale or unregister by sibling workers."""
+
         async def _heartbeat_once() -> None:
             async with self._session() as session:
                 dialect = session.get_bind().dialect.name
@@ -153,6 +155,7 @@ class RingMembershipService:
 
     async def unregister(self, instance_id: str) -> None:
         """Remove pod from ring."""
+
         async def _unregister_once() -> None:
             async with self._session() as session:
                 stmt = delete(BridgeRingMember).where(BridgeRingMember.instance_id == instance_id)
@@ -184,6 +187,7 @@ class RingMembershipService:
         active_for_seconds = max(grace_seconds, 0)
         age_seconds = max(stale_threshold_seconds - active_for_seconds, 0)
         stale_time = utcnow() - timedelta(seconds=age_seconds)
+
         async def _mark_stale_once() -> None:
             async with self._session() as session:
                 stmt = (

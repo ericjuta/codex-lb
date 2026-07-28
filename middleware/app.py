@@ -4,12 +4,14 @@ Only ACTS when continuation is enabled and the agent did not itself declare a
 `continue_thinking` tool (collision rule). Otherwise it is a pure passthrough,
 so it is safe in front of all traffic.
 """
+
 from __future__ import annotations
 
 import contextlib
 import json
 import logging
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, Protocol
 
 import httpx
 from starlette.applications import Starlette
@@ -31,7 +33,12 @@ from .store import IdStore
 log = logging.getLogger("middleware.app")
 
 
-def _header_base(request: Request) -> str | None:
+class _HeaderRequest(Protocol):
+    @property
+    def headers(self) -> Mapping[str, str]: ...
+
+
+def _header_base(request: _HeaderRequest) -> str | None:
     """The non-blank Responses-API-Base header value, or None (case-insensitive)."""
     v = request.headers.get("responses-api-base")
     v = v.strip() if v else ""
@@ -46,7 +53,7 @@ def _join_responses(base: str) -> str:
     return base if base.endswith("/responses") else base + "/responses"
 
 
-def _resolve_upstream_url(cfg: Config, request: Request) -> str | None:
+def _resolve_upstream_url(cfg: Config, request: _HeaderRequest) -> str | None:
     """Target URL for this request.
 
     - "fixed": always the configured URL (header ignored).
@@ -67,13 +74,11 @@ def _resolve_upstream_url(cfg: Config, request: Request) -> str | None:
     return cfg.upstream.url
 
 
-def _url_is_from_header(cfg: Config, request: Request) -> bool:
+def _url_is_from_header(cfg: Config, request: _HeaderRequest) -> bool:
     return cfg.upstream.mode in ("header", "header_required") and _header_base(request) is not None
 
 
-async def _passthrough(
-    client: httpx.AsyncClient, cfg: Config, request: Request, raw: bytes, url: str
-):
+async def _passthrough(client: httpx.AsyncClient, cfg: Config, request: Request, raw: bytes, url: str):
     """Pure proxy: forward the raw request and stream the raw response back."""
     headers = build_upstream_headers(request.headers.items(), cfg)
     resp = await open_passthrough(client, url, raw, headers)
@@ -117,12 +122,13 @@ async def handle_responses(request: Request) -> Response:
     if _url_is_from_header(cfg, request) and would_inject_authorization(
         cfg, agent_has_authorization=request.headers.get("authorization") is not None
     ):
-        log.warning("blocked: Responses-API-Base override without own auth (model=%s)",
-                    body.get("model"))
+        log.warning("blocked: Responses-API-Base override without own auth (model=%s)", body.get("model"))
         return JSONResponse(
-            {"error": "When overriding the upstream base (Responses-API-Base), the request must "
-                      "provide its own Authorization; the proxy will not send its configured "
-                      "credentials to an externally supplied URL."},
+            {
+                "error": "When overriding the upstream base (Responses-API-Base), the request must "
+                "provide its own Authorization; the proxy will not send its configured "
+                "credentials to an externally supplied URL."
+            },
             status_code=400,
         )
 
@@ -131,27 +137,28 @@ async def handle_responses(request: Request) -> Response:
     # the agent declaring its own continue_thinking) is a pure passthrough.
     # The collision rule only matters for the tool_pair method (we inject a tool);
     # commentary injects no tool, so a declared continue_thinking is irrelevant.
-    collision = (
-        cfg.cont.method == "tool_pair"
-        and declares_continue_tool(body, cfg.cont.continue_tool_name)
-    )
-    should_fold = (
-        cfg.cont.enabled
-        and bool(body.get("stream"))
-        and reasoning_enabled(body)
-        and not collision
-    )
+    collision = cfg.cont.method == "tool_pair" and declares_continue_tool(body, cfg.cont.continue_tool_name)
+    should_fold = cfg.cont.enabled and bool(body.get("stream")) and reasoning_enabled(body) and not collision
     if not should_fold:
-        why = ("disabled" if not cfg.cont.enabled
-               else "non-stream" if not body.get("stream")
-               else "non-reasoning" if not reasoning_enabled(body)
-               else "declares-continue_thinking")
-        log.info("passthrough (%s): model=%s path=%s url=%s",
-                 why, body.get("model"), request.url.path, url)
+        why = (
+            "disabled"
+            if not cfg.cont.enabled
+            else "non-stream"
+            if not body.get("stream")
+            else "non-reasoning"
+            if not reasoning_enabled(body)
+            else "declares-continue_thinking"
+        )
+        log.info("passthrough (%s): model=%s path=%s url=%s", why, body.get("model"), request.url.path, url)
         return await _passthrough(client, cfg, request, raw, url)
 
-    log.info("fold start: model=%s path=%s url=%s input_items=%d",
-             body.get("model"), request.url.path, url, len(body.get("input") or []))
+    log.info(
+        "fold start: model=%s path=%s url=%s input_items=%d",
+        body.get("model"),
+        request.url.path,
+        url,
+        len(body.get("input") or []),
+    )
 
     # repair_followup="stateful": re-insert tool_pair continue pairs after recorded
     # ids (tool_pair only — commentary preserves cross-turn structure via forward_marker).
@@ -180,9 +187,7 @@ async def handle_responses(request: Request) -> Response:
     if resp.status_code >= 400:
         err = await resp.aread()
         await resp.aclose()
-        return Response(
-            err, status_code=resp.status_code, media_type=resp.headers.get("content-type")
-        )
+        return Response(err, status_code=resp.status_code, media_type=resp.headers.get("content-type"))
 
     return StreamingResponse(
         fold_stream(client, cfg, body, headers, resp, request.app.state.id_store, url=url),
@@ -212,7 +217,5 @@ def create_app(cfg: Config) -> Starlette:
         finally:
             await app.state.client.aclose()
 
-    routes = [
-        Route(path, handle_responses, methods=["POST"]) for path in cfg.server.listen_paths
-    ]
+    routes = [Route(path, handle_responses, methods=["POST"]) for path in cfg.server.listen_paths]
     return Starlette(routes=routes, lifespan=lifespan)

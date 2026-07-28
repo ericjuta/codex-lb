@@ -259,6 +259,7 @@ def apply_api_key_enforcement(
             )
     return service_tier_was_enforced
 
+
 def apply_enforced_service_tier_model_fallback(
     payload: ResponsesRequest | ResponsesCompactRequest,
     *,
@@ -289,6 +290,8 @@ def apply_enforced_service_tier_model_fallback(
     )
     payload.service_tier = None
     return True
+
+
 def _model_responses_lite_capability(
     model: str,
     *,

@@ -2,9 +2,9 @@
 
 ### Requirement: WebSocket incomplete responses preserve the upstream reason in request logs
 
-When an upstream Responses WebSocket terminal `response.incomplete` event
-contains a non-empty string at `response.incomplete_details.reason`, the
-service SHALL persist the request log with status `error` and SHALL preserve
+The service SHALL persist a request log with status `error` when an upstream
+Responses WebSocket terminal `response.incomplete` event contains a non-empty
+string at `response.incomplete_details.reason`, and SHALL preserve
 that reason as both `error_code` and `error_message`. The terminal event sent
 to the downstream client and the account-health treatment of an incomplete
 response SHALL remain unchanged.

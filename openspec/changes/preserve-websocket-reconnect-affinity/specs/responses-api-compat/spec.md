@@ -2,8 +2,8 @@
 
 ### Requirement: Codex backend session_id preserves account affinity
 
-When a backend Codex Responses or compact request includes a non-empty
-accepted session header, the service MUST use that value as the routing
+The service MUST use a non-empty accepted session header from a backend Codex
+Responses or compact request as the routing
 affinity key for upstream account selection unless the client supplied a
 non-empty `x-codex-turn-state` header. If the request lacks a
 client-supplied `prompt_cache_key`, the service MUST derive and attach a

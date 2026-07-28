@@ -8,6 +8,7 @@ top-level ``middleware`` proxy so the runtime image never has to copy the
 ``middleware`` source tree. ``middleware.codex`` re-exports these for the
 host-only proxy and its tests.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -107,9 +108,7 @@ def build_round_payload(
     body["stream"] = True
     body["input"] = input_items
     if force_include_encrypted or base_body.get("include"):
-        body["include"] = merge_include(
-            base_body.get("include"), force_encrypted=force_include_encrypted
-        )
+        body["include"] = merge_include(base_body.get("include"), force_encrypted=force_include_encrypted)
     if drop_previous_response_id:
         body.pop("previous_response_id", None)
     return body

@@ -207,9 +207,7 @@ async def test_cleanup_once_survives_missing_websocket_continuity_table() -> Non
     bridge_repo = AsyncMock()
     bridge_repo.purge_closed_before = AsyncMock(return_value=1)
     continuity_repo = AsyncMock()
-    continuity_repo.purge_before = AsyncMock(
-        side_effect=RuntimeError("no such table: websocket_continuity_states")
-    )
+    continuity_repo.purge_before = AsyncMock(side_effect=RuntimeError("no such table: websocket_continuity_states"))
 
     class FakeSession:
         async def __aenter__(self):

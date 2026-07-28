@@ -555,6 +555,7 @@ async def test_images_generations_failed_image_returns_5xx(async_client, monkeyp
     assert "images_route_complete route=generations model=gpt-image-2 stream=false" in caplog.text
     assert "outcome=image_error" in caplog.text
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "content_type",
@@ -581,6 +582,7 @@ async def test_v1_images_edits_auth_rejection_does_not_read_body_and_records_onc
     message = "images_route_complete route=edits model=unknown stream=false status=401 outcome=auth_error"
     assert caplog.text.count(message) == 1
 
+
 @pytest.mark.asyncio
 async def test_v1_images_edits_compressed_rejection_does_not_read_body_and_records_once(
     async_client,
@@ -604,6 +606,7 @@ async def test_v1_images_edits_compressed_rejection_does_not_read_body_and_recor
     message = "images_route_complete route=edits model=unknown stream=false status=400 outcome=invalid_request"
     assert caplog.text.count(message) == 1
 
+
 @pytest.mark.asyncio
 async def test_v1_images_edits_missing_content_type_retains_openai_validation_and_records_once(
     async_client,
@@ -619,6 +622,7 @@ async def test_v1_images_edits_missing_content_type_retains_openai_validation_an
     assert error["param"] == "prompt"
     message = "images_route_complete route=edits model=unknown stream=false status=400 outcome=invalid_request"
     assert caplog.text.count(message) == 1
+
 
 @pytest.mark.asyncio
 async def test_v1_images_edits_preserves_mixed_image_order_and_closes_spools_before_pipeline(
@@ -655,6 +659,7 @@ async def test_v1_images_edits_preserves_mixed_image_order_and_closes_spools_bef
     assert response.status_code == 200
     assert captured["images"] == [(b"first", "image/png"), (b"second", "image/webp")]
     assert captured["mask"] == (b"mask", "image/png")
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -700,6 +705,7 @@ async def test_v1_images_edits_rejects_invalid_file_shapes_before_pipeline(
 
     assert response.status_code == 400
     assert response.json()["error"]["param"] == expected_param
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -752,6 +758,7 @@ async def test_v1_images_edits_binary_limits_return_one_413_without_pipeline_wor
     message = "images_route_complete route=edits model=unknown stream=false status=413 outcome=invalid_request"
     assert caplog.text.count(message) == 1
 
+
 @pytest.mark.asyncio
 async def test_v1_images_edits_allows_exact_small_binary_policy_boundary(
     async_client,
@@ -789,6 +796,7 @@ async def test_v1_images_edits_allows_exact_small_binary_policy_boundary(
     assert response.status_code == 200
     assert captured["images"] == [(b"1234", "image/png")]
     assert captured["mask"] == (b"12", "image/png")
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -843,6 +851,7 @@ async def test_v1_images_edits_body_and_text_limits_reject_before_pipeline(
     assert response.status_code == 413
     assert response.json()["error"]["code"] == "payload_too_large"
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("image", "mask", "expected_param"),
@@ -871,6 +880,7 @@ async def test_v1_images_edits_rejects_empty_binary_parts_before_pipeline(
 
     assert response.status_code == 400
     assert response.json()["error"]["param"] == expected_param
+
 
 @pytest.mark.asyncio
 async def test_v1_images_edits_malformed_multipart_records_one_invalid_request(
@@ -1469,6 +1479,7 @@ async def test_images_generations_succeeds_when_reservation_finalize_fails(async
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["data"] == [{"b64_json": "B64_FINFAIL"}]
+
 
 class _NeverReadStream(AsyncByteStream):
     def __init__(self) -> None:

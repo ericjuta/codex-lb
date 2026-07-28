@@ -329,6 +329,8 @@ class RequestDemandQuarterRollup(Base):
     )
     cached_input_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"), nullable=False)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0, server_default=text("0"), nullable=False)
+
+
 class AdditionalUsageHistory(Base):
     __tablename__ = "additional_usage_history"
 

@@ -4,9 +4,9 @@
 
 ### Requirement: Request-scoped Codex metadata survives HTTP-to-WebSocket bridging
 
-When an HTTP Responses request is translated into an upstream WebSocket
-`response.create` frame, the service MUST project nonblank
-`x-codex-turn-metadata`, `x-openai-subagent`,
+The service MUST project request-scoped Codex compatibility metadata when an
+HTTP Responses request is translated into an upstream WebSocket `response.create`
+frame, including nonblank `x-codex-turn-metadata`, `x-openai-subagent`,
 `x-codex-parent-thread-id`, and `x-codex-window-id` compatibility headers into
 that frame's `client_metadata`. This projection MUST happen for every request,
 including requests multiplexed over a reused upstream socket. A metadata value

@@ -377,6 +377,7 @@ def test_ingress_renders_dedicated_responses_ingress_with_session_hash() -> None
     assert "path: /v1/responses" in rendered
     assert "path: /backend-api/codex/responses" in rendered
 
+
 def test_gateway_api_can_create_application_specific_gateway() -> None:
     rendered = _helm_template(
         "--show-only",
@@ -396,6 +397,7 @@ def test_gateway_api_can_create_application_specific_gateway() -> None:
     assert gateway["spec"]["gatewayClassName"] == "envoy"
     assert gateway["spec"]["listeners"] == [{"name": "http", "port": 80, "protocol": "HTTP"}]
 
+
 def test_gateway_api_httproute_attaches_to_chart_managed_gateway() -> None:
     rendered = _helm_template(
         "--show-only",
@@ -414,6 +416,7 @@ def test_gateway_api_httproute_attaches_to_chart_managed_gateway() -> None:
 
     (route,) = _helm_documents(rendered)
     assert route["spec"]["parentRefs"] == [{"name": "codex-lb"}]
+
 
 def test_gateway_api_gateway_supports_custom_listeners() -> None:
     rendered = _helm_template(
@@ -447,6 +450,7 @@ def test_gateway_api_gateway_supports_custom_listeners() -> None:
         }
     ]
 
+
 def test_gateway_api_gateway_requires_gateway_class_name() -> None:
     with pytest.raises(subprocess.CalledProcessError) as excinfo:
         _helm_template(
@@ -457,6 +461,7 @@ def test_gateway_api_gateway_requires_gateway_class_name() -> None:
         )
 
     assert "gatewayApi.gateway.gatewayClassName" in excinfo.value.stderr
+
 
 def test_gateway_api_does_not_render_gateway_by_default() -> None:
     rendered = _helm_template(

@@ -292,6 +292,7 @@ def test_postgres_engine_kwargs_keep_pool_controls(monkeypatch) -> None:
     assert kwargs["max_overflow"] == 4
     assert kwargs["pool_timeout"] == 11.0
 
+
 def test_postgres_connect_args_pin_session_timezone_to_utc(monkeypatch) -> None:
     """Regression: the application writes naive UTC datetimes into timestamptz
     columns, so the asyncpg session time zone MUST be UTC. Otherwise a container
@@ -305,6 +306,7 @@ def test_postgres_connect_args_pin_session_timezone_to_utc(monkeypatch) -> None:
 
     assert connect_args == {"server_settings": {"timezone": "UTC"}}
 
+
 def test_postgres_connect_args_pin_utc_and_keep_test_db_url_tuning(monkeypatch) -> None:
     monkeypatch.setenv("CODEX_LB_TEST_DATABASE_URL", "1")
 
@@ -315,8 +317,10 @@ def test_postgres_connect_args_pin_utc_and_keep_test_db_url_tuning(monkeypatch) 
         "prepared_statement_cache_size": 0,
     }
 
+
 def test_postgres_connect_args_none_for_non_postgres_url() -> None:
     assert session_module._postgres_async_connect_args("sqlite+aiosqlite:///:memory:") is None
+
 
 def test_postgres_engine_kwargs_forward_utc_connect_args(monkeypatch) -> None:
     monkeypatch.delenv("CODEX_LB_TEST_DATABASE_URL", raising=False)
@@ -329,6 +333,8 @@ def test_postgres_engine_kwargs_forward_utc_connect_args(monkeypatch) -> None:
     kwargs = session_module._postgres_async_engine_kwargs("postgresql+asyncpg://u:p@h/db", background=False)
 
     assert kwargs["connect_args"] == {"server_settings": {"timezone": "UTC"}}
+
+
 @pytest.mark.asyncio
 async def test_close_session_rolls_back_open_transaction_before_close() -> None:
     calls: list[str] = []

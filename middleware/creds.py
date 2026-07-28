@@ -8,6 +8,7 @@ its own). Two exceptions:
   2. credentials (Authorization, chatgpt-account-id) follow the auth mode, with
      the token / account id supplied directly from config.toml `[auth]`.
 """
+
 from __future__ import annotations
 
 from typing import Iterable

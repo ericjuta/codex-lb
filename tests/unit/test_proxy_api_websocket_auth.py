@@ -363,6 +363,7 @@ async def test_stream_responses_prefers_forwarded_downstream_turn_state(monkeypa
     assert captured["downstream_turn_state"] == "http_turn_forwarded_value"
     assert response.headers["x-codex-turn-state"] == "http_turn_forwarded_value"
 
+
 @pytest.mark.asyncio
 async def test_stream_responses_preserves_forwarded_effective_service_tier(monkeypatch):
     request = Request(
@@ -438,6 +439,8 @@ async def test_stream_responses_preserves_forwarded_effective_service_tier(monke
     assert observed["service_tier"] is None
     assert payload.service_tier is None
     fallback.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_stream_responses_does_not_release_forwarded_reservation_on_internal_bridge_error(monkeypatch):
     request = Request(
@@ -555,7 +558,7 @@ def test_public_previous_response_invalid_request_param_is_masked_to_stream_inco
 
 
 def test_public_previous_response_error_event_is_masked_to_response_failed():
-    payload = {
+    payload: dict[str, JsonValue] = {
         "type": "error",
         "status": 400,
         "error": {

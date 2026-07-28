@@ -75,7 +75,6 @@ _DASHBOARD_EXCEPTION_TYPES: tuple[type[AppError], ...] = (
 )
 
 
-
 def _error_format(request: Request) -> str | None:
     fmt = getattr(request.state, "error_format", None)
     if fmt is not None:

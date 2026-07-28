@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Entrypoint: load config.toml and serve the middleware with uvicorn."""
+
 from __future__ import annotations
 
 import logging

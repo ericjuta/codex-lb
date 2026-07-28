@@ -1,3 +1,5 @@
+## MODIFIED Requirements
+
 ### Requirement: Direct Docker fallback uses the image startup contract
 
 The direct Docker fallback for running the current checkout MUST use the image default startup script instead of overriding the command. The documented and helper-driven direct Docker path MUST keep the default HTTP responses session bridge deployment at one worker unless the operator disables the bridge.

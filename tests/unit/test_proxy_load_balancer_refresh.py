@@ -3536,6 +3536,7 @@ async def test_persist_selection_state_skips_only_additional_quota_scoped_accoun
     assert exempt.status == AccountStatus.RATE_LIMITED
     assert [update["account_id"] for update in accounts_repo.status_updates] == [exempt.id]
 
+
 def _authoritative_snapshot(
     *,
     account_id: str,
@@ -3555,12 +3556,14 @@ def _authoritative_snapshot(
         account_catalogs_authoritative=True,
     )
 
+
 async def _registry_with_snapshot(snapshot: ModelRegistrySnapshot) -> ModelRegistry:
     # Fork adaptation: no ModelRegistryExport/import_state lane; install the
     # snapshot directly on the registry instance.
     registry = ModelRegistry(ttl_seconds=60.0)
     registry._snapshot = snapshot
     return registry
+
 
 def _single_account_repos(account: Account) -> tuple[Any, Any, Any]:
     now = utcnow()
@@ -3581,6 +3584,7 @@ def _single_account_repos(account: Account) -> tuple[Any, Any, Any]:
     )
     return StubAccountsRepository([account]), usage_repo, StubStickySessionsRepository()
 
+
 def _service_tier_enforcement_key(service_tier: str) -> ApiKeyData:
     return ApiKeyData(
         id=f"key-enforced-{service_tier}",
@@ -3595,6 +3599,7 @@ def _service_tier_enforcement_key(service_tier: str) -> ApiKeyData:
         created_at=utcnow(),
         last_used_at=None,
     )
+
 
 @pytest.mark.parametrize("requested_service_tier", [None, "auto", "default", " Default "])
 def test_enforced_service_tier_provenance_treats_default_aliases_as_omitted(
@@ -3614,6 +3619,7 @@ def test_enforced_service_tier_provenance_treats_default_aliases_as_omitted(
 
     assert service_tier_was_enforced is True
     assert payload.service_tier == "priority"
+
 
 @pytest.mark.asyncio
 async def test_select_account_ignores_enforced_service_tier_the_model_never_advertises(monkeypatch) -> None:
@@ -3697,6 +3703,7 @@ async def test_select_account_ignores_enforced_service_tier_the_model_never_adve
         request_service_tier=payload.service_tier,
     )
 
+
 @pytest.mark.asyncio
 async def test_select_account_reports_the_service_tier_when_the_model_advertises_it(monkeypatch) -> None:
     """When the tier IS advertised but no account carries it, say so.
@@ -3735,6 +3742,7 @@ async def test_select_account_reports_the_service_tier_when_the_model_advertises
     assert selection.account is None
     assert selection.error_code == NO_PLAN_SUPPORT_FOR_MODEL
     assert selection.error_message == (f"No accounts with a plan supporting model '{model}' at service tier 'priority'")
+
 
 @pytest.mark.asyncio
 async def test_api_key_enforced_priority_tier_still_routes_a_model_without_priority(monkeypatch) -> None:

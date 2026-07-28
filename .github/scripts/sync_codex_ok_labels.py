@@ -774,6 +774,7 @@ def pr_merge_state(repo: str, number: int) -> str:
         return "CONFLICTING"
     return merge_state or "UNKNOWN"
 
+
 def needs_rebase_label_target(merge_state: str, *, has_label: bool) -> bool:
     """Sync confirmed conflicts and preserve the label when GitHub is ambiguous."""
 
@@ -782,6 +783,8 @@ def needs_rebase_label_target(merge_state: str, *, has_label: bool) -> bool:
     if merge_state in NO_REBASE_STATES:
         return False
     return has_label
+
+
 def workflow_runs_requiring_approval(repo: str, head_sha: str) -> tuple[int, ...]:
     runs = paged_api(f"/repos/{repo}/actions/runs?event=pull_request&head_sha={head_sha}")
     run_ids: list[int] = []

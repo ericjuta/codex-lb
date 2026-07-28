@@ -12978,12 +12978,11 @@ async def test_stream_responses_post_yield_upstream_error_emits_terminal_failure
 
 
 @pytest.mark.asyncio
-async def test_stream_responses_first_event_connection_reset_fails_over(monkeypatch):
+async def test_stream_responses_first_event_connection_reset_surfaces_without_replay(monkeypatch):
     settings = _make_proxy_settings(log_proxy_service_tier_trace=False)
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     account_a = _make_account("acc_reset_stream_a")
-    account_b = _make_account("acc_reset_stream_b")
     record_error = AsyncMock()
     record_success = AsyncMock()
     seen_excluded_account_ids: list[set[str]] = []
@@ -12994,14 +12993,12 @@ async def test_stream_responses_first_event_connection_reset_fails_over(monkeypa
     async def select_account(**kwargs: object) -> AccountSelection:
         excluded_account_ids = kwargs.get("exclude_account_ids")
         seen_excluded_account_ids.append(set(cast(set[str], excluded_account_ids)))
-        if len(seen_excluded_account_ids) == 1:
-            return AccountSelection(account=account_a, error_message=None)
-        return AccountSelection(account=account_b, error_message=None)
+        return AccountSelection(account=account_a, error_message=None)
 
     monkeypatch.setattr(service._load_balancer, "select_account", select_account)
     monkeypatch.setattr(service._load_balancer, "record_error", record_error)
     monkeypatch.setattr(service._load_balancer, "record_success", record_success)
-    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=[account_a, account_b]))
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(return_value=account_a))
 
     async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
         if account_id == account_a.chatgpt_account_id:
@@ -13019,12 +13016,13 @@ async def test_stream_responses_first_event_connection_reset_fails_over(monkeypa
     chunks = [chunk async for chunk in service.stream_responses(payload, {"session_id": "sid-stream"})]
 
     event = json.loads(chunks[0].split("data: ", 1)[1])
-    assert event["type"] == "response.completed"
-    assert event["response"]["id"] == "resp_reset_ok"
-    assert seen_excluded_account_ids == [set(), {account_a.id}]
+    assert event["type"] == "response.failed"
+    assert event["response"]["error"]["code"] == "upstream_unavailable"
+    assert seen_excluded_account_ids == [set()]
+    assert await service.drain_persistence_tasks(timeout_seconds=1)
     assert request_logs.calls[0]["error_code"] == "upstream_unavailable"
     record_error.assert_awaited_once_with(account_a)
-    record_success.assert_awaited_once_with(account_b)
+    record_success.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -13234,12 +13232,11 @@ async def test_stream_websocket_network_drop_rotates_generation_for_next_request
 
 
 @pytest.mark.asyncio
-async def test_stream_responses_first_event_upstream_unavailable_fails_over(monkeypatch):
+async def test_stream_responses_visible_upstream_unavailable_with_response_id_does_not_replay(monkeypatch):
     settings = _make_proxy_settings(log_proxy_service_tier_trace=False)
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     account_a = _make_account("acc_reset_event_a")
-    account_b = _make_account("acc_reset_event_b")
     record_error = AsyncMock()
     record_errors = AsyncMock()
     record_success = AsyncMock()
@@ -13251,15 +13248,13 @@ async def test_stream_responses_first_event_upstream_unavailable_fails_over(monk
     async def select_account(**kwargs: object) -> AccountSelection:
         excluded_account_ids = kwargs.get("exclude_account_ids")
         seen_excluded_account_ids.append(set(cast(set[str], excluded_account_ids)))
-        if len(seen_excluded_account_ids) == 1:
-            return AccountSelection(account=account_a, error_message=None)
-        return AccountSelection(account=account_b, error_message=None)
+        return AccountSelection(account=account_a, error_message=None)
 
     monkeypatch.setattr(service._load_balancer, "select_account", select_account)
     monkeypatch.setattr(service._load_balancer, "record_error", record_error)
     monkeypatch.setattr(service._load_balancer, "record_errors", record_errors)
     monkeypatch.setattr(service._load_balancer, "record_success", record_success)
-    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=[account_a, account_b]))
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(return_value=account_a))
 
     async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
         if account_id == account_a.chatgpt_account_id:
@@ -13281,22 +13276,22 @@ async def test_stream_responses_first_event_upstream_unavailable_fails_over(monk
     chunks = [chunk async for chunk in service.stream_responses(payload, {"session_id": "sid-stream"})]
 
     event = json.loads(chunks[0].split("data: ", 1)[1])
-    assert event["type"] == "response.completed"
-    assert event["response"]["id"] == "resp_reset_event_ok"
-    assert seen_excluded_account_ids == [set(), {account_a.id}]
+    assert event["type"] == "response.failed"
+    assert event["response"]["id"] == "resp_reset_event"
+    assert event["response"]["error"]["code"] == "upstream_unavailable"
+    assert seen_excluded_account_ids == [set()]
     assert request_logs.calls[0]["error_code"] == "upstream_unavailable"
-    record_error.assert_awaited_once_with(account_a)
-    record_errors.assert_awaited_once_with(account_a, 2)
-    record_success.assert_awaited_once_with(account_b)
+    record_error.assert_not_awaited()
+    record_errors.assert_not_awaited()
+    record_success.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_stream_responses_first_event_raw_eof_fails_over_before_downstream_visible(monkeypatch):
+async def test_stream_responses_first_event_raw_eof_with_response_id_surfaces_without_replay(monkeypatch):
     settings = _make_proxy_settings(log_proxy_service_tier_trace=False)
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     account_a = _make_account("acc_raw_eof_event_a")
-    account_b = _make_account("acc_raw_eof_event_b")
     record_error = AsyncMock()
     record_errors = AsyncMock()
     record_success = AsyncMock()
@@ -13308,15 +13303,13 @@ async def test_stream_responses_first_event_raw_eof_fails_over_before_downstream
     async def select_account(**kwargs: object) -> AccountSelection:
         excluded_account_ids = kwargs.get("exclude_account_ids")
         seen_excluded_account_ids.append(set(cast(set[str], excluded_account_ids)))
-        if len(seen_excluded_account_ids) == 1:
-            return AccountSelection(account=account_a, error_message=None)
-        return AccountSelection(account=account_b, error_message=None)
+        return AccountSelection(account=account_a, error_message=None)
 
     monkeypatch.setattr(service._load_balancer, "select_account", select_account)
     monkeypatch.setattr(service._load_balancer, "record_error", record_error)
     monkeypatch.setattr(service._load_balancer, "record_errors", record_errors)
     monkeypatch.setattr(service._load_balancer, "record_success", record_success)
-    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=[account_a, account_b]))
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(return_value=account_a))
 
     async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
         del payload, headers, access_token, base_url, raise_for_status
@@ -13340,16 +13333,18 @@ async def test_stream_responses_first_event_raw_eof_fails_over_before_downstream
     chunks = [chunk async for chunk in service.stream_responses(payload, {"session_id": "sid-stream"})]
 
     event = json.loads(chunks[0].split("data: ", 1)[1])
-    assert event["type"] == "response.completed"
-    assert event["response"]["id"] == "resp_raw_eof_ok"
-    assert seen_excluded_account_ids == [set(), {account_a.id}]
+    assert event["type"] == "response.failed"
+    assert event["response"]["id"] == "resp_raw_eof_event"
+    assert event["response"]["error"]["code"] == "stream_incomplete"
+    assert seen_excluded_account_ids == [set()]
+    assert await service.drain_persistence_tasks(timeout_seconds=1)
     assert request_logs.calls[0]["error_code"] == "stream_incomplete"
     assert request_logs.calls[0]["failure_detail"] == "upstream_eof_before_terminal_event"
-    assert request_logs.calls[-1]["status"] == "success"
-    assert request_logs.calls[-1]["account_id"] == account_b.id
+    assert request_logs.calls[-1]["status"] == "error"
+    assert request_logs.calls[-1]["account_id"] == account_a.id
     record_error.assert_awaited_once_with(account_a)
-    record_errors.assert_awaited_once_with(account_a, 2)
-    record_success.assert_awaited_once_with(account_b)
+    record_errors.assert_not_awaited()
+    record_success.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -14942,11 +14937,11 @@ async def test_connect_proxy_websocket_passes_sticky_kind_to_load_balancer(monke
 @pytest.mark.parametrize(
     ("stream_budget_seconds", "request_stage", "now", "expected_deadline"),
     [
-        pytest.param(7200.0, "reattach", 701.0, 7300.0, id="stream-specific-reconnect"),
-        pytest.param(None, "first_turn", 101.0, 700.0, id="generic-fallback"),
+        pytest.param(7200.0, "reattach", 701.0, 721.0, id="stream-specific-reconnect"),
+        pytest.param(None, "first_turn", 101.0, 120.0, id="generic-fallback"),
     ],
 )
-async def test_connect_proxy_websocket_uses_transport_aware_request_deadline(
+async def test_connect_proxy_websocket_combines_request_and_connect_deadlines(
     monkeypatch,
     stream_budget_seconds,
     request_stage,
@@ -14959,6 +14954,7 @@ async def test_connect_proxy_websocket_uses_transport_aware_request_deadline(
     if stream_budget_seconds is not None:
         settings.http_responses_stream_request_budget_seconds = stream_budget_seconds
     monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(websocket_mixin_module.time, "monotonic", lambda: now)
 
     account = _make_account(f"acc_ws_connect_budget_{request_stage}")
     upstream = SimpleNamespace()
@@ -14998,7 +14994,9 @@ async def test_connect_proxy_websocket_uses_transport_aware_request_deadline(
     assert select_args is not None
     assert select_args.args[0] == expected_deadline
     if request_stage == "reattach":
-        assert request_state.started_at + settings.proxy_request_budget_seconds < now < expected_deadline
+        stream_deadline = request_state.started_at + stream_budget_seconds
+        generic_deadline = request_state.started_at + settings.proxy_request_budget_seconds
+        assert generic_deadline < now < expected_deadline < stream_deadline
 
 
 @pytest.mark.asyncio

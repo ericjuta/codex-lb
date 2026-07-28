@@ -547,6 +547,7 @@ class _CreatedThenCloseUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
         )
         await self._messages.put(_FakeUpstreamMessage("close", close_code=1011))
 
+
 class _ReasoningThenAbruptCloseUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
     async def send_text(self, text: str) -> None:
         self.sent_text.append(text)
@@ -603,12 +604,15 @@ class _ReasoningThenAbruptCloseUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
             )
         )
 
+
 class _CompleteThenReasoningAbruptCloseUpstreamWebSocket(_ReasoningThenAbruptCloseUpstreamWebSocket):
     async def send_text(self, text: str) -> None:
         if not self.sent_text:
             await _FakeBridgeUpstreamWebSocket.send_text(self, text)
             return
         await super().send_text(text)
+
+
 class _ErrorOnlyUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
     async def send_text(self, text: str) -> None:
         self.sent_text.append(text)

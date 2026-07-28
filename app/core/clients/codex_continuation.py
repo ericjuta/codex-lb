@@ -5,7 +5,7 @@ import logging
 import re
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from app.core.clients.codex_truncation import (
     DEFAULT_TRUNCATION_STEP,
@@ -147,6 +147,19 @@ class CodexContinuationConfig:
     max_total_output_tokens: int = 0
 
 
+class _CodexContinuationSettings(Protocol):
+    codex_continuation_enabled: bool
+    codex_continuation_truncation_step: int
+    codex_continuation_max_continue: int
+    codex_continuation_min_n: int
+    codex_continuation_max_n: int
+    codex_continuation_marker_text: str
+    codex_continuation_force_include_encrypted: bool
+    codex_continuation_rechunk_final_answer: bool
+    codex_continuation_rechunk_size: int
+    codex_continuation_max_total_output_tokens: int
+
+
 @dataclass(slots=True)
 class _BufferedOutput:
     upstream_output_index: Any
@@ -168,17 +181,18 @@ class _Seq:
 def codex_continuation_config_from_settings(settings: object) -> CodexContinuationConfig:
     if not hasattr(settings, "codex_continuation_enabled"):
         return CodexContinuationConfig(enabled=False)
+    typed_settings = cast(_CodexContinuationSettings, settings)
     return CodexContinuationConfig(
-        enabled=bool(settings.codex_continuation_enabled),
-        truncation_step=int(settings.codex_continuation_truncation_step),
-        max_continue=int(settings.codex_continuation_max_continue),
-        min_n=int(settings.codex_continuation_min_n),
-        max_n=int(settings.codex_continuation_max_n),
-        marker_text=str(settings.codex_continuation_marker_text),
-        force_include_encrypted=bool(settings.codex_continuation_force_include_encrypted),
-        rechunk_final_answer=bool(settings.codex_continuation_rechunk_final_answer),
-        rechunk_size=int(settings.codex_continuation_rechunk_size),
-        max_total_output_tokens=int(settings.codex_continuation_max_total_output_tokens),
+        enabled=bool(typed_settings.codex_continuation_enabled),
+        truncation_step=int(typed_settings.codex_continuation_truncation_step),
+        max_continue=int(typed_settings.codex_continuation_max_continue),
+        min_n=int(typed_settings.codex_continuation_min_n),
+        max_n=int(typed_settings.codex_continuation_max_n),
+        marker_text=str(typed_settings.codex_continuation_marker_text),
+        force_include_encrypted=bool(typed_settings.codex_continuation_force_include_encrypted),
+        rechunk_final_answer=bool(typed_settings.codex_continuation_rechunk_final_answer),
+        rechunk_size=int(typed_settings.codex_continuation_rechunk_size),
+        max_total_output_tokens=int(typed_settings.codex_continuation_max_total_output_tokens),
     )
 
 
@@ -236,7 +250,7 @@ async def fold_responses_stream_with_codex_continuation(
             round_stream = open_round(cast(JsonObject, next_payload))
             async for event_block in round_stream:
                 event = _parse_event_block(event_block)
-                if event is _Done:
+                if isinstance(event, _DoneType):
                     saw_done = True
                     continue
                 if event is None:

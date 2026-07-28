@@ -2,8 +2,8 @@
 
 ### Requirement: Speed and service tier metadata aggregates across accounts
 
-When the model registry merges catalog entries for the same model slug fetched
-from multiple plans or accounts, the system MUST union the model's
+The model registry MUST union tier metadata when it merges catalog entries for
+the same model slug fetched from multiple plans or accounts, including the model's
 `service_tiers`, `additional_speed_tiers`, and `default_service_tier` metadata
 across all contributing entries rather than overwriting them with the
 last-fetched entry. A slug MUST expose a speed/service tier when at least one

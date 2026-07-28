@@ -4,6 +4,7 @@ Records the reasoning ids after which a synthetic continue pair was appended
 during a turn's continuation, so a later turn's request can have those pairs
 re-inserted by id (never by adjacency). Single-instance only.
 """
+
 from __future__ import annotations
 
 import time

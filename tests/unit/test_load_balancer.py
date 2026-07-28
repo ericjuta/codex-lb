@@ -616,16 +616,19 @@ def test_select_account_round_robin_prefers_never_selected():
     assert result.account is not None
     assert result.account.account_id == "b"
 
+
 def _round_robin_tie_pool() -> list[AccountState]:
     # Five accounts that are exactly tied on the round-robin primary keys:
     # no planner cost and never-selected (last_selected_at is None -> 0.0). The
     # only differentiator is the final tie-break.
     return [AccountState(f"acct-{i}", AccountStatus.ACTIVE, used_percent=10.0) for i in range(1, 6)]
 
+
 def _round_robin_winner(salt: str, *, now: float) -> str:
     result = select_account(_round_robin_tie_pool(), now=now, routing_strategy="round_robin", replica_salt=salt)
     assert result.account is not None
     return result.account.account_id
+
 
 def test_round_robin_distinct_salts_decorrelate_exact_tie():
     now = 1_700_000_000.0
@@ -647,12 +650,14 @@ def test_round_robin_distinct_salts_decorrelate_exact_tie():
     assert winner_b.account_id == "acct-2"
     assert {winner_a.account_id, winner_b.account_id} <= {f"acct-{i}" for i in range(1, 6)}
 
+
 def test_round_robin_many_salts_spread_across_pool():
     now = 1_700_000_000.0
     winners = {_round_robin_winner(f"replica-{i}", now=now) for i in range(12)}
     # A herd (pre-change behavior) would collapse to a single account; the salt
     # spreads exact-tie winners across multiple equally-good accounts.
     assert len(winners) > 1
+
 
 def test_round_robin_salt_does_not_change_primary_ordering():
     now = 1_700_000_000.0
@@ -667,6 +672,7 @@ def test_round_robin_salt_does_not_change_primary_ordering():
         # Least-recently-selected wins regardless of salt: primary ordering is
         # untouched, only genuine ties are decorrelated.
         assert result.account.account_id == "b"
+
 
 def test_round_robin_salt_respects_planner_cost_before_tie_break():
     now = 1_700_000_000.0
@@ -684,12 +690,14 @@ def test_round_robin_salt_respects_planner_cost_before_tie_break():
         assert result.account is not None
         assert result.account.account_id == "acct-4"
 
+
 def test_round_robin_single_replica_deterministic():
     now = 1_700_000_000.0
     winners = {_round_robin_winner("replica-fixed", now=now) for _ in range(20)}
     # A fixed salt is stable per call, so a single replica selects the same
     # account every time (no random per-call jitter).
     assert len(winners) == 1
+
 
 def test_round_robin_salt_precedence_explicit_over_configured():
     from app.core.balancer import configure_replica_salt
@@ -711,6 +719,8 @@ def test_round_robin_salt_precedence_explicit_over_configured():
         assert explicit_other.account_id == "acct-2"
     finally:
         configure_replica_salt(None)
+
+
 def test_select_account_single_account_returns_selected_candidate():
     states = [
         AccountState("selected", AccountStatus.ACTIVE, used_percent=10.0, secondary_used_percent=20.0),

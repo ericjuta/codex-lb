@@ -4,8 +4,8 @@
 
 ### Requirement: Compact requests preserve scoped turn-state ownership
 
-When a compact request contains a real client-supplied `x-codex-turn-state`,
-the system MUST resolve the token only in the requesting API key scope and
+The system MUST resolve a real client-supplied `x-codex-turn-state` from a compact
+request only in the requesting API key scope and
 select only that owner account. If the owner cannot be resolved or selected,
 the request MUST fail closed and MUST NOT fall back to a generic sticky or
 load-balanced account. Proxy-synthesized first-turn placeholders (the

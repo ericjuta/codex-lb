@@ -799,6 +799,7 @@ async def test_normalize_public_responses_stream_synthesizes_response_created_on
     # But the upstream id is preserved so downstream consumers can correlate.
     assert created_response["id"] == "resp_err"
 
+
 @pytest.mark.asyncio
 async def test_normalize_public_responses_stream_sequences_created_before_unsequenced_leading_failure() -> None:
     blocks = [
@@ -816,6 +817,7 @@ async def test_normalize_public_responses_stream_sequences_created_before_unsequ
     failed = next(payload for payload in payloads if payload and payload.get("type") == "response.failed")
     assert created["sequence_number"] == 0
     assert failed["sequence_number"] == 1
+
 
 @pytest.mark.asyncio
 async def test_normalize_public_responses_stream_replaces_non_integer_failure_sequence() -> None:
@@ -839,6 +841,7 @@ async def test_normalize_public_responses_stream_replaces_non_integer_failure_se
     payloads = [proxy_api_module._parse_sse_payload(block) for block in blocks]
     failed = next(payload for payload in payloads if payload and payload.get("type") == "response.failed")
     assert failed["sequence_number"] == 8
+
 
 @pytest.mark.asyncio
 async def test_normalize_public_responses_stream_sequences_failure_after_reasoning() -> None:
@@ -866,6 +869,7 @@ async def test_normalize_public_responses_stream_sequences_failure_after_reasoni
     failed = next(payload for payload in payloads if payload and payload.get("type") == "response.failed")
     assert failed["sequence_number"] == 9
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("failure_sequence", "created_sequence"), [(12, 11), (0, -1)])
 async def test_normalize_public_responses_stream_preserves_failure_sequence(
@@ -891,6 +895,7 @@ async def test_normalize_public_responses_stream_preserves_failure_sequence(
     assert created["sequence_number"] == created_sequence
     assert failed["sequence_number"] == failure_sequence
 
+
 @pytest.mark.asyncio
 async def test_normalize_public_responses_stream_codex_route_preserves_unsequenced_failure() -> None:
     blocks = [
@@ -907,6 +912,8 @@ async def test_normalize_public_responses_stream_codex_route_preserves_unsequenc
     failed = proxy_api_module._parse_sse_payload(blocks[0])
     assert failed is not None
     assert "sequence_number" not in failed
+
+
 @pytest.mark.asyncio
 async def test_normalize_public_responses_stream_drops_precreated_output_when_envelope_arrives() -> None:
     """A: public /v1 must never attach anonymous pre-created output to a later response.
