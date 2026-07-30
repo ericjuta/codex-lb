@@ -3559,6 +3559,8 @@ async def _stream_responses(
         finally:
             if owns_reservation:
                 await _release_reservation(reservation)
+    capacity_wait_event = asyncio.Event()
+    capacity_ready_event = _CapacityStartupReadyEvent()
     payload.stream = True
     if prefer_http_bridge:
         stream = context.service.stream_http_responses(
@@ -3578,6 +3580,8 @@ async def _stream_responses(
             forwarded_affinity_key=forwarded_affinity_key,
             client_ip=client_ip,
             enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+            capacity_startup_wait_event=capacity_wait_event,
+            capacity_startup_ready_event=capacity_ready_event,
         )
     else:
         stream = context.service.stream_responses(
@@ -3592,8 +3596,6 @@ async def _stream_responses(
             client_ip=client_ip,
             enforce_openai_sdk_contract=enforce_openai_sdk_contract,
         )
-    capacity_wait_event = asyncio.Event()
-    capacity_ready_event = _CapacityStartupReadyEvent()
     capacity_wait_token = _bind_propagated_capacity_startup_wait(capacity_wait_event)
     capacity_ready_token = _bind_propagated_capacity_startup_ready(capacity_ready_event)
     try:

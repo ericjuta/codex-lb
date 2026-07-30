@@ -92,12 +92,13 @@ from app.modules.proxy._service.observability import (
     _truncate_identifier as _truncate_identifier,
 )
 from app.modules.proxy._service.support import (
-    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
-    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
+    _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401,
+    _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401,
     _event_type_from_payload,
     _HTTPBridgeOwnerForward,
     _HTTPBridgeSessionKey,
     _signal_propagated_capacity_startup_ready,
+    _signal_propagated_capacity_startup_wait,
 )
 from app.modules.proxy._service.support import (
     _websocket_route_log_kwargs as _websocket_route_log_kwargs,
@@ -326,6 +327,7 @@ class _HTTPBridgeOwnerForwardingMixin:
                 context=forward_context,
                 request_started_at=request_started_at,
                 proxy_request_budget_seconds=proxy_request_budget_seconds,
+                on_response_wait=_signal_propagated_capacity_startup_wait,
                 on_response_ready=_signal_propagated_capacity_startup_ready,
             ):
                 forwarded_any = True

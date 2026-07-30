@@ -34,13 +34,13 @@ from app.core.clients.proxy import (  # noqa: F401  # noqa: F401
     push_transcribe_timeout_overrides,
 )
 from app.core.clients.proxy import (
-    codex_control_request as core_codex_control_request,  # noqa: F401, _payload_uses_responses_lite, _payload_has_responses_lite_websocket_marker, _finalize_responses_lite_reasoning_context
+    codex_control_request as core_codex_control_request,  # noqa: F401, _payload_uses_responses_lite, _payload_has_responses_lite_websocket_marker, _finalize_responses_lite_reasoning_context,
 )
 from app.core.clients.proxy import (
-    compact_responses as core_compact_responses,  # noqa: F401, _payload_has_responses_lite_websocket_marker, _finalize_responses_lite_reasoning_context, _payload_uses_responses_lite
+    compact_responses as core_compact_responses,  # noqa: F401, _payload_has_responses_lite_websocket_marker, _finalize_responses_lite_reasoning_context, _payload_uses_responses_lite,
 )
 from app.core.clients.proxy import (
-    transcribe_audio as core_transcribe_audio,  # noqa: F401, _payload_has_responses_lite_websocket_marker, _payload_uses_responses_lite, _finalize_responses_lite_reasoning_context
+    transcribe_audio as core_transcribe_audio,  # noqa: F401, _payload_has_responses_lite_websocket_marker, _payload_uses_responses_lite, _finalize_responses_lite_reasoning_context,
 )
 from app.core.clients.proxy_websocket import UpstreamWebSocketTransportError
 from app.core.errors import (
@@ -78,6 +78,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_key_strength,
     _http_bridge_precreated_retry_failure_error,
     _http_bridge_prewarm_canary_bucket,
+    _http_bridge_request_budget_seconds,
     _http_bridge_request_counts_against_queue,
     _http_bridge_request_input_size_bytes,
     _log_http_bridge_event,
@@ -1259,17 +1260,33 @@ class _HTTPBridgeRequestSubmitMixin:
             logger.warning("HTTP bridge retry on fresh upstream failed", exc_info=True)
             return False
 
-    async def _retry_http_bridge_precreated_request(self: Any, session: "_HTTPBridgeSession") -> bool:
+    async def _retry_http_bridge_precreated_request(
+        self: Any,
+        session: "_HTTPBridgeSession",
+        *,
+        request_state: _WebSocketRequestState | None = None,
+    ) -> bool:
         async with session.pending_lock:
-            retryable_requests = [
-                request_state
-                for request_state in session.pending_requests
-                if not request_state.draining_until_terminal
-                and _websocket_request_can_replay_before_visible_output(request_state)
-            ]
-            if len(retryable_requests) != 1:
-                return False
-            request_state = retryable_requests[0]
+            if request_state is not None:
+                if (
+                    request_state not in session.pending_requests
+                    or any(pending_request is not request_state for pending_request in session.pending_requests)
+                    or request_state.draining_until_terminal
+                    or not _http_bridge_request_counts_against_queue(request_state)
+                    or not _websocket_request_can_replay_before_visible_output(request_state)
+                ):
+                    return False
+            else:
+                retryable_requests = [
+                    request_state
+                    for request_state in session.pending_requests
+                    if not request_state.draining_until_terminal
+                    and _websocket_request_can_replay_before_visible_output(request_state)
+                ]
+                if len(retryable_requests) != 1:
+                    return False
+                request_state = retryable_requests[0]
+
             if request_state.previous_response_id is not None and not (
                 request_state.proxy_injected_previous_response_id
                 and request_state.fresh_upstream_request_is_retry_safe
@@ -1356,6 +1373,44 @@ class _HTTPBridgeRequestSubmitMixin:
                     )
                 )
                 request_state.account_response_create_release = self._load_balancer.release_account_lease
+            enforce_capacity_retry_deadline = request_state.response_create_admission_reacquire_required
+            if enforce_capacity_retry_deadline:
+                retry_deadline = request_state.bridge_request_deadline
+                if retry_deadline is None:
+                    retry_deadline = request_state.started_at + _http_bridge_request_budget_seconds(
+                        _service_get_settings()
+                    )
+                remaining_retry_budget_seconds = retry_deadline - _service_time().monotonic()
+                if remaining_retry_budget_seconds <= 0:
+                    request_state.response_create_admission_reacquire_required = False
+                    await self._release_request_state_account_response_create_lease(request_state)
+                    return False
+                try:
+                    request_state.response_create_admission = await asyncio.wait_for(
+                        self._get_work_admission().acquire_response_create(),
+                        timeout=remaining_retry_budget_seconds,
+                    )
+                except TimeoutError:
+                    request_state.response_create_admission_reacquire_required = False
+                    await self._release_request_state_account_response_create_lease(request_state)
+                    return False
+                request_state.response_create_admission_reacquire_required = False
+                if _service_time().monotonic() >= retry_deadline:
+                    request_state.response_create_admission.release()
+                    request_state.response_create_admission = None
+                    await self._release_request_state_account_response_create_lease(request_state)
+                    return False
+                async with session.pending_lock:
+                    retry_consumer_attached = (
+                        request_state in session.pending_requests
+                        and request_state.event_queue is not None
+                        and not request_state.draining_until_terminal
+                    )
+                if not retry_consumer_attached:
+                    request_state.response_create_admission.release()
+                    request_state.response_create_admission = None
+                    await self._release_request_state_account_response_create_lease(request_state)
+                    return False
             request_text = self._http_bridge_text_with_account_installation_id(session, request_state, request_text)
             await _send_http_bridge_request_text_with_archive_id(session, request_state, request_text)
             session.last_used_at = _service_time().monotonic()
