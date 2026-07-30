@@ -11,6 +11,7 @@ This capability explains how operators choose a deployment shape before applying
 - Preserve the standard `2455` API port and `1455` OAuth callback port across Docker, Compose, and Helm examples.
 - Preserve the operator's selected Codex CLI service tier. The greenfield baseline verifies requested versus actual upstream served tier instead of recommending an automatic downgrade or replacement.
 - When the HTTP Responses session bridge is enabled, multi-worker serving should use the addressable bridge worker pool from the packaged entrypoint or `python -m app.cli`. Plain Uvicorn multi-worker serving belongs only to deployments that explicitly disable the bridge.
+- The supported Helm profile pins one worker per replica and budgets both PostgreSQL pools. Its application connection ceiling is `(pool_size + max_overflow) x 2 x replicas`; keep that result within the server budget after reserving capacity for PostgreSQL internals, migrations, and operations.
 
 ## Failure Modes
 

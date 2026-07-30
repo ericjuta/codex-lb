@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from app.codex_sessions_retag import RetagResult, default_codex_home, retag_codex_sessions
+from app.core.config.settings import get_settings
 
 if TYPE_CHECKING:
     from app.core.runtime_logging import LogConfig
@@ -160,6 +161,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     ws_max_size = _parse_server_ws_max_size(args.ws_max_size)
     workers = _parse_server_workers(args.workers)
     os.environ["PORT"] = str(port)
+    get_settings()
     if workers > 1 and _http_responses_session_bridge_enabled():
         from app.core.runtime.bridge_worker_pool import run_bridge_worker_pool
 

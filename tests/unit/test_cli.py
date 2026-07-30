@@ -43,6 +43,18 @@ def test_main_passes_timestamped_log_config(monkeypatch):
     assert kwargs["ws_max_size"] == 128 * 1024 * 1024
 
 
+def test_main_validates_selected_port_before_loading_uvicorn(monkeypatch):
+    def fail_load_uvicorn():
+        pytest.fail("Uvicorn must not load when the selected port conflicts with the metrics port")
+
+    monkeypatch.setenv("PORT", "2455")
+    monkeypatch.setenv("CODEX_LB_METRICS_PORT", "9090")
+    monkeypatch.setattr(cli, "_load_uvicorn", fail_load_uvicorn)
+
+    with pytest.raises(ValueError, match="metrics_port must not match the main application port \\(9090\\)"):
+        cli.main(["--port", "9090"])
+
+
 def test_main_passes_custom_keep_alive_timeout(monkeypatch):
     captured: dict[str, Any] = {}
 

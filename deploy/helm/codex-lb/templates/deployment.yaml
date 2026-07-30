@@ -205,6 +205,8 @@ spec:
             - "0.0.0.0"
             - --port
             - {{ $httpPort | quote }}
+            - --workers
+            - "1"
           ports:
             - name: http
               containerPort: {{ $httpPort }}
