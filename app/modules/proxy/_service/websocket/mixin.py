@@ -4995,7 +4995,10 @@ class _WebSocketMixin:
             latency_ms = int((time.monotonic() - request_state.started_at) * 1000)
             await proxy._write_request_log(
                 account_id=account_id_value,
-                api_key=api_key,
+                # HTTP-bridge callers fan a shared session failure out to
+                # requests from multiple API keys, so they pass api_key=None;
+                # each request_state carries its own authenticated key.
+                api_key=request_state.api_key or api_key,
                 request_id=request_state.response_id or request_state.request_log_id or request_state.request_id,
                 archive_request_id=request_state.archive_request_id,
                 model=request_state.model or "",
