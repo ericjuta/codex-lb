@@ -17,7 +17,7 @@ from typing import cast
 from uuid import uuid4
 
 from app.core.config.settings import get_settings
-from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
+from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest, extract_input_file_ids
 from app.db.models import StickySessionKind
 from app.modules.api_keys.service import ApiKeyData
 
@@ -191,6 +191,27 @@ def _sticky_key_from_turn_state_header(headers: Mapping[str, str]) -> str | None
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _request_allows_bare_session_cap_spillover(
+    payload: ResponsesRequest | ResponsesCompactRequest,
+) -> bool:
+    if isinstance(payload, ResponsesRequest):
+        previous_response_id = payload.previous_response_id
+        conversation = payload.conversation
+    else:
+        extra = payload.model_extra or {}
+        previous_response_id = extra.get("previous_response_id")
+        conversation = extra.get("conversation")
+    # A lookup miss does not make an upstream-stored object portable. Selection
+    # must remain fail-closed for every owner-bearing payload shape.
+    return not (
+        (previous_response_id is not None and not isinstance(previous_response_id, str))
+        or (isinstance(previous_response_id, str) and bool(previous_response_id.strip()))
+        or (conversation is not None and not isinstance(conversation, str))
+        or (isinstance(conversation, str) and bool(conversation.strip()))
+        or extract_input_file_ids(payload.input)
+    )
 
 
 def _sticky_key_for_codex_control_request(
