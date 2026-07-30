@@ -74,6 +74,7 @@ from app.modules.proxy._service.compact import (
     _sticky_key_from_compact_payload as _sticky_key_from_compact_payload,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
+    _await_task_deferring_cancellation,
     _build_http_bridge_prewarm_text,
     _http_bridge_key_strength,
     _http_bridge_precreated_retry_failure_error,
@@ -89,6 +90,7 @@ from app.modules.proxy._service.http_bridge.service_stubs import (
     _classify_upstream_close,
     _count_external_image_urls,
     _enforce_response_create_size_limit,
+    _estimated_lease_tokens_from_request_usage_budget,
     _fingerprint_input_items,
     _inline_top_level_input_image_urls,
     _normalize_service_tier_value,
@@ -634,6 +636,17 @@ class _HTTPBridgeRequestSubmitMixin:
             )
         text_data = self._http_bridge_text_with_account_installation_id(session, request_state, text_data)
         request_state.session_previous_gap_ms = int(max(0.0, request_state.started_at - session.last_used_at) * 1000)
+        gate_acquired = False
+        request_enqueued = False
+        admission_waiter_registered = False
+        async with session.pending_lock:
+            await self._ensure_http_bridge_session_stream_lease_locked(session, request_state=request_state)
+            # Register the submit as an admission waiter atomically with the
+            # reacquire so a previous turn's finalizer unwinding concurrently
+            # cannot see an apparently idle session and release this lease
+            # before the turn is counted into the session queue.
+            session.admission_waiter_count += 1
+            admission_waiter_registered = True
         try:
             await self._maybe_prewarm_http_bridge_session(
                 session,
@@ -643,36 +656,57 @@ class _HTTPBridgeRequestSubmitMixin:
         except BaseException:
             if getattr(session, "unanchored_reservation_id", None) == request_scope_id:
                 session.unanchored_reservation_id = None
+            cleanup_task = asyncio.create_task(
+                self._cleanup_http_bridge_submit_interruption(
+                    session,
+                    request_state=request_state,
+                    gate_acquired=False,
+                    request_enqueued=False,
+                    counted_in_queue=False,
+                    admission_waiter_registered=admission_waiter_registered,
+                )
+            )
+            await _await_task_deferring_cancellation(cleanup_task)
             raise
-        gate_acquired = False
-        request_enqueued = False
-        admission_waiter_registered = False
-        async with session.pending_lock:
-            if session.queued_request_count >= queue_limit:
+        try:
+            async with session.pending_lock:
+                if session.queued_request_count >= queue_limit:
+                    _log_http_bridge_event(
+                        "bridge_queue_full",
+                        session.key,
+                        account_id=session.account.id,
+                        model=session.request_model,
+                        pending_count=session.queued_request_count,
+                        cache_key_family=session.key.affinity_kind,
+                        model_class=_extract_model_class(session.request_model) if session.request_model else None,
+                    )
+                    raise ProxyResponseError(
+                        429,
+                        openai_error(
+                            "bridge_queue_full",
+                            "HTTP responses session bridge queue is full",
+                            error_type="rate_limit_error",
+                        ),
+                    )
+                await self._ensure_http_bridge_session_stream_lease_locked(session, request_state=request_state)
+                session.queued_request_count += 1
                 if getattr(session, "unanchored_reservation_id", None) == request_scope_id:
                     session.unanchored_reservation_id = None
-                _log_http_bridge_event(
-                    "bridge_queue_full",
-                    session.key,
-                    account_id=session.account.id,
-                    model=session.request_model,
-                    pending_count=session.queued_request_count,
-                    cache_key_family=session.key.affinity_kind,
-                    model_class=_extract_model_class(session.request_model) if session.request_model else None,
-                )
-                raise ProxyResponseError(
-                    429,
-                    openai_error(
-                        "bridge_queue_full",
-                        "HTTP responses session bridge queue is full",
-                        error_type="rate_limit_error",
-                    ),
-                )
-            session.queued_request_count += 1
+        except BaseException:
             if getattr(session, "unanchored_reservation_id", None) == request_scope_id:
                 session.unanchored_reservation_id = None
-            session.admission_waiter_count += 1
-            admission_waiter_registered = True
+            cleanup_task = asyncio.create_task(
+                self._cleanup_http_bridge_submit_interruption(
+                    session,
+                    request_state=request_state,
+                    gate_acquired=False,
+                    request_enqueued=False,
+                    counted_in_queue=False,
+                    admission_waiter_registered=admission_waiter_registered,
+                )
+            )
+            await _await_task_deferring_cancellation(cleanup_task)
+            raise
         try:
             text_data = await self._inline_http_bridge_image_urls(text_data, request_state)
             text_data = self._http_bridge_text_with_account_installation_id(session, request_state, text_data)
@@ -1093,6 +1127,117 @@ class _HTTPBridgeRequestSubmitMixin:
                 session,
                 detail="last_admission_waiter_cancelled",
             )
+        await self._maybe_release_idle_http_bridge_session_lease(session)
+
+    async def _ensure_http_bridge_session_stream_lease_locked(
+        self: Any,
+        session: "_HTTPBridgeSession",
+        *,
+        request_state: _WebSocketRequestState | None = None,
+    ) -> None:
+        """Reacquire the account stream lease for a session idled between turns.
+
+        Callers hold ``session.pending_lock``. The lease is released when the
+        session's last in-flight turn detaches, so an idle session does not
+        occupy a per-account stream slot; the next turn must pass normal cap
+        admission again. Denial raises the standard local-cap envelope so the
+        existing recoverable capacity wait applies.
+
+        The lease stays per-session (one upstream stream): a session that
+        already holds a lease admits further queued turns without acquiring
+        another, because those turns multiplex over the session's single
+        upstream WebSocket — unchanged from the pre-existing per-session
+        lease lifecycle.
+        """
+        if session.account_lease is not None or session.closed:
+            return
+        load_balancer = getattr(self, "_load_balancer", None)
+        if load_balancer is None:
+            return
+        lease = await load_balancer.acquire_account_lease(
+            session.account.id,
+            kind="stream",
+            # Carry the turn's usage-budget estimate like initial selection
+            # and reconnect do, so capacity-weighted routing pressure still
+            # sees large turns on reused warm sessions.
+            estimated_tokens=_estimated_lease_tokens_from_request_usage_budget(
+                request_state.request_usage_budget if request_state is not None else None
+            ),
+        )
+        if lease is None:
+            raise ProxyResponseError(
+                429,
+                openai_error(
+                    "account_stream_cap",
+                    "Account stream capacity is exhausted; wait for active streams to finish.",
+                    error_type="rate_limit_error",
+                ),
+            )
+        if session.closed:
+            # A close or eviction ran while the acquire await was suspended
+            # (the close path does not take pending_lock before settling the
+            # session's lease). Installing this lease on the closed session
+            # would leak the slot: close already settled, and the idle
+            # release helper skips closed sessions. Return the slot and fail
+            # the turn like any other submit on a closed bridge.
+            async def release_detached_lease() -> None:
+                try:
+                    await load_balancer.release_account_lease(lease)
+                except Exception:
+                    logger.warning(
+                        "Failed to release stream lease acquired for closed HTTP bridge session",
+                        exc_info=True,
+                    )
+
+            release_task = asyncio.create_task(release_detached_lease())
+            _, cancellation = await _await_task_deferring_cancellation(release_task)
+            if cancellation is not None:
+                raise cancellation
+            raise ProxyResponseError(
+                502,
+                openai_error("upstream_unavailable", "HTTP responses session bridge is closed"),
+            )
+        session.account_lease = lease
+
+    async def _maybe_release_idle_http_bridge_session_lease(
+        self: Any,
+        session: "_HTTPBridgeSession",
+    ) -> None:
+        """Release the account stream lease once a session has no in-flight work.
+
+        The per-account stream cap exists to bound concurrent upstream
+        streams (one bridge session holds one slot for its single upstream
+        WebSocket); an idle bridge session keeping its upstream WebSocket warm
+        must not occupy a slot for its whole idle TTL. Session close releases
+        via its own path, so a session that closed keeps that settlement.
+        """
+        load_balancer = getattr(self, "_load_balancer", None)
+        if load_balancer is None:
+            return
+        lease = None
+        async with session.pending_lock:
+            if (
+                not session.closed
+                and session.account_lease is not None
+                and session.queued_request_count == 0
+                and session.admission_waiter_count == 0
+                and not session.pending_requests
+            ):
+                lease = session.account_lease
+                session.account_lease = None
+        if lease is None:
+            return
+
+        async def release_idle_lease() -> None:
+            try:
+                await load_balancer.release_account_lease(lease)
+            except Exception:
+                logger.warning("Failed to release idle HTTP bridge account lease", exc_info=True)
+
+        release_task = asyncio.create_task(release_idle_lease())
+        _, cancellation = await _await_task_deferring_cancellation(release_task)
+        if cancellation is not None:
+            raise cancellation
 
     async def _detach_http_bridge_request(
         self: Any,
