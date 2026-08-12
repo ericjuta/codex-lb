@@ -30,7 +30,12 @@ def log_status(log: RequestLog) -> str:
     return normalize_log_status(log.status, log.error_code)
 
 
-def to_request_log_entry(log: RequestLog, *, api_key_name: str | None = None) -> RequestLogEntry:
+def to_request_log_entry(
+    log: RequestLog,
+    *,
+    api_key_name: str | None = None,
+    include_sensitive_metadata: bool,
+) -> RequestLogEntry:
     log_like = typing_cast(RequestLogLike, log)
     cost_breakdown = cost_breakdown_from_log(log_like, precision=6)
     return RequestLogEntry(
@@ -40,13 +45,13 @@ def to_request_log_entry(log: RequestLog, *, api_key_name: str | None = None) ->
         api_key_id=log.api_key_id,
         api_key_name=api_key_name,
         request_id=log.request_id,
-        archive_request_id=log.archive_request_id,
+        archive_request_id=log.archive_request_id if include_sensitive_metadata else None,
         request_kind=log.request_kind,
         model=log.model,
         source=log.source,
-        useragent=log.useragent,
+        useragent=log.useragent if include_sensitive_metadata else None,
         useragent_group=log.useragent_group,
-        client_ip=log.client_ip,
+        client_ip=log.client_ip if include_sensitive_metadata else None,
         transport=log.transport,
         upstream_transport=log.upstream_transport,
         service_tier=log.service_tier,

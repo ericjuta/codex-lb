@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import app.modules.proxy.api as proxy_api
 from app.core.openai.model_registry import ReasoningLevel, UpstreamModel, get_model_registry
 from app.core.types import JsonValue
 
@@ -98,6 +99,44 @@ async def _populate_test_registry() -> None:
         _make_upstream_model("gpt-5.3-codex"),
     ]
     await registry.update({"plus": models, "pro": models})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "builder_name"),
+    [
+        ("/v1/models", "_build_models_response_body"),
+        ("/backend-api/codex/models", "_build_codex_models_response_body"),
+    ],
+)
+async def test_models_routes_release_reservation_when_builder_body_fails(
+    async_client,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    builder_name: str,
+) -> None:
+    """Both public model routes settle their reservation when the local builder body fails."""
+    released: list[str] = []
+
+    async def enforce(*args, **kwargs):
+        del args, kwargs
+        return type("Reservation", (), {"reservation_id": "models-route-failure"})()
+
+    async def release(reservation):
+        released.append(reservation.reservation_id)
+
+    async def boom(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("model catalog body build failed")
+
+    monkeypatch.setattr(proxy_api, "_enforce_request_limits", enforce)
+    monkeypatch.setattr(proxy_api, "_release_reservation_deferring_cancellation", release)
+    monkeypatch.setattr(proxy_api, builder_name, boom)
+
+    with pytest.raises(RuntimeError, match="model catalog body build failed"):
+        await async_client.get(path)
+
+    assert released == ["models-route-failure"]
 
 
 @pytest.mark.asyncio

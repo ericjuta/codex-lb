@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -302,6 +304,9 @@ async def test_quota_planner_warm_now_refuses_weekly_only_account(async_client, 
 async def test_quota_planner_warm_now_keeps_bootstrap_for_metadata_less_primary_rows(
     monkeypatch, async_client, db_setup
 ):
+    if not hasattr(time, "tzset"):
+        pytest.skip("tzset is required to simulate non-UTC local time")
+
     del db_setup
     encryptor = TokenEncryptor()
     now_epoch = int(utcnow().replace(tzinfo=timezone.utc).timestamp())
@@ -376,14 +381,24 @@ async def test_quota_planner_warm_now_keeps_bootstrap_for_metadata_less_primary_
     monkeypatch.setattr(QuotaWarmupService, "_send_warmup_probe", fake_send)
     monkeypatch.setattr(QuotaWarmupService, "_record_warmup_effect", noop_record_effect)
 
-    response = await async_client.post(
-        "/api/quota-planner/warm-now",
-        json={"accountId": "acc-metadata-less", "model": "gpt-5.4-mini"},
-    )
+    original_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "Asia/Seoul"
+    time.tzset()
+    try:
+        response = await async_client.post(
+            "/api/quota-planner/warm-now",
+            json={"accountId": "acc-metadata-less", "model": "gpt-5.4-mini"},
+        )
+    finally:
+        if original_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original_tz
+        time.tzset()
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] == "executed"
+    assert payload["status"] == "executed", payload
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -18,7 +18,7 @@ from app.db.models import (
     StickySession,
     StickySessionKind,
 )
-from app.modules.proxy.durable_bridge_coordinator import DurableBridgeSessionCoordinator
+from app.modules.proxy.durable_bridge_coordinator import DurableBridgeLookup, DurableBridgeSessionCoordinator
 from app.modules.proxy.durable_bridge_repository import DurableBridgeRepository
 
 pytestmark = pytest.mark.unit
@@ -1306,3 +1306,33 @@ async def test_startup_rechecks_ownerless_stale_rows_before_delete(
             select(HttpBridgeSessionAlias).where(HttpBridgeSessionAlias.session_id == "sid-race-claim")
         )
         assert aliases.scalar_one_or_none() is not None
+
+
+def _lookup_with_lease(lease_expires_at: datetime | None) -> DurableBridgeLookup:
+    return DurableBridgeLookup(
+        session_id="sess-tz",
+        canonical_kind="session_header",
+        canonical_key="key-tz",
+        api_key_scope="scope-tz",
+        account_id="acc-tz",
+        owner_instance_id="instance-a",
+        owner_epoch=1,
+        lease_expires_at=lease_expires_at,
+        state=HttpBridgeSessionState.ACTIVE,
+        latest_turn_state=None,
+        latest_response_id=None,
+    )
+
+
+def test_lease_is_active_normalizes_aware_and_naive_datetimes() -> None:
+    naive_now = utcnow()
+    naive_future = naive_now + timedelta(minutes=5)
+    aware_now = naive_now.replace(tzinfo=timezone.utc)
+    aware_future = naive_future.replace(tzinfo=timezone.utc)
+    aware_past = (naive_now - timedelta(minutes=5)).replace(tzinfo=timezone.utc)
+
+    assert _lookup_with_lease(aware_future).lease_is_active(now=naive_now) is True
+    assert _lookup_with_lease(aware_past).lease_is_active(now=naive_now) is False
+    assert _lookup_with_lease(naive_future).lease_is_active(now=aware_now) is True
+    assert _lookup_with_lease(naive_future).lease_is_active(now=naive_now) is True
+    assert _lookup_with_lease(None).lease_is_active(now=naive_now) is False

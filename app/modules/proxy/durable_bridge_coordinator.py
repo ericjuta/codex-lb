@@ -9,6 +9,7 @@ from typing import TypeVar
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.utils.time import to_utc_naive
 from app.db.models import HttpBridgeSessionState
 from app.db.session import close_session
 from app.db.sqlite_retry import retry_sqlite_lock, session_uses_sqlite
@@ -48,7 +49,11 @@ class DurableBridgeLookup:
             return False
         if self.lease_expires_at is None:
             return False
-        return self.lease_expires_at > now
+        # lease_expires_at is a timestamptz column: PostgreSQL yields it
+        # offset-aware while the app clock (utcnow) and SQLite yield naive
+        # UTC. Normalize both sides — comparing them raw raises TypeError
+        # on the anchored-lookup hot path.
+        return to_utc_naive(self.lease_expires_at) > to_utc_naive(now)
 
 
 class DurableBridgeSessionCoordinator:

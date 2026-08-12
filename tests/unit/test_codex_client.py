@@ -9,7 +9,12 @@ import pytest
 from aiohttp.client_reqrep import ConnectionKey
 from python_socks import ProxyType
 
-from app.core.clients.codex import CodexClient, require_route_or_direct_egress_opt_in
+from app.core.clients.codex import (
+    CodexClient,
+    CodexTransportError,
+    create_codex_session,
+    require_route_or_direct_egress_opt_in,
+)
 from app.core.upstream_proxy import ResolvedProxyEndpoint, ResolvedUpstreamRoute
 from tests.unit._proxy_test_helpers import runtime_basic_auth_url
 
@@ -103,6 +108,33 @@ def route() -> ResolvedUpstreamRoute:
         endpoint=ResolvedProxyEndpoint("ep_1", "http", "proxy.test", 8080, "u", "p"),
         fallbacks=(ResolvedProxyEndpoint("ep_2", "http", "proxy-two.test", 8081),),
     )
+
+
+def test_create_codex_session_uses_keepalive_socket_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+    keepalive_socket_factory = object()
+    connector_kwargs: dict[str, Any] = {}
+    session_kwargs: dict[str, Any] = {}
+
+    class _Connector:
+        def __init__(self, **kwargs: Any) -> None:
+            connector_kwargs.update(kwargs)
+
+    class _ClientSession:
+        def __init__(self, **kwargs: Any) -> None:
+            session_kwargs.update(kwargs)
+
+    monkeypatch.setattr("app.core.clients.http._keepalive_socket_factory", keepalive_socket_factory)
+    monkeypatch.setattr("app.core.clients.codex.aiohttp.TCPConnector", _Connector)
+    monkeypatch.setattr("app.core.clients.codex.aiohttp.ClientSession", _ClientSession)
+
+    session = create_codex_session(max_clients=7)
+
+    assert isinstance(session, _ClientSession)
+    assert connector_kwargs["limit"] == 7
+    assert connector_kwargs["socket_factory"] is keepalive_socket_factory
+    assert session_kwargs["connector"] is not None
+    assert session_kwargs["trust_env"] is False
+    assert session_kwargs["timeout"].total is None
 
 
 @pytest.mark.asyncio
@@ -312,6 +344,80 @@ async def test_websocket_network_error_uses_route_fallback_by_default(
 
 
 @pytest.mark.asyncio
+async def test_websocket_awaitable_connect_failure_preserves_original_transport_error(
+    route: ResolvedUpstreamRoute,
+) -> None:
+    connection_key = ConnectionKey("proxy.test", 8080, False, False, None, None, None)
+
+    class _AwaitableWsContext:
+        def __init__(self) -> None:
+            self._connection = self._connect()
+            self.exited = False
+
+        def __await__(self) -> Any:
+            return self._connection.__await__()
+
+        async def _connect(self) -> object:
+            raise aiohttp.ClientProxyConnectionError(
+                connection_key,
+                ConnectionRefusedError("connection refused"),
+            )
+
+        async def __aenter__(self) -> object:
+            return await self._connection
+
+        async def __aexit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+            self.exited = True
+            raise AssertionError("failed websocket context entry must not be exited")
+
+    class _AwaitableFailSession:
+        def __init__(self) -> None:
+            self.context = _AwaitableWsContext()
+
+        def ws_connect(self, *_args: object, **_kwargs: object) -> _AwaitableWsContext:
+            return self.context
+
+    session = _AwaitableFailSession()
+
+    with pytest.raises(CodexTransportError) as exc_info:
+        await CodexClient(session).open_ws_with_route_metadata(
+            "wss://upstream.test",
+            route=route,
+            retry_network_errors=False,
+        )
+
+    assert str(exc_info.value) == (
+        "Codex upstream websocket failed via proxy endpoint ep_1: ClientProxyConnectionError"
+    )
+    assert exc_info.value.status_code is None
+    assert exc_info.value.failure_phase == "connect"
+    assert exc_info.value.retryable_same_contract is False
+    assert session.context.exited is False
+
+
+@pytest.mark.asyncio
+async def test_websocket_success_returns_caller_owned_entered_context(
+    route: ResolvedUpstreamRoute,
+) -> None:
+    class _WsContextSession:
+        def __init__(self) -> None:
+            self.context = _WsContext()
+
+        def ws_connect(self, *_args: object, **_kwargs: object) -> _WsContext:
+            return self.context
+
+    session = _WsContextSession()
+    result = await CodexClient(session).open_ws_with_route_metadata("wss://upstream.test", route=route)
+
+    assert result.websocket is session.context.websocket
+    assert result.context is session.context
+
+    await result.context.__aexit__(None, None, None)
+
+    assert session.context.exited is True
+
+
+@pytest.mark.asyncio
 async def test_websocket_connector_error_preserves_pre_dispatch_retry_provenance(
     route: ResolvedUpstreamRoute,
 ) -> None:
@@ -343,6 +449,8 @@ async def test_socks_websocket_uses_proxy_connector_and_closes_session(
     )
     _SocksConnector.calls = []
     _SocksWsSession.latest = None
+    keepalive_socket_factory = object()
+    monkeypatch.setattr("app.core.clients.http._keepalive_socket_factory", keepalive_socket_factory)
     monkeypatch.setattr("app.core.clients.codex.ProxyConnector", _SocksConnector)
     monkeypatch.setattr("app.core.clients.codex.aiohttp.ClientSession", _SocksWsSession)
     client = CodexClient(_Session())
@@ -352,7 +460,8 @@ async def test_socks_websocket_uses_proxy_connector_and_closes_session(
     session = _SocksWsSession.latest
     assert session is not None
     assert _SocksConnector.calls[0]["ssl"] is not None
-    assert _SocksConnector.calls[0] | {"ssl": "present"} == {
+    assert _SocksConnector.calls[0]["socket_factory"] is keepalive_socket_factory
+    assert _SocksConnector.calls[0] | {"ssl": "present", "socket_factory": "present"} == {
         "host": "proxy.test",
         "port": 1080,
         "proxy_type": ProxyType.SOCKS5,
@@ -360,6 +469,7 @@ async def test_socks_websocket_uses_proxy_connector_and_closes_session(
         "password": "p@x:y",
         "rdns": True,
         "ssl": "present",
+        "socket_factory": "present",
     }
     assert session.calls == [{"url": "wss://upstream.test", "heartbeat": 30}]
     assert "proxy" not in session.calls[0]

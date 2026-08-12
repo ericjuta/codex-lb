@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -90,11 +91,13 @@ async def test_init_http_client_creates_tcp_connector_with_limits() -> None:
         "ssl": ssl_context,
         "keepalive_timeout": 90,
         "ttl_dns_cache": 300,
+        "socket_factory": http_module._keepalive_socket_factory,
     }
     assert tcp_connector_cls.call_args_list[1].kwargs == {
         "ssl": ssl_context,
         "keepalive_timeout": 90,
         "ttl_dns_cache": 300,
+        "socket_factory": http_module._keepalive_socket_factory,
     }
     assert client_session_cls.call_args_list[0].kwargs["connector"] is connector
     assert client_session_cls.call_args_list[1].kwargs["connector"] is websocket_connector
@@ -185,6 +188,18 @@ async def test_init_http_client_uses_proxy_connector_for_socks_url() -> None:
         "socks5://proxy.example.com:1080",
         "socks5://proxy.example.com:1080",
     ]
+    assert proxy_connector_cls.from_url.call_args_list[0].kwargs == {
+        "limit": 100,
+        "limit_per_host": 50,
+        "ssl": ssl_context,
+        "rdns": None,
+        "socket_factory": http_module._keepalive_socket_factory,
+    }
+    assert proxy_connector_cls.from_url.call_args_list[1].kwargs == {
+        "ssl": ssl_context,
+        "rdns": None,
+        "socket_factory": http_module._keepalive_socket_factory,
+    }
     assert client_session_cls.call_args_list[0].kwargs["connector"] is proxy_connector
     assert client_session_cls.call_args_list[1].kwargs["connector"] is ws_proxy_connector
     # trust_env must be False for both sessions when SOCKS proxy is active (avoids double-proxying)
@@ -282,6 +297,73 @@ async def test_init_http_client_preserves_socks4a_remote_dns_for_proxy_connector
     assert [call.kwargs["rdns"] for call in proxy_connector_cls.from_url.call_args_list] == [True, True]
 
     await http_module.close_http_client()
+
+
+def test_keepalive_socket_factory_enables_keepalive_probes() -> None:
+    addr_info = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", 0))
+
+    sock = http_module._keepalive_socket_factory(addr_info)
+    try:
+        assert sock.family == socket.AF_INET
+        assert sock.type == socket.SOCK_STREAM
+        # Linux reports the flag as 1, macOS as the option's bit value, so the
+        # portable assertion is "enabled" rather than a specific integer.
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) != 0
+    finally:
+        sock.close()
+
+
+def test_apply_tcp_keepalive_survives_unsupported_probe_options() -> None:
+    sock = MagicMock()
+
+    def reject_tcp_options(level: int, *_: int) -> None:
+        if level == socket.IPPROTO_TCP:
+            raise OSError("unsupported")
+
+    sock.setsockopt.side_effect = reject_tcp_options
+    with (
+        patch.object(http_module.socket, "TCP_KEEPIDLE", 10_001, create=True),
+        patch.object(http_module.socket, "TCP_KEEPALIVE", 10_002, create=True),
+        patch.object(http_module.socket, "TCP_KEEPINTVL", 10_003, create=True),
+        patch.object(http_module.socket, "TCP_KEEPCNT", 10_004, create=True),
+    ):
+        http_module._apply_tcp_keepalive(sock)
+
+    assert sock.setsockopt.call_args_list[0].args == (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    assert [call.args for call in sock.setsockopt.call_args_list[1:]] == [
+        (socket.IPPROTO_TCP, 10_001, http_module._TCP_KEEPALIVE_IDLE_SECONDS),
+        (socket.IPPROTO_TCP, 10_002, http_module._TCP_KEEPALIVE_IDLE_SECONDS),
+        (socket.IPPROTO_TCP, 10_003, http_module._TCP_KEEPALIVE_INTERVAL_SECONDS),
+        (socket.IPPROTO_TCP, 10_004, http_module._TCP_KEEPALIVE_PROBE_COUNT),
+    ]
+
+
+def test_apply_tcp_keepalive_stops_when_keepalive_is_rejected() -> None:
+    sock = MagicMock()
+    sock.setsockopt.side_effect = OSError("unsupported")
+
+    http_module._apply_tcp_keepalive(sock)
+
+    sock.setsockopt.assert_called_once_with(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+
+def test_keepalive_socket_factory_closes_socket_after_unexpected_setup_failure() -> None:
+    addr_info = (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("::1", 0, 0, 0))
+    sock = MagicMock()
+
+    with (
+        patch("app.core.clients.http.socket.socket", return_value=sock) as socket_factory,
+        patch("app.core.clients.http._apply_tcp_keepalive", side_effect=RuntimeError("boom")),
+        pytest.raises(RuntimeError, match="boom"),
+    ):
+        http_module._keepalive_socket_factory(addr_info)
+
+    socket_factory.assert_called_once_with(
+        family=socket.AF_INET6,
+        type=socket.SOCK_STREAM,
+        proto=socket.IPPROTO_TCP,
+    )
+    sock.close.assert_called_once_with()
 
 
 def test_build_ssl_context_preserves_default_roots_and_adds_certifi_bundle() -> None:

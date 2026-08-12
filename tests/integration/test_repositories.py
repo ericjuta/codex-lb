@@ -996,12 +996,20 @@ async def test_request_logs_repository_filters(db_setup):
             requested_at=now - timedelta(minutes=5),
         )
 
-        results, total = await repo.list_recent(limit=0, account_ids=["acc1"])
+        results, total = await repo.list_recent(
+            limit=0,
+            account_ids=["acc1"],
+            include_sensitive_metadata=True,
+        )
         assert len(results) == 1
         assert results[0].account_id == "acc1"
         assert total == 1
 
-        results, total = await repo.list_recent(limit=0, include_success=False)
+        results, total = await repo.list_recent(
+            limit=0,
+            include_success=False,
+            include_sensitive_metadata=True,
+        )
         assert len(results) == 1
         assert results[0].error_code == "rate_limit_exceeded"
         assert total == 1

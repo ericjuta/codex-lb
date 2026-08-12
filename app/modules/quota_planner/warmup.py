@@ -15,7 +15,7 @@ from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import ResponsesRequest
-from app.core.utils.time import utcnow
+from app.core.utils.time import naive_utc_to_epoch, utcnow
 from app.db.models import Account, AccountStatus, QuotaPlannerDecision
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -421,7 +421,7 @@ class QuotaWarmupService:
             return False, "no_short_window"
         if await self._short_window_superseded(account, latest):
             return False, "no_short_window"
-        if latest is not None and latest.reset_at is not None and latest.reset_at > int(utcnow().timestamp()):
+        if latest is not None and latest.reset_at is not None and latest.reset_at > naive_utc_to_epoch(utcnow()):
             return False, "account_window_already_active"
 
         # Advisory pre-check only: the authoritative budget enforcement happens

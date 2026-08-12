@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/table";
 import { PaginationControls } from "@/features/dashboard/components/filters/pagination-controls";
 import { RequestArchivePanel } from "@/features/conversation-archive/components/request-archive-panel";
+import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import type { AccountSummary, RequestLog } from "@/features/dashboard/schemas";
 import { REQUEST_STATUS_LABELS } from "@/utils/constants";
 import {
@@ -135,6 +136,7 @@ export function RecentRequestsTable({
 }: RecentRequestsTableProps) {
   const [selectedRequest, setSelectedRequest] = useState<RequestLog | null>(null);
   const blurred = usePrivacyStore((s) => s.blurred);
+  const isAdmin = useAuthStore((state) => state.role === "admin");
   const selectedRequestCostSummary = formatRequestCostSummary(selectedRequest);
 
   const accountLabelMap = useMemo(() => {
@@ -370,26 +372,32 @@ export function RecentRequestsTable({
                 <RequestDetailField label="Time" value={selectedRequest ? formatDateTimeInline(selectedRequest.requestedAt) : "—"} />
                 <RequestDetailField label="Error Code" value={selectedRequest?.errorCode ?? "—"} mono />
               </div>
-              <RequestDetailField
-                label="User Agent"
-                value={selectedRequest?.useragent ?? "—"}
-                copyValue={selectedRequest?.useragent ?? undefined}
-                copyLabel="Copy User Agent"
-                compactCopy
-              />
-              <RequestDetailField
-                label="Client IP"
-                value={selectedRequest?.clientIp ?? "—"}
-                copyValue={selectedRequest?.clientIp ?? undefined}
-                copyLabel="Copy Client IP"
-                compactCopy
-              />
+              {isAdmin ? (
+                <RequestDetailField
+                  label="User Agent"
+                  value={selectedRequest?.useragent ?? "—"}
+                  copyValue={selectedRequest?.useragent ?? undefined}
+                  copyLabel="Copy User Agent"
+                  compactCopy
+                />
+              ) : null}
+              {isAdmin ? (
+                <RequestDetailField
+                  label="Client IP"
+                  value={selectedRequest?.clientIp ?? "—"}
+                  copyValue={selectedRequest?.clientIp ?? undefined}
+                  copyLabel="Copy Client IP"
+                  compactCopy
+                />
+              ) : null}
             </div>
 
-            <RequestArchivePanel
-              requestId={selectedRequest?.archiveRequestId ?? selectedRequest?.requestId}
-              requestedAt={selectedRequest?.requestedAt}
-            />
+            {isAdmin ? (
+              <RequestArchivePanel
+                requestId={selectedRequest?.archiveRequestId ?? selectedRequest?.requestId}
+                requestedAt={selectedRequest?.requestedAt}
+              />
+            ) : null}
 
             {selectedRequestCostSummary ? (
               <div className="space-y-2">
