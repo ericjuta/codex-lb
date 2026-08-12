@@ -40,9 +40,16 @@ echo "Checking migration graph in ${image_name}"
 docker run --rm "${image_name}" python -m app.db.migrate check-policy
 docker volume create "${volume_name}" >/dev/null
 docker rm -f "${container_name}" >/dev/null 2>&1 || true
+# Host resource caps (m7i.2xlarge / shared agent host). Override via env.
+memory_limit="${CODEX_LB_MEMORY_LIMIT:-6g}"
+cpus_limit="${CODEX_LB_CPUS_LIMIT:-6.0}"
+pids_limit="${CODEX_LB_PIDS_LIMIT:-8192}"
+
 docker run -d --name "${container_name}" \
   --hostname "${container_name}" \
   --restart unless-stopped \
+  --memory "${memory_limit}" --memory-swap "${memory_limit}" \
+  --cpus "${cpus_limit}" --pids-limit "${pids_limit}" \
   "${network_args[@]}" \
   --env-file "${env_file}" \
   "${worker_args[@]}" \
