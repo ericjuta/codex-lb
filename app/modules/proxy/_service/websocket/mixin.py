@@ -380,7 +380,9 @@ from app.modules.proxy._service.warmup import (
 from app.modules.proxy._service.warmup import (
     _WarmupUsageSnapshot as _WarmupUsageSnapshot,
 )
-from app.modules.proxy._service.websocket.continuation import _WebSocketContinuationFold
+from app.modules.proxy._service.websocket.continuation import (
+    _WebSocketContinuationFold,
+)
 from app.modules.proxy._service.websocket.helpers import (
     _app_error_to_websocket_event,
     _assign_websocket_response_id,
@@ -3824,20 +3826,10 @@ class _WebSocketMixin:
                 # failover/retry path below so those behaviors are preserved.
                 fold_request_state = request_state
                 fold_outcome = request_state.continuation_fold.process_event(dict(payload))
-                upstream_sequence_number = payload.get("sequence_number")
-                if (
-                    isinstance(upstream_sequence_number, int)
-                    and not isinstance(upstream_sequence_number, bool)
-                    and fold_outcome.downstream
-                ):
-                    first_downstream_sequence = fold_outcome.downstream[0].get("sequence_number")
-                    if isinstance(first_downstream_sequence, int) and not isinstance(first_downstream_sequence, bool):
-                        sequence_offset = upstream_sequence_number - first_downstream_sequence
-                        if sequence_offset:
-                            for downstream_event in fold_outcome.downstream:
-                                downstream_sequence = downstream_event.get("sequence_number")
-                                if isinstance(downstream_sequence, int) and not isinstance(downstream_sequence, bool):
-                                    downstream_event["sequence_number"] = downstream_sequence + sequence_offset
+                request_state.continuation_fold.align_downstream_sequences(
+                    fold_outcome.downstream,
+                    payload.get("sequence_number"),
+                )
                 if fold_outcome.terminal_event is not None and request_state in pending_requests:
                     pending_requests.remove(request_state)
             if (
@@ -4017,6 +4009,26 @@ class _WebSocketMixin:
                 upstream_control.downstream_texts = [
                     json.dumps(event, ensure_ascii=True, separators=(",", ":")) for event in fold_outcome.downstream
                 ]
+                last_fold_sequence = None
+                for fold_event in fold_outcome.downstream:
+                    fold_sequence = fold_event.get("sequence_number")
+                    if isinstance(fold_sequence, int) and not isinstance(fold_sequence, bool):
+                        last_fold_sequence = fold_sequence
+                raw_downstream_sequence = upstream_control.downstream_sequence_number
+                if last_fold_sequence is not None and (
+                    (raw_downstream_sequence is None and last_fold_sequence > 0)
+                    or (
+                        isinstance(raw_downstream_sequence, int)
+                        and not isinstance(raw_downstream_sequence, bool)
+                        and last_fold_sequence > raw_downstream_sequence
+                    )
+                ):
+                    # Raise the replay watermark to the fold number the client
+                    # actually saw. Do not invent a 0 on a sequence-less
+                    # response.created — that still has to be transparently
+                    # replayable after an immediate upstream EOF.
+                    upstream_control.downstream_sequence_request_state = fold_request_state
+                    upstream_control.downstream_sequence_number = last_fold_sequence
             else:
                 upstream_control.suppress_downstream_event = True
             if fold_outcome.terminal_event is not None:

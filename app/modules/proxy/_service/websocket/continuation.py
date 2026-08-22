@@ -72,6 +72,41 @@ class _FoldOutcome:
     billed_usage: dict[str, Any] | None = None
 
 
+def _align_fold_downstream_sequences(
+    downstream_events: list[dict[str, Any]],
+    upstream_sequence_number: object,
+) -> None:
+    """Align fold sequences to a higher upstream number without regressing.
+
+    The fold rewrites ``sequence_number`` onto a monotonic counter so one
+    client-visible response can span hidden continuation rounds. A positive
+    offset is intra-round drift, not only prewarm: buffered non-reasoning
+    items emit nothing while upstream keeps counting, so the next reasoning
+    event has ``u > d``. Applying that offset without absorbing it into
+    ``_Seq`` leaves the counter behind the client watermark; a later hidden
+    round that restarts at 0 then emits the stale counter (OMP:
+    ``sequence_number 18 regressed below 24``). A negative offset is a
+    hidden-round restart at 0 and must not rewind the fold counter.
+
+    The offset is applied only to this batch. The fold must absorb the
+    resulting numbers back into ``_Seq``.
+    """
+    if not downstream_events:
+        return
+    if not isinstance(upstream_sequence_number, int) or isinstance(upstream_sequence_number, bool):
+        return
+    first_downstream_sequence = downstream_events[0].get("sequence_number")
+    if not isinstance(first_downstream_sequence, int) or isinstance(first_downstream_sequence, bool):
+        return
+    sequence_offset = upstream_sequence_number - first_downstream_sequence
+    if sequence_offset <= 0:
+        return
+    for downstream_event in downstream_events:
+        downstream_sequence = downstream_event.get("sequence_number")
+        if isinstance(downstream_sequence, int) and not isinstance(downstream_sequence, bool):
+            downstream_event["sequence_number"] = downstream_sequence + sequence_offset
+
+
 class _WebSocketContinuationFold:
     """Per-request push-based continuation fold state machine."""
 
@@ -119,6 +154,25 @@ class _WebSocketContinuationFold:
         self._buffered_outputs: list[_BufferedOutput] = []
         self._round_reasoning: list[dict[str, Any]] = []
 
+    def _assign_sequence(self, event: dict[str, Any]) -> None:
+        raw_sequence = event.get("sequence_number")
+        floor = raw_sequence if isinstance(raw_sequence, int) and not isinstance(raw_sequence, bool) else None
+        event["sequence_number"] = self._seq.next(floor=floor)
+
+    def absorb_downstream_sequences(self, downstream_events: list[dict[str, Any]]) -> None:
+        """Advance the fold counter past sequences already sent downstream."""
+        for downstream_event in downstream_events:
+            self._seq.absorb(downstream_event.get("sequence_number"))
+
+    def align_downstream_sequences(
+        self,
+        downstream_events: list[dict[str, Any]],
+        upstream_sequence_number: object,
+    ) -> None:
+        """Apply the batch offset, then keep ``_Seq`` at the emitted watermark."""
+        _align_fold_downstream_sequences(downstream_events, upstream_sequence_number)
+        self.absorb_downstream_sequences(downstream_events)
+
     def process_event(self, event: dict[str, Any]) -> _FoldOutcome:
         event_type = _event_type(event)
 
@@ -126,7 +180,7 @@ class _WebSocketContinuationFold:
             if self._round_number == 1:
                 if event_type == "response.created":
                     self._base_response = _response_payload(event)
-                event["sequence_number"] = self._seq.next()
+                self._assign_sequence(event)
                 return _FoldOutcome(downstream=[event])
             # Hidden continuation rounds do not re-emit response.created.
             return _FoldOutcome()
@@ -142,7 +196,7 @@ class _WebSocketContinuationFold:
                 self._output_index_map[upstream_output_index] = self._downstream_output_index
                 event["output_index"] = self._downstream_output_index
                 self._downstream_output_index += 1
-                event["sequence_number"] = self._seq.next()
+                self._assign_sequence(event)
                 return _FoldOutcome(downstream=[event])
             self._item_kind[upstream_output_index] = "buffered"
             self._buffered_outputs.append(
@@ -159,7 +213,7 @@ class _WebSocketContinuationFold:
         if kind == "reasoning":
             if upstream_output_index in self._output_index_map:
                 event["output_index"] = self._output_index_map[upstream_output_index]
-            event["sequence_number"] = self._seq.next()
+            self._assign_sequence(event)
             if event_type == "response.output_item.done":
                 reasoning_item = _item_payload(event)
                 self._round_reasoning.append(reasoning_item)
@@ -173,7 +227,7 @@ class _WebSocketContinuationFold:
                     entry.item = _item_payload(event) or entry.item
             return _FoldOutcome()
 
-        event["sequence_number"] = self._seq.next()
+        self._assign_sequence(event)
         return _FoldOutcome(downstream=[event])
 
     def _on_terminal(self, terminal: dict[str, Any]) -> _FoldOutcome:

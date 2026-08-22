@@ -172,7 +172,18 @@ class _Seq:
     def __init__(self) -> None:
         self._next = 0
 
-    def next(self) -> int:
+    def absorb(self, sequence_number: object) -> None:
+        """Advance the counter past a sequence that was already emitted."""
+        if (
+            isinstance(sequence_number, int)
+            and not isinstance(sequence_number, bool)
+            and sequence_number + 1 > self._next
+        ):
+            self._next = sequence_number + 1
+
+    def next(self, floor: int | None = None) -> int:
+        if isinstance(floor, int) and not isinstance(floor, bool) and floor > self._next:
+            self._next = floor
         value = self._next
         self._next += 1
         return value

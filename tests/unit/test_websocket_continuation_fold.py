@@ -6,9 +6,12 @@ from typing import Any, cast
 import pytest
 
 import app.core.clients.codex_continuation as codex_continuation_module
-from app.core.clients.codex_continuation import CodexContinuationConfig
+from app.core.clients.codex_continuation import CodexContinuationConfig, _Seq
 from app.core.types import JsonValue
-from app.modules.proxy._service.websocket.continuation import _WebSocketContinuationFold
+from app.modules.proxy._service.websocket.continuation import (
+    _align_fold_downstream_sequences,
+    _WebSocketContinuationFold,
+)
 from app.modules.proxy._service.websocket.helpers import _folded_terminal_function_call_ids
 
 pytestmark = pytest.mark.unit
@@ -108,6 +111,63 @@ def _drive(fold: _WebSocketContinuationFold, events: list[dict[str, Any]]):
         if outcome.terminal_event is not None:
             terminal = outcome.terminal_event
     return downstream, continuation, terminal
+
+
+def _with_sequences(events: list[dict[str, Any]], start: int = 0) -> list[dict[str, Any]]:
+    numbered: list[dict[str, Any]] = []
+    for offset, event in enumerate(events):
+        numbered_event = dict(event)
+        numbered_event["sequence_number"] = start + offset
+        numbered.append(numbered_event)
+    return numbered
+
+
+def _drive_aligned(fold: _WebSocketContinuationFold, events: list[dict[str, Any]]):
+    downstream: list[dict[str, Any]] = []
+    continuation = None
+    terminal = None
+    for event in events:
+        outcome = fold.process_event(dict(event))
+        fold.align_downstream_sequences(outcome.downstream, event.get("sequence_number"))
+        downstream.extend(outcome.downstream)
+        if outcome.continuation_request is not None:
+            continuation = outcome.continuation_request
+        if outcome.terminal_event is not None:
+            terminal = outcome.terminal_event
+    return downstream, continuation, terminal
+
+
+def _preamble_message_events(*, output_index: int, item_id: str, extra_deltas: int) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = [
+        {
+            "type": "response.output_item.added",
+            "output_index": output_index,
+            "item": {"id": item_id, "type": "message", "role": "assistant", "content": []},
+        }
+    ]
+    for index in range(extra_deltas):
+        events.append(
+            {
+                "type": "response.output_text.delta",
+                "output_index": output_index,
+                "item_id": item_id,
+                "content_index": 0,
+                "delta": f"p{index}",
+            }
+        )
+    events.append(
+        {
+            "type": "response.output_item.done",
+            "output_index": output_index,
+            "item": {
+                "id": item_id,
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "preamble"}],
+            },
+        }
+    )
+    return events
 
 
 def _function_call_events(*, output_index: int, item_id: str, call_id: str, name: str) -> list[dict[str, Any]]:
@@ -520,3 +580,89 @@ def test_ws_fold_defaults_labels_to_unknown(
     log_line = next(record.getMessage() for record in caplog.records if "codex_continuation_ws" in record.getMessage())
     assert "client=unknown" in log_line
     assert "effort=unknown" in log_line
+
+
+def test_align_fold_downstream_sequences_keeps_positive_offset_and_drops_regression() -> None:
+    shifted = [
+        {"type": "response.created", "sequence_number": 0, "response": {"id": "resp_a"}},
+        {"type": "response.in_progress", "sequence_number": 1, "response": {"id": "resp_a"}},
+    ]
+    _align_fold_downstream_sequences(shifted, 5)
+    assert [event["sequence_number"] for event in shifted] == [5, 6]
+
+    continued = [
+        {"type": "response.output_item.added", "sequence_number": 4, "item": {"type": "reasoning"}},
+        {"type": "response.output_item.done", "sequence_number": 5, "item": {"type": "reasoning"}},
+    ]
+    _align_fold_downstream_sequences(continued, 0)
+    assert [event["sequence_number"] for event in continued] == [4, 5]
+
+
+def test_seq_next_floor_and_absorb_keep_watermark() -> None:
+    seq = _Seq()
+    assert seq.next() == 0
+    assert seq.next(floor=5) == 5
+    seq.absorb(60)
+    assert seq.next(floor=0) == 61
+
+
+def test_align_downstream_sequences_absorbs_positive_offset_into_fold() -> None:
+    fold = _WebSocketContinuationFold(
+        CodexContinuationConfig(max_continue=1, rechunk_size=64),
+        {"model": "gpt-5.5", "input": [{"role": "user", "content": "question"}], "stream": True},
+    )
+    for _ in range(4):
+        fold._seq.next()
+    shifted = [
+        {"type": "response.output_item.added", "sequence_number": 3},
+        {"type": "response.output_item.done", "sequence_number": 4},
+    ]
+    fold.align_downstream_sequences(shifted, 60)
+    assert [event["sequence_number"] for event in shifted] == [60, 61]
+    assert fold._seq.next() == 62
+
+
+def test_ws_fold_aligned_sequences_stay_monotonic_after_buffered_preamble() -> None:
+    fold = _WebSocketContinuationFold(
+        CodexContinuationConfig(max_continue=1, rechunk_size=64),
+        {
+            "model": "gpt-5.5",
+            "instructions": "solve",
+            "input": [{"role": "user", "content": "question"}],
+            "previous_response_id": "resp_previous",
+            "stream": True,
+        },
+    )
+    extra_deltas = 40
+    round_one = _with_sequences(
+        [
+            {"type": "response.created", "response": {"id": "resp_visible", "status": "in_progress", "output": []}},
+            *_reasoning_events(output_index=0, item_id="rs_1", encrypted_content="enc1"),
+            *_preamble_message_events(output_index=1, item_id="msg_preamble", extra_deltas=extra_deltas),
+            *_reasoning_events(output_index=2, item_id="rs_2", encrypted_content="enc2"),
+            _completed("resp_visible", input_tokens=100, output_tokens=600, reasoning_tokens=516),
+        ]
+    )
+    down1, continuation, terminal1 = _drive_aligned(fold, round_one)
+    assert continuation is not None
+    assert terminal1 is None
+    round_one_sequences = [event["sequence_number"] for event in down1]
+    assert max(round_one_sequences) >= extra_deltas
+
+    round_two = _with_sequences(
+        [
+            {"type": "response.created", "response": {"id": "resp_hidden", "status": "in_progress", "output": []}},
+            *_message_events(output_index=0, item_id="msg_final", text="final answer"),
+            _completed("resp_hidden", input_tokens=120, output_tokens=20, reasoning_tokens=10),
+        ]
+    )
+    down2, continuation2, terminal2 = _drive_aligned(fold, round_two)
+    assert continuation2 is None
+    assert terminal2 is not None
+
+    sequences = [event["sequence_number"] for event in [*down1, *down2]]
+    assert sequences
+    assert sequences == sorted(sequences)
+    assert sequences[0] == 0
+    assert 0 not in sequences[1:]
+    assert min(event["sequence_number"] for event in down2) > max(round_one_sequences)

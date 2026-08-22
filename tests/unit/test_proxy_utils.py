@@ -5226,7 +5226,6 @@ class _SilentBeforeHeadersSseSession:
         raise aiohttp.SocketTimeoutError("Timeout on reading data from socket")
 
 
-
 class _ActiveThenTotalTimeoutChunkIterator:
     def __init__(self, clock: dict[str, float]) -> None:
         self._clock = clock
@@ -20873,6 +20872,590 @@ async def test_process_upstream_websocket_fold_terminal_persists_snapshot_with_a
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_process_upstream_websocket_fold_keeps_monotonic_sequence_across_hidden_round(monkeypatch):
+    request_logs = _RequestLogsRecorder()
+    store = _WebsocketContinuityStoreRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs, store))
+    account = _make_account("acc_ws_fold_seq")
+    monkeypatch.setattr(service._load_balancer, "record_success", AsyncMock())
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock())
+
+    fold = websocket_mixin._WebSocketContinuationFold(
+        CodexContinuationConfig(max_continue=1, rechunk_size=64),
+        {
+            "model": "gpt-5.1",
+            "instructions": "solve",
+            "input": [{"role": "user", "content": "question"}],
+            "previous_response_id": "resp_previous",
+            "stream": True,
+        },
+    )
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="ws_req_fold_seq",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        awaiting_response_created=True,
+        input_item_count=2,
+        input_full_fingerprint="fold-seq-fingerprint",
+    )
+    request_state.continuation_fold = fold
+    pending_requests: deque[proxy_service._WebSocketRequestState] = deque([request_state])
+    pending_lock = anyio.Lock()
+    response_create_gate = asyncio.Semaphore(1)
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    collected: list[dict[str, JsonValue]] = []
+
+    async def _relay(event: dict[str, JsonValue]) -> None:
+        text = await service._process_upstream_websocket_text(
+            json.dumps(event),
+            account=account,
+            account_id_value=account.id,
+            pending_requests=pending_requests,
+            pending_lock=pending_lock,
+            api_key=None,
+            upstream_control=upstream_control,
+            response_create_gate=response_create_gate,
+        )
+        if upstream_control.downstream_texts:
+            collected.extend(json.loads(item) for item in upstream_control.downstream_texts)
+        elif not upstream_control.suppress_downstream_event:
+            collected.append(json.loads(text))
+        upstream_control.suppress_downstream_event = False
+        upstream_control.downstream_texts = None
+        upstream_control.continuation_resend_body = None
+
+    truncated_round = [
+        {
+            "type": "response.created",
+            "sequence_number": 0,
+            "response": {"id": "resp_visible", "status": "in_progress", "output": []},
+        },
+        {
+            "type": "response.output_item.added",
+            "sequence_number": 1,
+            "output_index": 0,
+            "item": {"id": "rs_1", "type": "reasoning"},
+        },
+        {
+            "type": "response.output_item.done",
+            "sequence_number": 2,
+            "output_index": 0,
+            "item": {"id": "rs_1", "type": "reasoning", "encrypted_content": "enc1"},
+        },
+        {
+            "type": "response.completed",
+            "sequence_number": 3,
+            "response": {
+                "id": "resp_visible",
+                "status": "completed",
+                "output": [],
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 600,
+                    "total_tokens": 700,
+                    "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens_details": {"reasoning_tokens": 516},
+                },
+            },
+        },
+    ]
+    for event in truncated_round:
+        await _relay(cast(dict[str, JsonValue], event))
+
+    hidden_round = [
+        {
+            "type": "response.created",
+            "sequence_number": 0,
+            "response": {"id": "resp_hidden", "status": "in_progress", "output": []},
+        },
+        {
+            "type": "response.output_item.added",
+            "sequence_number": 1,
+            "output_index": 0,
+            "item": {"id": "msg_final", "type": "message", "role": "assistant", "content": []},
+        },
+        {
+            "type": "response.output_text.delta",
+            "sequence_number": 2,
+            "output_index": 0,
+            "item_id": "msg_final",
+            "content_index": 0,
+            "delta": "final answer",
+        },
+        {
+            "type": "response.output_item.done",
+            "sequence_number": 3,
+            "output_index": 0,
+            "item": {
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "final answer"}],
+            },
+        },
+        {
+            "type": "response.completed",
+            "sequence_number": 4,
+            "response": {
+                "id": "resp_hidden",
+                "status": "completed",
+                "output": [],
+                "usage": {
+                    "input_tokens": 120,
+                    "output_tokens": 20,
+                    "total_tokens": 140,
+                    "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens_details": {"reasoning_tokens": 10},
+                },
+            },
+        },
+    ]
+    for event in hidden_round:
+        await _relay(cast(dict[str, JsonValue], event))
+
+    sequences = [event["sequence_number"] for event in collected if isinstance(event.get("sequence_number"), int)]
+    assert sequences
+    assert sequences[0] == 0
+    assert sequences == sorted(sequences)
+    assert 0 not in sequences[1:]
+    assert any(event.get("type") == "response.completed" for event in collected)
+
+
+@pytest.mark.asyncio
+async def test_process_upstream_websocket_fold_keeps_monotonic_sequence_after_buffered_preamble(monkeypatch):
+    request_logs = _RequestLogsRecorder()
+    store = _WebsocketContinuityStoreRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs, store))
+    account = _make_account("acc_ws_fold_preamble_seq")
+    monkeypatch.setattr(service._load_balancer, "record_success", AsyncMock())
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock())
+
+    fold = websocket_mixin._WebSocketContinuationFold(
+        CodexContinuationConfig(max_continue=1, rechunk_size=64),
+        {
+            "model": "gpt-5.1",
+            "instructions": "solve",
+            "input": [{"role": "user", "content": "question"}],
+            "previous_response_id": "resp_previous",
+            "stream": True,
+        },
+    )
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="ws_req_fold_preamble_seq",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        awaiting_response_created=True,
+        input_item_count=2,
+        input_full_fingerprint="fold-preamble-seq-fingerprint",
+    )
+    request_state.continuation_fold = fold
+    pending_requests: deque[proxy_service._WebSocketRequestState] = deque([request_state])
+    pending_lock = anyio.Lock()
+    response_create_gate = asyncio.Semaphore(1)
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    collected: list[dict[str, JsonValue]] = []
+
+    async def _relay(event: dict[str, JsonValue]) -> None:
+        text = await service._process_upstream_websocket_text(
+            json.dumps(event),
+            account=account,
+            account_id_value=account.id,
+            pending_requests=pending_requests,
+            pending_lock=pending_lock,
+            api_key=None,
+            upstream_control=upstream_control,
+            response_create_gate=response_create_gate,
+        )
+        if upstream_control.downstream_texts:
+            collected.extend(json.loads(item) for item in upstream_control.downstream_texts)
+        elif not upstream_control.suppress_downstream_event:
+            collected.append(json.loads(text))
+        upstream_control.suppress_downstream_event = False
+        upstream_control.downstream_texts = None
+        upstream_control.continuation_resend_body = None
+
+    extra_deltas = 40
+    truncated_round: list[dict[str, JsonValue]] = [
+        {
+            "type": "response.created",
+            "sequence_number": 0,
+            "response": {"id": "resp_visible", "status": "in_progress", "output": []},
+        },
+        {
+            "type": "response.output_item.added",
+            "sequence_number": 1,
+            "output_index": 0,
+            "item": {"id": "rs_1", "type": "reasoning"},
+        },
+        {
+            "type": "response.output_item.done",
+            "sequence_number": 2,
+            "output_index": 0,
+            "item": {"id": "rs_1", "type": "reasoning", "encrypted_content": "enc1"},
+        },
+        {
+            "type": "response.output_item.added",
+            "sequence_number": 3,
+            "output_index": 1,
+            "item": {"id": "msg_preamble", "type": "message", "role": "assistant", "content": []},
+        },
+    ]
+    for index in range(extra_deltas):
+        truncated_round.append(
+            {
+                "type": "response.output_text.delta",
+                "sequence_number": 4 + index,
+                "output_index": 1,
+                "item_id": "msg_preamble",
+                "content_index": 0,
+                "delta": f"p{index}",
+            }
+        )
+    message_done_sequence = 4 + extra_deltas
+    truncated_round.extend(
+        [
+            {
+                "type": "response.output_item.done",
+                "sequence_number": message_done_sequence,
+                "output_index": 1,
+                "item": {
+                    "id": "msg_preamble",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "preamble"}],
+                },
+            },
+            {
+                "type": "response.output_item.added",
+                "sequence_number": message_done_sequence + 1,
+                "output_index": 2,
+                "item": {"id": "rs_2", "type": "reasoning"},
+            },
+            {
+                "type": "response.output_item.done",
+                "sequence_number": message_done_sequence + 2,
+                "output_index": 2,
+                "item": {"id": "rs_2", "type": "reasoning", "encrypted_content": "enc2"},
+            },
+            {
+                "type": "response.completed",
+                "sequence_number": message_done_sequence + 3,
+                "response": {
+                    "id": "resp_visible",
+                    "status": "completed",
+                    "output": [],
+                    "usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 600,
+                        "total_tokens": 700,
+                        "input_tokens_details": {"cached_tokens": 0},
+                        "output_tokens_details": {"reasoning_tokens": 516},
+                    },
+                },
+            },
+        ]
+    )
+
+    def _collected_sequences() -> list[int]:
+        sequences: list[int] = []
+        for event in collected:
+            sequence_number = event.get("sequence_number")
+            if isinstance(sequence_number, int) and not isinstance(sequence_number, bool):
+                sequences.append(sequence_number)
+        return sequences
+
+    # created + first reasoning: fold and upstream stay aligned at 0, 1, 2.
+    for event in truncated_round[:3]:
+        await _relay(event)
+    assert _collected_sequences() == [0, 1, 2]
+
+    # Buffered preamble message: upstream keeps counting, fold emits nothing.
+    after_message = 3 + 1 + extra_deltas + 1
+    for event in truncated_round[3:after_message]:
+        await _relay(event)
+    assert _collected_sequences() == [0, 1, 2]
+
+    # Second reasoning: mixin offset is u - d > 0 (drift, not prewarm).
+    for event in truncated_round[after_message:]:
+        await _relay(event)
+    first_round_sequences = _collected_sequences()
+    second_reasoning_start = message_done_sequence + 1
+    assert first_round_sequences[:3] == [0, 1, 2]
+    assert first_round_sequences[-2:] == [second_reasoning_start, second_reasoning_start + 1]
+    assert first_round_sequences[-1] > first_round_sequences[2]
+
+    hidden_round = [
+        {
+            "type": "response.created",
+            "sequence_number": 0,
+            "response": {"id": "resp_hidden", "status": "in_progress", "output": []},
+        },
+        {
+            "type": "response.output_item.added",
+            "sequence_number": 1,
+            "output_index": 0,
+            "item": {"id": "msg_final", "type": "message", "role": "assistant", "content": []},
+        },
+        {
+            "type": "response.output_text.delta",
+            "sequence_number": 2,
+            "output_index": 0,
+            "item_id": "msg_final",
+            "content_index": 0,
+            "delta": "final answer",
+        },
+        {
+            "type": "response.output_item.done",
+            "sequence_number": 3,
+            "output_index": 0,
+            "item": {
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "final answer"}],
+            },
+        },
+        {
+            "type": "response.completed",
+            "sequence_number": 4,
+            "response": {
+                "id": "resp_hidden",
+                "status": "completed",
+                "output": [],
+                "usage": {
+                    "input_tokens": 120,
+                    "output_tokens": 20,
+                    "total_tokens": 140,
+                    "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens_details": {"reasoning_tokens": 10},
+                },
+            },
+        },
+    ]
+    for event in hidden_round:
+        await _relay(cast(dict[str, JsonValue], event))
+
+    sequences = _collected_sequences()
+    hidden_sequences = sequences[len(first_round_sequences) :]
+    assert sequences
+    assert sequences[0] == 0
+    assert sequences == sorted(sequences)
+    assert 0 not in sequences[1:]
+    assert hidden_sequences
+    assert hidden_sequences[0] > first_round_sequences[-1]
+    assert any(event.get("type") == "response.completed" for event in collected)
+
+
+@pytest.mark.asyncio
+async def test_process_upstream_websocket_fold_replay_uses_fold_watermark_not_raw_upstream(monkeypatch):
+    request_logs = _RequestLogsRecorder()
+    store = _WebsocketContinuityStoreRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs, store))
+    account = _make_account("acc_ws_fold_replay_watermark")
+    monkeypatch.setattr(service._load_balancer, "record_success", AsyncMock())
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock())
+
+    fold = websocket_mixin._WebSocketContinuationFold(
+        CodexContinuationConfig(max_continue=1, rechunk_size=64),
+        {
+            "model": "gpt-5.1",
+            "instructions": "solve",
+            "input": [{"role": "user", "content": "question"}],
+            "previous_response_id": "resp_previous",
+            "stream": True,
+        },
+    )
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="ws_req_fold_replay_watermark",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=0.0,
+        awaiting_response_created=True,
+        input_item_count=2,
+        input_full_fingerprint="fold-replay-watermark-fingerprint",
+    )
+    request_state.continuation_fold = fold
+    pending_requests: deque[proxy_service._WebSocketRequestState] = deque([request_state])
+    pending_lock = anyio.Lock()
+    response_create_gate = asyncio.Semaphore(1)
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    collected: list[dict[str, JsonValue]] = []
+
+    async def _relay(event: dict[str, JsonValue]) -> None:
+        text = await service._process_upstream_websocket_text(
+            json.dumps(event),
+            account=account,
+            account_id_value=account.id,
+            pending_requests=pending_requests,
+            pending_lock=pending_lock,
+            api_key=None,
+            upstream_control=upstream_control,
+            response_create_gate=response_create_gate,
+        )
+        if upstream_control.downstream_texts:
+            collected.extend(json.loads(item) for item in upstream_control.downstream_texts)
+            if upstream_control.downstream_sequence_number is not None:
+                request_state.last_downstream_sequence_number = upstream_control.downstream_sequence_number
+        elif not upstream_control.suppress_downstream_event:
+            collected.append(json.loads(text))
+            if upstream_control.downstream_sequence_number is not None:
+                request_state.last_downstream_sequence_number = upstream_control.downstream_sequence_number
+        upstream_control.suppress_downstream_event = False
+        upstream_control.downstream_texts = None
+        upstream_control.continuation_resend_body = None
+
+    extra_deltas = 8
+    truncated_round: list[dict[str, JsonValue]] = [
+        {
+            "type": "response.created",
+            "sequence_number": 0,
+            "response": {"id": "resp_visible", "status": "in_progress", "output": []},
+        },
+        {
+            "type": "response.output_item.added",
+            "sequence_number": 1,
+            "output_index": 0,
+            "item": {"id": "rs_1", "type": "reasoning"},
+        },
+        {
+            "type": "response.output_item.done",
+            "sequence_number": 2,
+            "output_index": 0,
+            "item": {"id": "rs_1", "type": "reasoning", "encrypted_content": "enc1"},
+        },
+        {
+            "type": "response.output_item.added",
+            "sequence_number": 3,
+            "output_index": 1,
+            "item": {"id": "msg_preamble", "type": "message", "role": "assistant", "content": []},
+        },
+    ]
+    for index in range(extra_deltas):
+        truncated_round.append(
+            {
+                "type": "response.output_text.delta",
+                "sequence_number": 4 + index,
+                "output_index": 1,
+                "item_id": "msg_preamble",
+                "content_index": 0,
+                "delta": f"p{index}",
+            }
+        )
+    message_done_sequence = 4 + extra_deltas
+    truncated_round.extend(
+        [
+            {
+                "type": "response.output_item.done",
+                "sequence_number": message_done_sequence,
+                "output_index": 1,
+                "item": {
+                    "id": "msg_preamble",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "preamble"}],
+                },
+            },
+            {
+                "type": "response.output_item.added",
+                "sequence_number": message_done_sequence + 1,
+                "output_index": 2,
+                "item": {"id": "rs_2", "type": "reasoning"},
+            },
+            {
+                "type": "response.output_item.done",
+                "sequence_number": message_done_sequence + 2,
+                "output_index": 2,
+                "item": {"id": "rs_2", "type": "reasoning", "encrypted_content": "enc2"},
+            },
+            {
+                "type": "response.completed",
+                "sequence_number": message_done_sequence + 3,
+                "response": {
+                    "id": "resp_visible",
+                    "status": "completed",
+                    "output": [],
+                    "usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 600,
+                        "total_tokens": 700,
+                        "input_tokens_details": {"cached_tokens": 0},
+                        "output_tokens_details": {"reasoning_tokens": 516},
+                    },
+                },
+            },
+        ]
+    )
+    for event in truncated_round:
+        await _relay(event)
+
+    first_round_watermark = request_state.last_downstream_sequence_number
+    assert first_round_watermark == message_done_sequence + 2
+    assert request_state in pending_requests
+
+    await _relay(
+        cast(
+            dict[str, JsonValue],
+            {
+                "type": "response.created",
+                "sequence_number": 0,
+                "response": {"id": "resp_hidden", "status": "in_progress", "output": []},
+            },
+        )
+    )
+    await _relay(
+        cast(
+            dict[str, JsonValue],
+            {
+                "type": "response.output_item.added",
+                "sequence_number": 0,
+                "output_index": 0,
+                "item": {"id": "rs_hidden", "type": "reasoning"},
+            },
+        )
+    )
+
+    fold_watermark = request_state.last_downstream_sequence_number
+    assert fold_watermark is not None
+    assert fold_watermark > first_round_watermark
+    assert fold_watermark > 0
+    assert request_state in pending_requests
+
+    request_state.replay_downstream_response_id = "resp_visible"
+    replay_sequence = 10
+    assert first_round_watermark is not None
+    assert replay_sequence <= fold_watermark
+    with pytest.raises(websocket_mixin._WebSocketReplaySequenceRegression) as exc_info:
+        await service._process_upstream_websocket_text(
+            json.dumps(
+                {
+                    "type": "response.output_item.added",
+                    "sequence_number": replay_sequence,
+                    "output_index": 1,
+                    "item": {"id": "rs_replay", "type": "reasoning"},
+                    "response": {"id": "resp_hidden"},
+                }
+            ),
+            account=account,
+            account_id_value=account.id,
+            pending_requests=pending_requests,
+            pending_lock=pending_lock,
+            api_key=None,
+            upstream_control=proxy_service._WebSocketUpstreamControl(),
+            response_create_gate=response_create_gate,
+        )
+    assert f"watermark={fold_watermark}" in str(exc_info.value)
+    assert f"replay={replay_sequence}" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
