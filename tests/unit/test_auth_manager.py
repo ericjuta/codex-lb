@@ -6,11 +6,13 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
+from app.core.auth import refresh as refresh_module
 from app.core.auth.refresh import RefreshError, TokenRefreshResult
+from app.core.balancer import AccountState, select_account
 from app.core.crypto import TokenEncryptor
 from app.core.upstream_proxy import UpstreamProxyRouteError
 from app.core.utils.time import utcnow
@@ -898,6 +900,100 @@ async def test_refresh_account_deactivates_when_repo_only_reencrypted_same_refre
     assert repo.status_payload["status"] == AccountStatus.REAUTH_REQUIRED
 
 
+@pytest.mark.asyncio
+async def test_invalid_refresh_token_payload_requires_reauth_and_excludes_routing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An upstream invalid-refresh payload must block routing before another request."""
+
+    class InvalidRefreshTokenResponse:
+        status = 400
+
+        async def json(self, *, content_type: object = None) -> dict[str, object]:
+            del content_type
+            return {
+                "error": {
+                    "code": "invalid_refresh_token",
+                    "message": "Refresh token invalid - re-login required.",
+                }
+            }
+
+        async def text(self) -> str:
+            return ""
+
+        async def __aenter__(self) -> InvalidRefreshTokenResponse:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class InvalidRefreshTokenSession:
+        def post(self, *_args: object, **_kwargs: object) -> InvalidRefreshTokenResponse:
+            return InvalidRefreshTokenResponse()
+
+    monkeypatch.setattr(
+        refresh_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            auth_base_url="https://auth.example.test",
+            oauth_client_id="client-id",
+            oauth_scope="openid profile",
+            token_refresh_timeout_seconds=15.0,
+        ),
+    )
+
+    with pytest.raises(RefreshError) as payload_info:
+        await refresh_module.refresh_access_token(
+            "refresh-old",
+            session=cast(Any, InvalidRefreshTokenSession()),
+            allow_direct_egress=True,
+        )
+
+    assert payload_info.value.code == "invalid_refresh_token"
+    assert payload_info.value.is_permanent is True
+
+    async def _fake_refresh(_: str, **_kwargs: object) -> TokenRefreshResult:
+        raise RefreshError(
+            payload_info.value.code,
+            payload_info.value.message,
+            payload_info.value.is_permanent,
+        )
+
+    monkeypatch.setattr(auth_manager_module, "refresh_access_token", _fake_refresh)
+
+    encryptor = TokenEncryptor()
+    account = Account(
+        id="acc_invalid_refresh_token",
+        email="user@example.com",
+        plan_type="plus",
+        access_token_encrypted=encryptor.encrypt("access-old"),
+        refresh_token_encrypted=encryptor.encrypt("refresh-old"),
+        id_token_encrypted=encryptor.encrypt("id-old"),
+        last_refresh=utcnow().replace(year=utcnow().year - 1),
+        status=AccountStatus.ACTIVE,
+        deactivation_reason=None,
+    )
+    repo = _DummyRepo()
+    latest_account = Account(**{column.name: getattr(account, column.name) for column in Account.__table__.columns})
+    repo.accounts_by_id[account.id] = latest_account
+    manager = AuthManager(cast(AccountsRepositoryPort, repo))
+
+    with pytest.raises(RefreshError) as exc_info:
+        await manager.refresh_account(account)
+
+    assert exc_info.value.code == "invalid_refresh_token"
+    assert exc_info.value.is_permanent is True
+    assert repo.status_payload is not None
+    assert repo.status_payload["status"] == AccountStatus.REAUTH_REQUIRED
+    assert repo.tokens_payload is None
+    assert account.status == AccountStatus.REAUTH_REQUIRED
+    assert select_account([AccountState(account_id=account.id, status=account.status)]).account is None
+
+    accepted = select_account([AccountState(account_id="acc_active", status=AccountStatus.ACTIVE)])
+    assert accepted.account is not None
+    assert accepted.account.account_id == "acc_active"
+
+
 @pytest.mark.parametrize(
     ("error_code", "message"),
     [
@@ -908,6 +1004,10 @@ async def test_refresh_account_deactivates_when_repo_only_reencrypted_same_refre
         (
             "app_session_terminated",
             "Your session has been terminated. Please sign in again.",
+        ),
+        (
+            "invalid_refresh_token",
+            "Refresh token invalid - re-login required.",
         ),
     ],
 )
