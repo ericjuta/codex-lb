@@ -19764,6 +19764,585 @@ def test_slim_response_create_slims_oversized_custom_and_apply_patch_string_outp
     assert second_item["status"] == "completed"
 
 
+def test_slim_response_create_preserves_only_namespaced_agent_control_outputs():
+    agent_wait_output = "agent-wait-result:" + ("a" * (33 * 1024))
+    bare_name_user_tool_output = "user-wait-result:" + ("b" * (33 * 1024))
+    shell_output = "shell-result:" + ("c" * (33 * 1024))
+    payload: dict[str, JsonValue] = {
+        "type": "response.create",
+        "model": "gpt-5.1",
+        "input": [
+            {
+                "type": "function_call",
+                "namespace": "multi_agent_v1",
+                "name": "wait_agent",
+                "call_id": "call_agent_wait",
+                "arguments": '{"timeout_ms":120000}',
+            },
+            {"type": "function_call_output", "call_id": "call_agent_wait", "output": agent_wait_output},
+            {
+                "type": "function_call",
+                "name": "wait_agent",
+                "call_id": "call_user_wait",
+                "arguments": "{}",
+            },
+            {"type": "function_call_output", "call_id": "call_user_wait", "output": bare_name_user_tool_output},
+            {
+                "type": "function_call",
+                "name": "exec_command",
+                "call_id": "call_shell",
+                "arguments": '{"cmd":"cat large-log"}',
+            },
+            {"type": "function_call_output", "call_id": "call_shell", "output": shell_output},
+            {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+        ],
+    }
+
+    slimmed_payload, summary = proxy_service._slim_response_create_payload_for_upstream(payload, max_bytes=256)
+    slimmed_input = cast(list[JsonValue], slimmed_payload["input"])
+
+    assert summary is not None
+    assert summary["historical_tool_outputs_slimmed"] == 2
+    assert cast(dict[str, JsonValue], slimmed_input[1])["output"] == agent_wait_output
+    omission_notice = proxy_service._RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE
+    assert cast(dict[str, JsonValue], slimmed_input[3])["output"] == omission_notice.format(
+        bytes=len(bare_name_user_tool_output.encode("utf-8"))
+    )
+    assert cast(dict[str, JsonValue], slimmed_input[5])["output"] == omission_notice.format(
+        bytes=len(shell_output.encode("utf-8"))
+    )
+
+
+def test_slim_response_create_preserves_only_namespaced_agent_control_custom_outputs():
+    agent_custom_output = "agent-custom-result:" + ("c" * (33 * 1024))
+    unrelated_custom_output = "unrelated-custom-result:" + ("u" * (33 * 1024))
+    payload: dict[str, JsonValue] = {
+        "type": "response.create",
+        "model": "gpt-5.1",
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "namespace": "collaboration",
+                "name": "wait_agent",
+                "call_id": "call_agent_custom",
+                "input": '{"timeout_ms":120000}',
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_agent_custom",
+                "output": agent_custom_output,
+            },
+            {
+                "type": "custom_tool_call",
+                "namespace": "unrelated_namespace",
+                "name": "wait_agent",
+                "call_id": "call_unrelated_custom",
+                "input": "{}",
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_unrelated_custom",
+                "output": unrelated_custom_output,
+            },
+            {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+        ],
+    }
+
+    slimmed_payload, summary = proxy_service._slim_response_create_payload_for_upstream(payload, max_bytes=256)
+    slimmed_input = cast(list[JsonValue], slimmed_payload["input"])
+
+    assert summary is not None
+    assert summary["historical_tool_outputs_slimmed"] == 1
+    assert cast(dict[str, JsonValue], slimmed_input[1])["output"] == agent_custom_output
+    assert cast(dict[str, JsonValue], slimmed_input[3])["output"] == (
+        proxy_service._RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE.format(
+            bytes=len(unrelated_custom_output.encode("utf-8"))
+        )
+    )
+
+
+def test_slim_response_create_keeps_agent_control_protocols_separate_for_reused_call_id():
+    agent_custom_output = "agent-custom-result:" + ("c" * (33 * 1024))
+    unrelated_function_output = "unrelated-function-result:" + ("f" * (33 * 1024))
+    payload: dict[str, JsonValue] = {
+        "type": "response.create",
+        "model": "gpt-5.1",
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "namespace": "collaboration",
+                "name": "wait_agent",
+                "call_id": "call_reused",
+                "input": '{"timeout_ms":120000}',
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_reused",
+                "output": agent_custom_output,
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_reused",
+                "output": unrelated_function_output,
+            },
+            {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+        ],
+    }
+
+    slimmed_payload, summary = proxy_service._slim_response_create_payload_for_upstream(payload, max_bytes=256)
+    slimmed_input = cast(list[JsonValue], slimmed_payload["input"])
+
+    assert summary is not None
+    assert summary["historical_tool_outputs_slimmed"] == 1
+    assert cast(dict[str, JsonValue], slimmed_input[1])["output"] == agent_custom_output
+    assert cast(dict[str, JsonValue], slimmed_input[2])["output"] == (
+        proxy_service._RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE.format(
+            bytes=len(unrelated_function_output.encode("utf-8"))
+        )
+    )
+
+
+@pytest.mark.parametrize("namespaced_occurrence", [0, 1], ids=["namespaced-first", "namespaced-second"])
+def test_slim_response_create_pairs_same_protocol_reused_call_id_by_occurrence(namespaced_occurrence):
+    agent_wait_output = "agent-wait-result:" + ("a" * (33 * 1024))
+    shell_output = "shell-result:" + ("s" * (33 * 1024))
+    namespaced_pair: list[JsonValue] = [
+        {
+            "type": "function_call",
+            "namespace": "multi_agent_v1",
+            "name": "wait_agent",
+            "call_id": "call_reused",
+            "arguments": '{"timeout_ms":120000}',
+        },
+        {"type": "function_call_output", "call_id": "call_reused", "output": agent_wait_output},
+    ]
+    ordinary_pair: list[JsonValue] = [
+        {
+            "type": "function_call",
+            "name": "exec_command",
+            "call_id": "call_reused",
+            "arguments": '{"cmd":"cat large-log"}',
+        },
+        {"type": "function_call_output", "call_id": "call_reused", "output": shell_output},
+    ]
+    pairs = [namespaced_pair, ordinary_pair] if namespaced_occurrence == 0 else [ordinary_pair, namespaced_pair]
+    payload: dict[str, JsonValue] = {
+        "type": "response.create",
+        "model": "gpt-5.1",
+        "input": [
+            *pairs[0],
+            *pairs[1],
+            {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+        ],
+    }
+
+    slimmed_payload, summary = proxy_service._slim_response_create_payload_for_upstream(payload, max_bytes=256)
+    slimmed_input = cast(list[JsonValue], slimmed_payload["input"])
+
+    preserved_index = 1 if namespaced_occurrence == 0 else 3
+    slimmed_index = 3 if namespaced_occurrence == 0 else 1
+    assert summary is not None
+    assert summary["historical_tool_outputs_slimmed"] == 1
+    assert cast(dict[str, JsonValue], slimmed_input[preserved_index])["output"] == agent_wait_output
+    assert cast(dict[str, JsonValue], slimmed_input[slimmed_index])["output"] == (
+        proxy_service._RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE.format(bytes=len(shell_output.encode("utf-8")))
+    )
+
+
+def test_slim_response_create_orphan_output_does_not_consume_namespaced_pairing():
+    shell_output = "shell-result:" + ("s" * (33 * 1024))
+    agent_wait_output = "agent-wait-result:" + ("a" * (33 * 1024))
+    payload: dict[str, JsonValue] = {
+        "type": "response.create",
+        "model": "gpt-5.1",
+        "input": [
+            {"type": "function_call_output", "call_id": "call_reused", "output": shell_output},
+            {
+                "type": "function_call",
+                "namespace": "multi_agent_v1",
+                "name": "wait_agent",
+                "call_id": "call_reused",
+                "arguments": '{"timeout_ms":120000}',
+            },
+            {"type": "function_call_output", "call_id": "call_reused", "output": agent_wait_output},
+            {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+        ],
+    }
+
+    slimmed_payload, summary = proxy_service._slim_response_create_payload_for_upstream(payload, max_bytes=256)
+    slimmed_input = cast(list[JsonValue], slimmed_payload["input"])
+
+    assert summary is not None
+    assert summary["historical_tool_outputs_slimmed"] == 1
+    assert cast(dict[str, JsonValue], slimmed_input[0])["output"] == (
+        proxy_service._RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE.format(bytes=len(shell_output.encode("utf-8")))
+    )
+    assert cast(dict[str, JsonValue], slimmed_input[2])["output"] == agent_wait_output
+
+
+def _agent_control_omission_notice(output: str) -> str:
+    return proxy_service._RESPONSE_CREATE_TOOL_OUTPUT_OMISSION_NOTICE.format(bytes=len(output.encode("utf-8")))
+
+
+class _DirectWebsocketSlimSettings:
+    upstream_base_url = "https://chatgpt.com/backend-api"
+    upstream_stream_transport = "websocket"
+    upstream_connect_timeout_seconds = 8.0
+    stream_idle_timeout_seconds = 45.0
+    max_sse_event_bytes = 1024
+    image_inline_fetch_enabled = False
+    log_upstream_request_payload = False
+    proxy_request_budget_seconds = 75.0
+    log_upstream_request_summary = False
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_websocket_preserves_namespaced_agent_control_outputs(monkeypatch):
+    monkeypatch.setattr(proxy_module, "get_settings", lambda: _DirectWebsocketSlimSettings())
+    monkeypatch.setattr(proxy_module, "_maybe_log_upstream_request_start", lambda **kwargs: None)
+    monkeypatch.setattr(proxy_module, "_maybe_log_upstream_request_complete", lambda **kwargs: None)
+    monkeypatch.setattr(proxy_module, "_UPSTREAM_RESPONSE_CREATE_MAX_BYTES", 40 * 1024, raising=False)
+
+    agent_wait_output = "agent-wait-result:" + ("a" * (33 * 1024))
+    shell_output = "shell-result:" + ("c" * (33 * 1024))
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "",
+            "input": [
+                {
+                    "type": "function_call",
+                    "namespace": "multi_agent_v1",
+                    "name": "wait_agent",
+                    "call_id": "call_agent_wait",
+                    "arguments": '{"timeout_ms":120000}',
+                },
+                {"type": "function_call_output", "call_id": "call_agent_wait", "output": agent_wait_output},
+                {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": "call_shell",
+                    "arguments": '{"cmd":"cat large-log"}',
+                },
+                {"type": "function_call_output", "call_id": "call_shell", "output": shell_output},
+                {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+            ],
+        }
+    )
+    websocket = _WsResponse(
+        [
+            SimpleNamespace(
+                type=proxy_module.aiohttp.WSMsgType.TEXT,
+                data='{"type":"response.completed","response":{"id":"resp_ws_agent"}}',
+            )
+        ]
+    )
+    session = _WsSession(websocket)
+
+    events = [
+        event
+        async for event in proxy_module.stream_responses(
+            payload,
+            headers={},
+            access_token="token",
+            account_id="acc_1",
+            session=cast(proxy_module.aiohttp.ClientSession, session),
+        )
+    ]
+
+    assert len(events) == 1
+    assert len(session.ws_calls) == 1
+    upstream_input = cast(list[dict[str, object]], websocket.sent_json[0]["input"])
+    assert upstream_input[0]["namespace"] == "multi_agent_v1"
+    assert upstream_input[1]["output"] == agent_wait_output
+    assert upstream_input[3]["output"] == _agent_control_omission_notice(shell_output)
+    assert upstream_input[-1] == {"role": "user", "content": [{"type": "input_text", "text": "continue"}]}
+
+
+@pytest.mark.parametrize(
+    "transport",
+    [
+        pytest.param(proxy_service._REQUEST_TRANSPORT_HTTP, id="http-bridge"),
+        pytest.param(proxy_service._REQUEST_TRANSPORT_WEBSOCKET, id="websocket-bridge"),
+    ],
+)
+def test_prepare_response_bridge_preserves_namespaced_agent_control_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+    transport: str,
+):
+    agent_function_output = "agent-function-result:" + ("f" * (33 * 1024))
+    agent_custom_output = "agent-custom-result:" + ("c" * (33 * 1024))
+    unrelated_custom_output = "unrelated-custom-result:" + ("u" * (33 * 1024))
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "",
+            "input": [
+                {
+                    "type": "function_call",
+                    "namespace": "multi_agent_v1",
+                    "name": "wait_agent",
+                    "call_id": "call_agent_function",
+                    "arguments": '{"timeout_ms":120000}',
+                },
+                {"type": "function_call_output", "call_id": "call_agent_function", "output": agent_function_output},
+                {
+                    "type": "custom_tool_call",
+                    "namespace": "collaboration",
+                    "name": "wait_agent",
+                    "call_id": "call_agent_custom",
+                    "input": '{"timeout_ms":120000}',
+                },
+                {"type": "custom_tool_call_output", "call_id": "call_agent_custom", "output": agent_custom_output},
+                {
+                    "type": "custom_tool_call",
+                    "namespace": "unrelated_namespace",
+                    "name": "wait_agent",
+                    "call_id": "call_unrelated_custom",
+                    "input": "{}",
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_unrelated_custom",
+                    "output": unrelated_custom_output,
+                },
+                {"role": "user", "content": "continue"},
+            ],
+        }
+    )
+    monkeypatch.setattr(proxy_http_bridge_request_submit, "_upstream_response_create_max_bytes", lambda: 256)
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+
+    _, text_data = service._prepare_response_bridge_request_state(
+        payload,
+        api_key=None,
+        api_key_reservation=None,
+        include_type_field=True,
+        attach_event_queue=False,
+        transport=transport,
+        client_metadata=None,
+    )
+
+    upstream_input = json.loads(text_data)["input"]
+    assert upstream_input[0]["namespace"] == "multi_agent_v1"
+    assert upstream_input[2]["namespace"] == "collaboration"
+    assert upstream_input[1]["output"] == agent_function_output
+    assert upstream_input[3]["output"] == agent_custom_output
+    assert upstream_input[5]["output"] == _agent_control_omission_notice(unrelated_custom_output)
+
+
+def test_response_create_text_with_size_guard_preserves_namespaced_agent_control_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    agent_wait_output = "agent-wait-result:" + ("a" * (33 * 1024))
+    shell_output = "shell-result:" + ("s" * (33 * 1024))
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "",
+            "input": [
+                {
+                    "type": "function_call",
+                    "namespace": "multi_agent_v1",
+                    "name": "wait_agent",
+                    "call_id": "call_agent_wait",
+                    "arguments": '{"timeout_ms":120000}',
+                },
+                {"type": "function_call_output", "call_id": "call_agent_wait", "output": agent_wait_output},
+                {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": "call_shell",
+                    "arguments": '{"cmd":"cat large-log"}',
+                },
+                {"type": "function_call_output", "call_id": "call_shell", "output": shell_output},
+                {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+            ],
+        }
+    )
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req_ws_fresh_resend_agent",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=1.0,
+        transport=proxy_service._REQUEST_TRANSPORT_WEBSOCKET,
+    )
+    monkeypatch.setattr(proxy_service, "_UPSTREAM_RESPONSE_CREATE_MAX_BYTES", 40 * 1024, raising=False)
+
+    text_data = proxy_service._response_create_text_with_size_guard(
+        payload,
+        include_type_field=True,
+        client_metadata=None,
+        request_state=request_state,
+        transport=proxy_service._REQUEST_TRANSPORT_WEBSOCKET,
+    )
+
+    assert text_data is not None
+    upstream_input = json.loads(text_data)["input"]
+    assert upstream_input[0]["namespace"] == "multi_agent_v1"
+    assert upstream_input[1]["output"] == agent_wait_output
+    assert upstream_input[3]["output"] == _agent_control_omission_notice(shell_output)
+
+
+@pytest.mark.parametrize(
+    "transport",
+    [
+        pytest.param(proxy_service._REQUEST_TRANSPORT_HTTP, id="http-bridge"),
+        pytest.param(proxy_service._REQUEST_TRANSPORT_WEBSOCKET, id="websocket-bridge"),
+    ],
+)
+def test_prepare_response_bridge_recent_namespaced_call_does_not_protect_historical_output(
+    monkeypatch: pytest.MonkeyPatch,
+    transport: str,
+):
+    reused_historical_output = "reused-historical-result:" + ("r" * (33 * 1024))
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "",
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_reused",
+                    "output": reused_historical_output,
+                },
+                {"role": "user", "content": "continue"},
+                {
+                    "type": "custom_tool_call",
+                    "namespace": "collaboration",
+                    "name": "wait_agent",
+                    "call_id": "call_reused",
+                    "input": "{}",
+                },
+            ],
+        }
+    )
+    monkeypatch.setattr(proxy_http_bridge_request_submit, "_upstream_response_create_max_bytes", lambda: 256)
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+
+    _, text_data = service._prepare_response_bridge_request_state(
+        payload,
+        api_key=None,
+        api_key_reservation=None,
+        include_type_field=True,
+        attach_event_queue=False,
+        transport=transport,
+        client_metadata=None,
+    )
+
+    upstream_input = json.loads(text_data)["input"]
+    assert upstream_input[2]["namespace"] == "collaboration"
+    assert upstream_input[0]["output"] == _agent_control_omission_notice(reused_historical_output)
+
+
+@pytest.mark.parametrize(
+    "transport",
+    [
+        pytest.param(proxy_service._REQUEST_TRANSPORT_HTTP, id="http-bridge"),
+        pytest.param(proxy_service._REQUEST_TRANSPORT_WEBSOCKET, id="websocket-bridge"),
+    ],
+)
+def test_prepare_response_bridge_pairs_two_pending_same_protocol_calls_lifo(
+    monkeypatch: pytest.MonkeyPatch,
+    transport: str,
+):
+    first_output = "first-pending-result:" + ("f" * (33 * 1024))
+    second_output = "second-pending-result:" + ("s" * (33 * 1024))
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "",
+            "input": [
+                {
+                    "type": "function_call",
+                    "namespace": "multi_agent_v1",
+                    "name": "wait_agent",
+                    "call_id": "call_reused",
+                    "arguments": '{"timeout_ms":120000}',
+                },
+                {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": "call_reused",
+                    "arguments": '{"cmd":"cat large-log"}',
+                },
+                {"type": "function_call_output", "call_id": "call_reused", "output": first_output},
+                {"type": "function_call_output", "call_id": "call_reused", "output": second_output},
+                {"role": "user", "content": "continue"},
+            ],
+        }
+    )
+    monkeypatch.setattr(proxy_http_bridge_request_submit, "_upstream_response_create_max_bytes", lambda: 256)
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+
+    _, text_data = service._prepare_response_bridge_request_state(
+        payload,
+        api_key=None,
+        api_key_reservation=None,
+        include_type_field=True,
+        attach_event_queue=False,
+        transport=transport,
+        client_metadata=None,
+    )
+
+    upstream_input = json.loads(text_data)["input"]
+    assert upstream_input[0]["namespace"] == "multi_agent_v1"
+    assert upstream_input[2]["output"] == _agent_control_omission_notice(first_output)
+    assert upstream_input[3]["output"] == second_output
+
+
+@pytest.mark.parametrize(
+    "transport",
+    [
+        pytest.param(proxy_service._REQUEST_TRANSPORT_HTTP, id="http-bridge"),
+        pytest.param(proxy_service._REQUEST_TRANSPORT_WEBSOCKET, id="websocket-bridge"),
+    ],
+)
+def test_prepare_response_bridge_orphan_output_does_not_consume_namespaced_pairing(
+    monkeypatch: pytest.MonkeyPatch,
+    transport: str,
+):
+    shell_output = "shell-result:" + ("s" * (33 * 1024))
+    agent_wait_output = "agent-wait-result:" + ("a" * (33 * 1024))
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.1",
+            "instructions": "",
+            "input": [
+                {"type": "function_call_output", "call_id": "call_reused", "output": shell_output},
+                {
+                    "type": "function_call",
+                    "namespace": "multi_agent_v1",
+                    "name": "wait_agent",
+                    "call_id": "call_reused",
+                    "arguments": '{"timeout_ms":120000}',
+                },
+                {"type": "function_call_output", "call_id": "call_reused", "output": agent_wait_output},
+                {"role": "user", "content": "continue"},
+            ],
+        }
+    )
+    monkeypatch.setattr(proxy_http_bridge_request_submit, "_upstream_response_create_max_bytes", lambda: 256)
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+
+    _, text_data = service._prepare_response_bridge_request_state(
+        payload,
+        api_key=None,
+        api_key_reservation=None,
+        include_type_field=True,
+        attach_event_queue=False,
+        transport=transport,
+        client_metadata=None,
+    )
+
+    upstream_input = json.loads(text_data)["input"]
+    assert upstream_input[1]["namespace"] == "multi_agent_v1"
+    assert upstream_input[0]["output"] == _agent_control_omission_notice(shell_output)
+    assert upstream_input[2]["output"] == agent_wait_output
+
+
 def test_slim_response_create_ignores_malformed_unhashable_item_type():
     malformed_type: list[JsonValue] = []
     payload: dict[str, JsonValue] = {
