@@ -130,6 +130,7 @@ from app.core.types import JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
 from app.core.utils.json_guards import is_json_list, is_json_mapping
 from app.core.utils.request_id import get_request_id
+from app.core.utils.shared_future import _await_cleanup_deferring_cancellation
 from app.core.utils.sse import (
     CODEX_KEEPALIVE_FRAME,
     SSE_KEEPALIVE_FRAME,
@@ -2282,6 +2283,12 @@ async def v1_images_variations(
     )
 
 
+async def _aclose_stream(stream: object) -> None:
+    aclose = getattr(stream, "aclose", None)
+    if aclose is not None:
+        await aclose()
+
+
 async def _prime_upstream_stream(
     request: Request,
     upstream: AsyncIterator[str],
@@ -2295,15 +2302,32 @@ async def _prime_upstream_stream(
 
     Returns ``(primed_iterator, None)`` on success, where the returned
     iterator yields the captured first chunk followed by the rest of
-    ``upstream``. Returns ``(None, error_response)`` when the upstream
-    raised before yielding anything; in that case ``on_error`` is called
-    so the caller can release reservations.
+    ``upstream``. A pre-yield ``ProxyResponseError`` returns a structured
+    response. Cancellation closes ``upstream``, runs ``on_error`` when
+    provided, and then propagates the original ``CancelledError``.
     """
     iterator = upstream.__aiter__()
     try:
         first_chunk = await iterator.__anext__()
     except StopAsyncIteration:
         first_chunk = None
+    except asyncio.CancelledError:
+        try:
+            await _await_cleanup_deferring_cancellation(_aclose_stream(iterator))
+        except BaseException as exc:
+            logger.warning(
+                "Failed to close Images upstream stream after first-frame termination",
+                exc_info=exc,
+            )
+        if on_error is not None:
+            try:
+                await _await_cleanup_deferring_cancellation(on_error())
+            except BaseException as exc:
+                logger.warning(
+                    "Failed to run Images first-frame termination cleanup",
+                    exc_info=exc,
+                )
+        raise
     except ProxyResponseError as exc:
         if on_error is not None:
             await on_error()
