@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from json import JSONDecodeError
-from typing import Any, Final, Literal, Protocol, cast
+from typing import Any, Final, Literal, Protocol, TypeVar, cast
 from uuid import uuid4
 
 import anyio
@@ -130,7 +130,12 @@ from app.core.types import JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
 from app.core.utils.json_guards import is_json_list, is_json_mapping
 from app.core.utils.request_id import get_request_id
-from app.core.utils.shared_future import _await_cleanup_deferring_cancellation
+from app.core.utils.shared_future import (
+    _await_cleanup_deferring_cancellation as _shared_await_cleanup_deferring_cancellation,
+)
+from app.core.utils.shared_future import (
+    _await_result_deferring_cancellation as _shared_await_result_deferring_cancellation,
+)
 from app.core.utils.sse import (
     CODEX_KEEPALIVE_FRAME,
     SSE_KEEPALIVE_FRAME,
@@ -2283,6 +2288,28 @@ async def v1_images_variations(
     )
 
 
+async def _release_reservation_deferring_cancellation(
+    reservation: ApiKeyUsageReservationData,
+) -> None:
+    await _await_cleanup_deferring_cancellation(_release_reservation(reservation))
+
+
+_T = TypeVar("_T")
+
+
+async def _await_result_deferring_cancellation(awaitable: Awaitable[_T]) -> tuple[_T, bool]:
+    """Finish an owned awaitable despite repeated cancellation and report whether cancellation arrived."""
+
+    result, cancellation = await _shared_await_result_deferring_cancellation(awaitable)
+    return result, cancellation is not None
+
+
+async def _await_cleanup_deferring_cancellation(awaitable: Awaitable[object]) -> None:
+    """Finish a required cleanup operation despite repeated cancellation delivery."""
+
+    await _shared_await_cleanup_deferring_cancellation(awaitable)
+
+
 async def _aclose_stream(stream: object) -> None:
     aclose = getattr(stream, "aclose", None)
     if aclose is not None:
@@ -4084,6 +4111,27 @@ async def _transcribe_request(
         request_service_tier=None,
     )
     rate_limit_headers = await _rate_limit_headers_with_reservation_cleanup(context, api_key, reservation)
+    cancellation_handled = False
+
+    async def release_reservation() -> bool:
+        async def attempt_release() -> BaseException | None:
+            try:
+                await _release_reservation(reservation)
+            except BaseException as exc:
+                return exc
+            return None
+
+        release_exc, cancellation_deferred = await _await_result_deferring_cancellation(attempt_release())
+        if release_exc is not None:
+            if not cancellation_deferred:
+                raise release_exc
+            logger.warning(
+                "Failed to release subscription transcription reservation after request cancellation model=%s",
+                _TRANSCRIPTION_MODEL,
+                exc_info=release_exc,
+            )
+        return cancellation_deferred
+
     try:
         result = await context.service.transcribe(
             audio_bytes=multipart.audio_bytes,
@@ -4093,6 +4141,21 @@ async def _transcribe_request(
             headers=request.headers,
             api_key=api_key,
         )
+    except asyncio.CancelledError:
+        cancellation_handled = True
+        release_exc: BaseException | None = None
+        if reservation is not None:
+            try:
+                await _release_reservation_deferring_cancellation(reservation)
+            except BaseException as exc:
+                release_exc = exc
+        if release_exc is not None:
+            logger.warning(
+                "Failed to release subscription transcription reservation after request cancellation model=%s",
+                _TRANSCRIPTION_MODEL,
+                exc_info=release_exc,
+            )
+        raise
     except ProxyResponseError as exc:
         error = _parse_error_envelope(exc.payload)
         return _logged_error_json_response(
@@ -4102,7 +4165,8 @@ async def _transcribe_request(
             headers=rate_limit_headers,
         )
     finally:
-        await _release_reservation(reservation)
+        if not cancellation_handled and await release_reservation():
+            raise asyncio.CancelledError
     return JSONResponse(content=result, headers=rate_limit_headers)
 
 
