@@ -1,19 +1,19 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import AsyncMock
+from urllib.parse import parse_qs, urlparse
 import asyncio
 import base64
 import json
 import logging
 import time
-from types import SimpleNamespace
-from typing import Any, cast
-from unittest.mock import AsyncMock
-from urllib.parse import parse_qs, urlparse
 
-import pytest
 from fastapi.responses import JSONResponse
+import pytest
 
-import app.modules.oauth.service as oauth_module
+from aiohttp import ClientSession, web
 from app.core.auth import generate_unique_account_id
 from app.core.clients.oauth import DeviceCode, OAuthError, OAuthTokens
 from app.core.crypto import TokenEncryptor
@@ -24,6 +24,7 @@ from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.oauth import api as oauth_api_module
 from app.modules.oauth.schemas import ManualCallbackRequest
+import app.modules.oauth.service as oauth_module
 
 pytestmark = pytest.mark.integration
 
@@ -814,7 +815,34 @@ async def test_only_expired_pending_browser_flow_no_longer_keeps_callback_server
         assert oauth_module._OAUTH_STORE._flows == {}
         assert oauth_module._OAUTH_STORE.state.status == "idle"
 
+@pytest.mark.asyncio
+async def test_callback_access_log_omits_code_and_state(caplog, unused_tcp_port):
+    code_secret = "CALLBACK_CODE_SECRET"
+    state_secret = "CALLBACK_STATE_SECRET"
 
+    async def handler(request: web.Request) -> web.StreamResponse:
+        assert request.query["code"] == code_secret
+        assert request.query["state"] == state_secret
+        return web.Response(text="callback accepted")
+
+    caplog.set_level(logging.INFO, logger="aiohttp.access")
+    server = oauth_module.OAuthCallbackServer(handler, port=unused_tcp_port)
+    await server.start()
+    try:
+        async with ClientSession() as client:
+            async with client.get(
+                f"http://127.0.0.1:{unused_tcp_port}/auth/callback",
+                params={"code": code_secret, "state": state_secret},
+            ) as response:
+                status = response.status
+                body = await response.text()
+    finally:
+        await server.stop()
+
+    assert status == 200
+    assert body == "callback accepted"
+    assert code_secret not in caplog.text
+    assert state_secret not in caplog.text
 @pytest.mark.asyncio
 async def test_callback_server_remains_reserved_until_stop_completes():
     await oauth_module._OAUTH_STORE.reset()
