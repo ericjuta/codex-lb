@@ -197,7 +197,13 @@
       "type": "object"
     },
     "config": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "logFormat": {
+          "type": "string",
+          "enum": ["text", "json"]
+        }
+      }
     },
     "podSecurityContext": {
       "type": "object"
