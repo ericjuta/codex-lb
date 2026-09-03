@@ -370,7 +370,10 @@ def test_postgres_connect_args_pin_session_timezone_to_utc(monkeypatch) -> None:
 
     connect_args = session_module._postgres_async_connect_args("postgresql+asyncpg://u:p@h/db")
 
-    assert connect_args == {"server_settings": {"timezone": "UTC"}}
+    assert connect_args == {
+        "server_settings": {"timezone": "UTC"},
+        "command_timeout": session_module._POSTGRES_COMMAND_TIMEOUT_SECONDS,
+    }
 
 
 def test_postgres_connect_args_pin_utc_and_keep_test_db_url_tuning(monkeypatch) -> None:
@@ -380,6 +383,7 @@ def test_postgres_connect_args_pin_utc_and_keep_test_db_url_tuning(monkeypatch) 
 
     assert connect_args == {
         "server_settings": {"timezone": "UTC"},
+        "command_timeout": session_module._POSTGRES_COMMAND_TIMEOUT_SECONDS,
         "prepared_statement_cache_size": 0,
     }
 
@@ -398,7 +402,10 @@ def test_postgres_engine_kwargs_forward_utc_connect_args(monkeypatch) -> None:
 
     kwargs = session_module._postgres_async_engine_kwargs("postgresql+asyncpg://u:p@h/db", background=False)
 
-    assert kwargs["connect_args"] == {"server_settings": {"timezone": "UTC"}}
+    assert kwargs["connect_args"] == {
+        "server_settings": {"timezone": "UTC"},
+        "command_timeout": session_module._POSTGRES_COMMAND_TIMEOUT_SECONDS,
+    }
 
 
 @pytest.mark.asyncio
