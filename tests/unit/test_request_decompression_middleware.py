@@ -13,19 +13,12 @@ from fastapi.responses import Response
 from httpx import ASGITransport, AsyncClient
 from starlette.requests import ClientDisconnect
 
+import app.core.middleware.request_decompression as request_decompression_module
 from app.core.middleware.request_body_limit import add_request_body_limit_middleware
 from app.core.middleware.request_decompression import add_request_decompression_middleware
 
 pytestmark = pytest.mark.unit
 
-_Dispatch = Callable[[Request, Callable[[Request], Awaitable[Response]]], Awaitable[Response]]
-
-
-import asyncio
-from starlette.types import Message, Receive, Scope, Send
-import app.core.middleware.request_decompression as request_decompression_module
-
-pytestmark = pytest.mark.unit
 _Dispatch = Callable[[Request, Callable[[Request], Awaitable[Response]]], Awaitable[Response]]
 
 

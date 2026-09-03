@@ -1,19 +1,20 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any, cast
-from unittest.mock import AsyncMock
-from urllib.parse import parse_qs, urlparse
 import asyncio
 import base64
 import json
 import logging
 import time
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import AsyncMock
+from urllib.parse import parse_qs, urlparse
 
-from fastapi.responses import JSONResponse
 import pytest
-
 from aiohttp import ClientSession, web
+from fastapi.responses import JSONResponse
+
+import app.modules.oauth.service as oauth_module
 from app.core.auth import generate_unique_account_id
 from app.core.clients.oauth import DeviceCode, OAuthError, OAuthTokens
 from app.core.crypto import TokenEncryptor
@@ -24,7 +25,6 @@ from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.oauth import api as oauth_api_module
 from app.modules.oauth.schemas import ManualCallbackRequest
-import app.modules.oauth.service as oauth_module
 
 pytestmark = pytest.mark.integration
 
