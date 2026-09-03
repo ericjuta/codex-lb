@@ -60,6 +60,12 @@ from app.core.openai.requests import (
 from app.core.resilience.overload import local_overload_error
 from app.core.types import JsonValue
 from app.core.utils.request_id import get_request_id
+from app.core.utils.shared_future import (
+    _await_task_deferring_cancellation as _shared_await_task_deferring_cancellation,
+)
+from app.core.utils.shared_future import (
+    wait_on_shared_future,
+)
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
 from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import (
@@ -697,8 +703,8 @@ async def _close_http_bridge_session_bounded(
         close_task.add_done_callback(close_done)
 
     try:
-        await asyncio.wait_for(
-            asyncio.shield(close_task),
+        await wait_on_shared_future(
+            close_task,
             timeout=_HTTP_BRIDGE_BACKGROUND_CLOSE_TIMEOUT_SECONDS,
         )
     except TimeoutError:
@@ -2017,12 +2023,4 @@ async def _await_task_deferring_cancellation(
     task: asyncio.Task[T],
 ) -> tuple[T, asyncio.CancelledError | None]:
     """Finish critical cleanup while preserving the caller's cancellation."""
-
-    cancellation: asyncio.CancelledError | None = None
-    while True:
-        try:
-            return await asyncio.shield(task), cancellation
-        except asyncio.CancelledError as exc:
-            if task.cancelled():
-                raise
-            cancellation = cancellation or exc
+    return await _shared_await_task_deferring_cancellation(task)
