@@ -57,7 +57,13 @@ class ModelRegistrySnapshot:
     suppressed_model_slugs: frozenset[str] = field(default_factory=frozenset)
 
 
-_BOOTSTRAP_WEBSOCKET_PREFERRED_MODEL_PATTERNS = ("gpt-5.5", "gpt-5.5-*", "gpt-5.4", "gpt-5.4-*")
+_BOOTSTRAP_WEBSOCKET_PREFERRED_MODEL_PATTERNS = (
+    "gpt-6-*",
+    "gpt-5.5",
+    "gpt-5.5-*",
+    "gpt-5.4",
+    "gpt-5.4-*",
+)
 
 _REASONING_LEVELS_STANDARD = (
     ReasoningLevel(effort="low", description="Low reasoning effort"),
@@ -70,6 +76,19 @@ _REASONING_LEVELS_EXTENDED = (
     ReasoningLevel(effort="medium", description="Medium reasoning effort"),
     ReasoningLevel(effort="high", description="High reasoning effort"),
     ReasoningLevel(effort="xhigh", description="Extra high reasoning effort"),
+)
+
+_REASONING_LEVELS_MAX = (
+    ReasoningLevel(effort="low", description="Fast responses with lighter reasoning"),
+    ReasoningLevel(effort="medium", description="Balances speed and reasoning depth for everyday tasks"),
+    ReasoningLevel(effort="high", description="Greater reasoning depth for complex problems"),
+    ReasoningLevel(effort="xhigh", description="Extra high reasoning depth for complex problems"),
+    ReasoningLevel(effort="max", description="Maximum reasoning depth for the hardest problems"),
+)
+
+_REASONING_LEVELS_ULTRA = (
+    *_REASONING_LEVELS_MAX,
+    ReasoningLevel(effort="ultra", description="Maximum reasoning with automatic task delegation"),
 )
 
 _BOOTSTRAP_AVAILABLE_IN_PLANS = frozenset(
@@ -98,6 +117,34 @@ _BOOTSTRAP_CORE_AVAILABLE_IN_PLANS = frozenset(
     plan for plan in _BOOTSTRAP_AVAILABLE_IN_PLANS if plan not in {"free", "free_workspace", "k12"}
 )
 
+_BOOTSTRAP_GPT6_ASTRA_AVAILABLE_IN_PLANS = frozenset(
+    {
+        "business",
+        "edu",
+        "edu_plus",
+        "edu_pro",
+        "education",
+        "enterprise",
+        "enterprise_cbp_automation",
+        "enterprise_cbp_trial",
+        "enterprise_cbp_usage_based",
+        "finserv",
+        "free",
+        "free_workspace",
+        "go",
+        "hc",
+        "k12",
+        "plus",
+        "pro",
+        "prolite",
+        "quorum",
+        "sci",
+        "self_serve_business_prolite",
+        "self_serve_business_usage_based",
+        "team",
+    }
+)
+
 
 def _bootstrap_model(
     slug: str,
@@ -105,6 +152,7 @@ def _bootstrap_model(
     *,
     prefer_websockets: bool,
     minimal_client_version: str | None,
+    description: str | None = None,
     reasoning_levels: tuple[ReasoningLevel, ...] = _REASONING_LEVELS_EXTENDED,
     context_window: int = 272_000,
     input_modalities: tuple[str, ...] = ("text", "image"),
@@ -114,6 +162,7 @@ def _bootstrap_model(
     available_in_plans: frozenset[str] = _BOOTSTRAP_AVAILABLE_IN_PLANS,
     visibility: str = "list",
     shell_type: str = "shell_command",
+    priority: int = 0,
     raw: dict[str, JsonValue] | None = None,
 ) -> UpstreamModel:
     raw_fields: dict[str, JsonValue] = {
@@ -129,7 +178,7 @@ def _bootstrap_model(
     return UpstreamModel(
         slug=slug,
         display_name=display_name,
-        description=display_name,
+        description=description or display_name,
         context_window=context_window,
         input_modalities=input_modalities,
         supported_reasoning_levels=reasoning_levels,
@@ -141,10 +190,54 @@ def _bootstrap_model(
         supports_parallel_tool_calls=True,
         supported_in_api=supported_in_api,
         minimal_client_version=minimal_client_version,
-        priority=0,
+        priority=priority,
         available_in_plans=available_in_plans,
         raw=raw_fields,
     )
+
+
+def _gpt6_astra_raw() -> dict[str, JsonValue]:
+    """Raw catalog fields captured from the upstream live proxy on 2026-09-05.
+
+    The large instruction payload is intentionally not bundled; live upstream
+    registry refresh remains authoritative when available.
+    """
+    return {
+        "apply_patch_tool_type": "freeform",
+        "web_search_tool_type": "text_and_image",
+        "supports_image_detail_original": True,
+        "truncation_policy": {"mode": "tokens", "limit": 10_000},
+        "experimental_supported_tools": ["send_user_message_async", "clock"],
+        "tool_mode": "code_mode_only",
+        "multi_agent_version": "v2",
+        "multi_agent_reasoning_effort": "xhigh",
+        "use_responses_lite": True,
+        "include_skills_usage_instructions": False,
+        "include_apps_usage_instructions": False,
+        "include_plugin_usage_instructions": False,
+        "node_repl_auto_review_required": True,
+        "node_repl_disabled": False,
+        "requires_sandboxed_review": False,
+        "auto_review_model_override": None,
+        "model_specialty": None,
+        "max_context_window": 872_000,
+        "auto_compact_token_limit": None,
+        "comp_hash": "3000",
+        "default_reasoning_summary": "none",
+        "availability_nux": None,
+        "upgrade": None,
+        "supports_search_tool": True,
+        "default_service_tier": "priority",
+        "service_tiers": [
+            {
+                "id": "priority",
+                "name": "Fast",
+                "description": "2x speed, increased usage",
+            }
+        ],
+        "additional_speed_tiers": ["fast"],
+        "supports_reasoning_summary_parameter": True,
+    }
 
 
 # Static bundled fallback models used before the first upstream registry refresh.
@@ -154,6 +247,19 @@ def _bootstrap_model(
 # explicit rather than inherited from helper defaults; every slug must exist
 # upstream, and live upstream data always takes precedence once available.
 _BOOTSTRAP_STATIC_MODELS: tuple[UpstreamModel, ...] = (
+    _bootstrap_model(
+        "gpt-6-astra",
+        "GPT-6-Astra",
+        description="Our most capable model for complex, demanding work.",
+        prefer_websockets=True,
+        minimal_client_version="0.153.0",
+        reasoning_levels=_REASONING_LEVELS_ULTRA,
+        context_window=272_000,
+        default_reasoning_level="medium",
+        priority=1,
+        available_in_plans=_BOOTSTRAP_GPT6_ASTRA_AVAILABLE_IN_PLANS,
+        raw=_gpt6_astra_raw(),
+    ),
     _bootstrap_model(
         "gpt-5.6-sol",
         "GPT-5.6-Sol",

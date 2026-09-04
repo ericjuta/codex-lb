@@ -294,7 +294,9 @@ class Settings(BaseSettings):
     # cap is lifted in the same change that introduces fan-out.
     model_registry_enabled: bool = True
     model_registry_refresh_interval_seconds: int = Field(default=300, gt=0)
-    model_registry_client_version: str = "0.101.0"
+    # Fallback Codex client version used when live release lookup fails. Keep it
+    # at least as new as the highest bootstrap model's minimum client version.
+    model_registry_client_version: str = "0.153.0"
     codex_fingerprint_os: str = "Mac OS 26.5.0"
     codex_fingerprint_arch: str = "arm64"
     codex_fingerprint_terminal: str = "iTerm.app/3.6.10"

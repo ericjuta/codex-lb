@@ -41,12 +41,13 @@ _ALLOW_NATIVE_TOOL_TYPES_CONTEXT = {ALLOW_NATIVE_TOOL_TYPES_CONTEXT_KEY: True}
 _UNSUPPORTED_UPSTREAM_REASONING_EFFORTS: frozenset[str] = frozenset({"minimal"})
 _DEFAULT_REASONING_EFFORT_FALLBACK = "low"
 
-# Cursor exposes GPT-5 family model labels with UI suffixes such as "Extra
-# High Fast". The ChatGPT/Codex upstream accepts the canonical GPT-5-family
-# slug plus request fields, not those synthetic suffixes in the model name.
-# Keep this deliberately narrow: only strip known Cursor-style suffix tokens
-# from known GPT-5 base model slugs, and leave every other model untouched.
+# Cursor exposes GPT family model labels with UI suffixes such as "Extra High
+# Fast". The ChatGPT/Codex upstream accepts the canonical GPT-family slug plus
+# request fields, not those synthetic suffixes in the model name. Keep this
+# deliberately narrow: only strip known Cursor-style suffix tokens from known
+# GPT base model slugs, and leave every other model untouched.
 _GPT5_ALIAS_BASE_MODELS: tuple[str, ...] = (
+    "gpt-6-astra",
     "gpt-5.4-mini",
     "gpt-5.3-codex",
     "gpt-5.2-codex",

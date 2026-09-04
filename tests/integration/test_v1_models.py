@@ -9,6 +9,7 @@ from app.core.types import JsonValue
 pytestmark = pytest.mark.integration
 
 BOOTSTRAP_MODEL_SLUGS = {
+    "gpt-6-astra",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -39,6 +40,7 @@ EXPECTED_CORE_MODEL_PLANS = {
 }
 
 EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS = {
+    "gpt-6-astra": "0.153.0",
     "gpt-5.6-sol": "0.144.0",
     "gpt-5.6-terra": "0.144.0",
     "gpt-5.6-luna": "0.144.0",
@@ -183,6 +185,14 @@ async def test_v1_models_uses_bootstrap_models_when_registry_not_populated(async
     assert ids == BOOTSTRAP_MODEL_SLUGS
     assert "gpt-5.5-pro" not in ids
 
+    entries = {item["id"]: item for item in payload["data"]}
+    astra = entries["gpt-6-astra"]
+    assert astra["metadata"]["context_window"] == 272_000
+    assert astra["metadata"]["input_context_window"] == 272_000
+    assert astra["capabilities"]["context_length"] == 272_000
+    assert astra["context_length"] == 272_000
+    assert astra["contextLength"] == 272_000
+
 
 @pytest.mark.asyncio
 async def test_backend_codex_models_uses_bootstrap_upstream_metadata(async_client):
@@ -200,6 +210,27 @@ async def test_backend_codex_models_uses_bootstrap_upstream_metadata(async_clien
         assert isinstance(entries[slug]["experimental_supported_tools"], list)
         assert entries[slug]["truncation_policy"]["mode"] in {"bytes", "tokens"}
         assert isinstance(entries[slug]["truncation_policy"]["limit"], int)
+
+    astra = entries["gpt-6-astra"]
+    assert astra["display_name"] == "GPT-6-Astra"
+    assert astra["context_window"] == 272_000
+    assert astra["max_context_window"] == 872_000
+    assert astra["default_reasoning_level"] == "medium"
+    assert {level["effort"] for level in astra["supported_reasoning_levels"]} == {
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    }
+    assert astra["prefer_websockets"] is True
+    assert astra["tool_mode"] == "code_mode_only"
+    assert astra["multi_agent_version"] == "v2"
+    assert astra["use_responses_lite"] is True
+    assert astra["default_service_tier"] == "priority"
+    assert astra["service_tiers"] == [{"id": "priority", "name": "Fast", "description": "2x speed, increased usage"}]
+    assert astra["additional_speed_tiers"] == ["fast"]
 
     for slug, multi_agent_version in EXPECTED_BOOTSTRAP_GPT_5_6_CAPABILITIES.items():
         entry = entries[slug]
