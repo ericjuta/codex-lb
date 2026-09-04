@@ -10,6 +10,7 @@ metadata, and Cursor-style model label normalization.
 **Goals:**
 
 - Teach bootstrap model discovery about `gpt-6-astra` with the captured upstream metadata.
+- Expose Astra's documented output limit through the OpenAI-compatible model projection.
 - Price `gpt-6-astra` requests consistently across standard, Priority/Fast, Flex/Batch, and long-context paths.
 - Normalize known suffix labels for `gpt-6-astra` through the existing request-policy path.
 
@@ -22,7 +23,8 @@ metadata, and Cursor-style model label normalization.
 ## Decisions
 
 - Mirror the GPT-5.6 bootstrap helper shape for Astra. This keeps Codex-native metadata behavior uniform and avoids a parallel catalog path.
-- Add explicit per-tier prices instead of multipliers. The provided rates include a distinct long-context output rate and match the existing `ModelPrice` shape.
+- Add explicit per-tier prices instead of model-name conditionals. The provided rates include distinct long-context output rates.
+- Keep the 128K output limit in the existing bounded compatibility override table; the Codex-native catalog remains unchanged.
 - Add `gpt-6` as a bare-family price alias because `gpt-5.6` already maps to its flagship personality; do not add a bootstrap `gpt-6` catalog slug.
 - Add `gpt-6-astra` to the existing suffix-normalization base list. The suffix vocabulary remains unchanged and deliberately does not add `max` or `ultra` model-name suffixes.
 

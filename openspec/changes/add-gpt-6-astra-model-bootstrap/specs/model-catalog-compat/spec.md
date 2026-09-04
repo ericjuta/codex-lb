@@ -6,41 +6,26 @@ Before the first successful upstream model-registry refresh, the system MUST
 serve a conservative static catalog of known Codex model slugs from both
 `GET /v1/models` and `GET /backend-api/codex/models`. This static catalog is a
 bundled fallback for startup/offline paths; refreshed upstream model-registry
-data remains the authoritative source once available. A replica that starts
-while a fresh persisted registry snapshot exists SHALL serve the persisted
-catalog (not the bootstrap catalog) before its first scheduler tick; the
-bootstrap catalog remains the floor only when no persisted or refreshed
-snapshot is available. The bootstrap catalog MUST include `gpt-6-astra`,
-`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`,
-`gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.2`, and
-`codex-auto-review`, and MUST NOT invent unverified variant slugs such as
-`gpt-5.5-pro`, a bare `gpt-5.6`, or a bare `gpt-6`. `gpt-5.3-codex` and
-`gpt-5.3-codex-spark` were dropped from upstream's bundled catalog at codex
-rust-v0.144.x but remain retained for older pinned clients because the upstream
-backend still serves them.
+data remains the authoritative source once available. The bootstrap catalog MUST
+include `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
+`gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`,
+`gpt-5.3-codex-spark`, `gpt-5.2`, and `codex-auto-review`, and MUST NOT invent
+unverified variant slugs such as `gpt-5.5-pro`, a bare `gpt-5.6`, or a bare
+`gpt-6`.
 
 #### Scenario: OpenAI-compatible models endpoint serves bootstrap slugs
 
 - **GIVEN** the model registry has no refreshed upstream snapshot
-- **AND** no persisted registry snapshot is available
 - **WHEN** a client calls `GET /v1/models`
 - **THEN** the response contains exactly the bootstrap model slugs
 - **AND** the response includes `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`
 - **AND** the response does not include `gpt-5.5-pro`, bare `gpt-5.6`, or bare `gpt-6`
 
-#### Scenario: Codex-native models endpoint serves GPT-5.6 bootstrap metadata
+#### Scenario: Codex-native models endpoint serves bootstrap metadata
 
 - **GIVEN** the model registry has no refreshed upstream snapshot
 - **WHEN** a client calls `GET /backend-api/codex/models`
-- **THEN** the `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` entries include representative upstream metadata including context-window, visibility, speed-tier, and reasoning fields
-- **AND** Sol and Terra advertise `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`
-- **AND** Luna advertises `low`, `medium`, `high`, `xhigh`, and `max`
-
-#### Scenario: Replica startup with a fresh persisted snapshot serves the persisted catalog
-
-- **GIVEN** a fresh persisted registry snapshot exists whose catalog differs from the bootstrap catalog
-- **WHEN** a replica starts and a client calls `GET /v1/models` before the first refresh tick
-- **THEN** the response reflects the persisted catalog, not the bootstrap catalog
+- **THEN** `gpt-6-astra` and the existing bootstrap entries include representative upstream metadata for fields known to the bundled catalog
 
 ### Requirement: Fallback client version covers the bootstrap catalog
 
@@ -76,20 +61,27 @@ The `gpt-6-astra` entry MUST advertise reasoning levels `low`, `medium`,
 `high`, `xhigh`, `max`, and `ultra`, with default reasoning level `medium`.
 It MUST advertise every plan from the captured upstream entry, including
 `free`, `free_workspace`, `plus`, `pro`, `team`, `business`, and `enterprise`.
+The OpenAI-compatible model projection MUST report Astra's documented
+`max_output_tokens` value of `128000` without changing its input context budget.
 
 #### Scenario: GPT-6 Astra appears in bootstrap catalog before refresh
 
 - **GIVEN** the model registry has no refreshed upstream snapshot
-- **AND** no persisted snapshot is loaded
 - **WHEN** a client calls `GET /backend-api/codex/models`
 - **THEN** the response contains `gpt-6-astra`
 - **AND** that entry reports `context_window=272000` and `max_context_window=872000`
 - **AND** that entry reports `minimal_client_version="0.153.0"`
 
+#### Scenario: OpenAI-compatible Astra metadata exposes its output budget
+
+- **GIVEN** the model registry has no refreshed upstream snapshot
+- **WHEN** a client calls `GET /v1/models`
+- **THEN** the `gpt-6-astra` entry reports `max_output_tokens=128000` in its metadata and compatibility projections
+- **AND** its input context budget remains `272000`
+
 #### Scenario: GPT-6 Astra exposes upstream reasoning and service-tier metadata
 
 - **GIVEN** the model registry has no refreshed upstream snapshot
-- **AND** no persisted snapshot is loaded
 - **WHEN** a client calls `GET /backend-api/codex/models`
 - **THEN** `gpt-6-astra` advertises `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`
 - **AND** its default reasoning level is `medium`

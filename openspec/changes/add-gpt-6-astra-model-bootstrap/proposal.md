@@ -7,6 +7,7 @@ Without a bootstrap entry, startup/offline paths and policy checks can price or 
 ## What Changes
 
 - Add `gpt-6-astra` to the static model catalog with the upstream fields from the captured catalog entry.
+- Expose Astra's documented 128K output limit through the OpenAI-compatible model metadata.
 - Add `gpt-6-astra` pricing for standard, Priority/Fast, Flex/Batch, and long-context requests above 272K input tokens.
 - Add pricing aliases for `gpt-6-astra*` and the bare `gpt-6` family alias when the existing bare-family convention applies.
 - Add `gpt-6-astra` to Cursor-style model-label normalization so reasoning and fast suffixes map to request fields.
@@ -25,6 +26,6 @@ Without a bootstrap entry, startup/offline paths and policy checks can price or 
 
 ## Impact
 
-- Affected code: `app/core/openai/model_registry.py`, `app/core/usage/pricing.py`, `app/modules/proxy/request_policy.py`.
-- Affected tests: adjacent unit tests for pricing, model registry bootstrap metadata, and request-policy alias normalization.
+- Affected code: `app/core/openai/model_registry.py`, `app/core/usage/pricing.py`, `app/modules/proxy/api.py`, `app/modules/proxy/request_policy.py`.
+- Affected tests: pricing, model registry bootstrap metadata, OpenAI-compatible model metadata, and request-policy alias normalization.
 - No database schema change, live deployment, or user documentation change.

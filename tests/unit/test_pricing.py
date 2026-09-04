@@ -282,8 +282,8 @@ def test_calculate_cost_from_usage_gpt_family_service_tiers(
     ("model", "service_tier", "expected_cost"),
     [
         ("gpt-6-astra", None, 12.6),
-        ("gpt-6-astra", "priority", 15.1),
-        ("gpt-6-astra", "fast", 15.1),
+        ("gpt-6-astra", "priority", 25.2),
+        ("gpt-6-astra", "fast", 25.2),
         ("gpt-6-astra", "flex", 6.3),
         ("gpt-6-astra", "batch", 6.3),
         ("gpt-5.6-sol", "batch", 7.05),

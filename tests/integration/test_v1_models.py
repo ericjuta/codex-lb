@@ -189,9 +189,13 @@ async def test_v1_models_uses_bootstrap_models_when_registry_not_populated(async
     astra = entries["gpt-6-astra"]
     assert astra["metadata"]["context_window"] == 272_000
     assert astra["metadata"]["input_context_window"] == 272_000
+    assert astra["metadata"]["max_output_tokens"] == 128_000
     assert astra["capabilities"]["context_length"] == 272_000
+    assert astra["capabilities"]["max_output_tokens"] == 128_000
     assert astra["context_length"] == 272_000
     assert astra["contextLength"] == 272_000
+    assert astra["max_output_tokens"] == 128_000
+    assert astra["maxOutputTokens"] == 128_000
 
 
 @pytest.mark.asyncio

@@ -18,6 +18,9 @@ class ModelPrice:
     priority_input_per_1m: float | None = None
     priority_output_per_1m: float | None = None
     priority_cached_input_per_1m: float | None = None
+    priority_long_context_input_per_1m: float | None = None
+    priority_long_context_output_per_1m: float | None = None
+    priority_long_context_cached_input_per_1m: float | None = None
     flex_input_per_1m: float | None = None
     flex_output_per_1m: float | None = None
     flex_cached_input_per_1m: float | None = None
@@ -98,6 +101,9 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         priority_input_per_1m=20.0,
         priority_cached_input_per_1m=2.0,
         priority_output_per_1m=100.0,
+        priority_long_context_input_per_1m=40.0,
+        priority_long_context_cached_input_per_1m=4.0,
+        priority_long_context_output_per_1m=150.0,
         flex_input_per_1m=5.0,
         flex_cached_input_per_1m=0.5,
         flex_output_per_1m=25.0,
@@ -459,6 +465,21 @@ def _effective_rates(
     output_rate = price.output_per_1m
 
     if _uses_priority_tier(service_tier):
+        if (
+            is_long_context
+            and price.priority_long_context_input_per_1m is not None
+            and price.priority_long_context_output_per_1m is not None
+        ):
+            priority_cached = (
+                price.priority_long_context_cached_input_per_1m
+                if price.priority_long_context_cached_input_per_1m is not None
+                else price.priority_long_context_input_per_1m
+            )
+            return (
+                price.priority_long_context_input_per_1m,
+                priority_cached,
+                price.priority_long_context_output_per_1m,
+            )
         if price.priority_input_per_1m is not None and price.priority_output_per_1m is not None:
             priority_cached = (
                 price.priority_cached_input_per_1m

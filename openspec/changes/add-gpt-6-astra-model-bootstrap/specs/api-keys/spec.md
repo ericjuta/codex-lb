@@ -13,7 +13,7 @@ Priority/Fast requests MUST use `$20.00`, `$2.00`, and `$100.00` respectively.
 Flex/Batch requests MUST use `$5.00`, `$0.50`, and `$25.00` respectively.
 Requests above `272000` input tokens MUST apply long-context rates by service
 tier: standard uses `$20.00` input, `$2.00` cached input, and `$75.00` output;
-Priority/Fast uses `$20.00`, `$2.00`, and `$100.00`; Flex/Batch uses `$10.00`,
+Priority/Fast uses `$40.00`, `$4.00`, and `$150.00`; Flex/Batch uses `$10.00`,
 `$1.00`, and `$37.50`. Cache-write pricing is not represented until the pricing
 schema gains a cache-write field.
 
