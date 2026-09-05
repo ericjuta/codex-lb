@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import errno
 import socket
 from typing import Any, cast
@@ -24,6 +25,7 @@ from app.core.clients.proxy import (
 from app.core.clients.proxy_websocket import UpstreamWebSocketTransportError, connect_responses_websocket
 from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
 from app.core.upstream_proxy import ResolvedProxyEndpoint, ResolvedUpstreamRoute
+from app.core.utils.sse import parse_sse_data_json
 from tests.unit._proxy_test_helpers import runtime_basic_auth_url
 
 pytestmark = pytest.mark.unit
@@ -1063,3 +1065,226 @@ async def test_responses_websocket_post_connect_network_failures_preserve_safe_c
     assert "user:pass" not in message.error
     assert rotate.await_count == 2
     assert all(call.kwargs["transport"] == "websocket" for call in rotate.await_args_list)
+
+
+_SSE_CREATED_CHUNK = b'data: {"type":"response.created","response":{"id":"resp_1"}}\n\n'
+_SSE_COMPLETED_CHUNK = b'data: {"type":"response.completed","response":{"id":"resp_1"}}\n\n'
+
+
+def _assert_response_event(event: str, expected_type: str) -> None:
+    payload = parse_sse_data_json(event)
+    assert payload is not None
+    assert payload["type"] == expected_type
+    response = payload.get("response")
+    assert isinstance(response, dict)
+    assert response["id"] == "resp_1"
+
+
+async def _noop() -> None:
+    return None
+
+
+class _HoldingStreamContent:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+        self.drained = asyncio.Event()
+
+    async def iter_chunked(self, size: int):
+        del size
+        for chunk in self._chunks:
+            yield chunk
+        self.drained.set()
+        await asyncio.Event().wait()
+
+
+class _ReleasableStreamResponse:
+    headers = {"content-type": "text/event-stream"}
+
+    def __init__(self, order: list[str], chunks: list[bytes], *, status_code: int = 200) -> None:
+        self._order = order
+        self.status_code = status_code
+        self.content = _HoldingStreamContent(chunks)
+
+    def release(self) -> Any:
+        self._order.append("release")
+        return _noop()
+
+
+class _AcloseOnlyStreamResponse:
+    status_code = 200
+    headers = {"content-type": "text/event-stream"}
+
+    def __init__(self, order: list[str], chunks: list[bytes]) -> None:
+        self._order = order
+        self.content = _HoldingStreamContent(chunks)
+
+    async def aclose(self) -> None:
+        self._order.append("aclose")
+
+
+class _ReleasableErrorResponse:
+    status_code = 429
+    headers = {"content-type": "application/json"}
+    content = b'{"error":{"code":"rate_limit_exceeded","message":"slow down"}}'
+
+    def __init__(self, order: list[str]) -> None:
+        self._order = order
+
+    def json(self) -> dict[str, Any]:
+        return {"error": {"code": "rate_limit_exceeded", "message": "slow down"}}
+
+    def release(self) -> Any:
+        self._order.append("release")
+        return _noop()
+
+
+class _OwnedCodexClient(_CodexClient):
+    def __init__(self, response: object, order: list[str]) -> None:
+        super().__init__(response)
+        self._order = order
+
+    async def close(self) -> None:
+        self._order.append("close")
+
+
+def _install_owned_codex_client(monkeypatch: pytest.MonkeyPatch, client: _OwnedCodexClient) -> None:
+    monkeypatch.setattr(proxy_module, "create_codex_session", lambda: None)
+    monkeypatch.setattr(proxy_module, "CodexClient", lambda session: client)
+
+
+def _routed_stream(route: ResolvedUpstreamRoute, *, raise_for_status: bool = False):
+    payload = ResponsesRequest(model="gpt-5.2", instructions="Reply.", input="hello", stream=True)
+    return stream_responses(
+        payload,
+        {"user-agent": "codex"},
+        "access",
+        "chatgpt_account",
+        raise_for_status=raise_for_status,
+        session=cast(Any, object()),
+        upstream_stream_transport_override="http",
+        route=route,
+        allow_direct_egress=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_routed_stream_terminal_event_releases_response_before_client_close(
+    route: ResolvedUpstreamRoute, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+    response = _ReleasableStreamResponse(order, [_SSE_CREATED_CHUNK, _SSE_COMPLETED_CHUNK])
+    _install_owned_codex_client(monkeypatch, _OwnedCodexClient(response, order))
+
+    events = [event async for event in _routed_stream(route)]
+
+    assert len(events) == 2
+    _assert_response_event(events[0], "response.created")
+    _assert_response_event(events[1], "response.completed")
+    assert order == ["release", "close"]
+
+
+@pytest.mark.asyncio
+async def test_routed_stream_downstream_disconnect_releases_response(
+    route: ResolvedUpstreamRoute, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+    response = _ReleasableStreamResponse(order, [_SSE_CREATED_CHUNK])
+    _install_owned_codex_client(monkeypatch, _OwnedCodexClient(response, order))
+
+    stream = _routed_stream(route)
+    first = await stream.__anext__()
+    await stream.aclose()
+
+    _assert_response_event(first, "response.created")
+    assert order == ["release", "close"]
+
+
+@pytest.mark.asyncio
+async def test_routed_stream_cancellation_releases_response(
+    route: ResolvedUpstreamRoute, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+    response = _ReleasableStreamResponse(order, [_SSE_CREATED_CHUNK])
+    _install_owned_codex_client(monkeypatch, _OwnedCodexClient(response, order))
+
+    async def _consume() -> list[str]:
+        return [event async for event in _routed_stream(route)]
+
+    task = asyncio.create_task(_consume())
+    await response.content.drained.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert order == ["release", "close"]
+
+
+@pytest.mark.asyncio
+async def test_routed_stream_idle_timeout_releases_response(
+    route: ResolvedUpstreamRoute, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+    response = _ReleasableStreamResponse(order, [_SSE_CREATED_CHUNK])
+    _install_owned_codex_client(monkeypatch, _OwnedCodexClient(response, order))
+
+    with proxy_module.override_stream_timeouts(idle_timeout_seconds=0.01):
+        events = [event async for event in _routed_stream(route)]
+
+    assert len(events) == 2
+    _assert_response_event(events[0], "response.created")
+    _assert_response_event(events[1], "response.failed")
+    assert order == ["release", "close"]
+
+
+@pytest.mark.asyncio
+async def test_routed_stream_error_status_releases_response(
+    route: ResolvedUpstreamRoute, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+    _install_owned_codex_client(monkeypatch, _OwnedCodexClient(_ReleasableErrorResponse(order), order))
+
+    with pytest.raises(ProxyResponseError) as exc_info:
+        async for _ in _routed_stream(route, raise_for_status=True):
+            pass
+
+    assert exc_info.value.status_code == 429
+    assert order == ["release", "close"]
+
+
+@pytest.mark.asyncio
+async def test_routed_stream_closes_aclose_only_response(
+    route: ResolvedUpstreamRoute, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+    response = _AcloseOnlyStreamResponse(order, [_SSE_CREATED_CHUNK, _SSE_COMPLETED_CHUNK])
+    _install_owned_codex_client(monkeypatch, _OwnedCodexClient(response, order))
+
+    events = [event async for event in _routed_stream(route)]
+
+    assert len(events) == 2
+    _assert_response_event(events[0], "response.created")
+    _assert_response_event(events[1], "response.completed")
+    assert order == ["aclose", "close"]
+
+
+@pytest.mark.asyncio
+async def test_routed_stream_tolerates_response_without_release(route: ResolvedUpstreamRoute) -> None:
+    client = _CodexClient(_StreamResponse())
+    payload = ResponsesRequest(model="gpt-5.2", instructions="Reply.", input="hello", stream=True)
+
+    events = [
+        event
+        async for event in stream_responses(
+            payload,
+            {"user-agent": "codex"},
+            "access",
+            "chatgpt_account",
+            session=cast(Any, object()),
+            upstream_stream_transport_override="http",
+            route=route,
+            codex_client=cast(Any, client),
+        )
+    ]
+
+    assert len(events) == 1
+    _assert_response_event(events[0], "response.completed")

@@ -213,3 +213,48 @@ The system MUST record a sticky-selection outcome metric (`codex_lb_sticky_selec
 
 - **WHEN** selection creates a sticky mapping where none existed
 - **THEN** the counter increments with outcome `new`
+
+### Requirement: Owner forwarding rejects illegal reconstructed header metadata
+
+Owner-forwarded HTTP bridge requests MUST validate reconstructed bridge metadata before building signatures or posting headers to another owner. Metadata values that become signed bridge headers MUST NOT contain control characters below U+0020 other than horizontal tab, or U+007F. Header names MUST NOT contain any such control character, including horizontal tab. If original affinity, downstream turn-state, client-IP, origin or target instance, or reservation metadata is unsafe, the proxy MUST fail closed with the structured `bridge_forward_invalid` error and MUST NOT dispatch the owner request. Ordinary client headers with unsafe names or values MUST be omitted from the forwarded header map. File-affinity and continuity-owner selection MUST remain unchanged.
+
+#### Scenario: Unsafe reservation metadata fails closed
+
+- **GIVEN** an owner-forward request carries API-key reservation metadata
+- **AND** one reservation field contains an illegal HTTP header control character
+- **WHEN** the origin builds the owner-forward request
+- **THEN** it returns `bridge_forward_invalid`
+- **AND** it does not post to the owner or silently omit only the reservation metadata
+
+#### Scenario: Unsafe client header is omitted
+
+- **GIVEN** an owner-forward request includes ordinary client headers with unsafe names or values
+- **WHEN** the origin builds the owner-forward request
+- **THEN** those client headers are not forwarded
+- **AND** safe header values containing horizontal tab remain forwardable
+- **AND** the signed bridge-forward metadata remains valid
+
+### Requirement: Canonical prompt-cache bridges preserve hard replica continuity
+
+When durable lookup resolves an incoming turn-state or previous-response reference to a live bridge whose canonical key is `prompt_cache`, the origin replica MUST treat that request as hard bridge continuity for replica-owner routing. If the live owner is another reachable replica, the origin MUST use the authenticated internal owner-forward transport and MUST NOT attempt a soft local prompt-cache rebind. Preserving the canonical prompt-cache key MUST NOT weaken the hard continuation evidence or expose `bridge_instance_mismatch` for an ordinary cross-replica continuation. A request carrying only prompt-cache locality and no hard continuation evidence MUST retain the existing soft local rebind behavior. Explicit recovery paths that have already established that owner forwarding is unavailable MAY retain their bounded local-rebind behavior. File ownership MUST remain an independent account-affinity constraint and MUST NOT be inferred from, or replaced by, replica continuity ownership.
+
+#### Scenario: Turn-state continuation forwards to the canonical prompt-cache owner
+
+- **GIVEN** a turn-state alias resolves to a live bridge canonically keyed by prompt cache on replica A
+- **WHEN** the continuation arrives on replica B
+- **THEN** replica B forwards the request internally to replica A
+- **AND** it does not attempt to claim the canonical bridge locally
+- **AND** replica B leaves no local inflight creation reservation for the forwarded bridge key
+
+#### Scenario: Previous-response continuation forwards to the canonical prompt-cache owner
+
+- **GIVEN** a previous-response reference resolves to a live bridge canonically keyed by prompt cache on replica A
+- **WHEN** the continuation arrives on replica B
+- **THEN** replica B forwards the request internally to replica A
+- **AND** the client does not receive `bridge_instance_mismatch`
+
+#### Scenario: Prompt-cache-only locality remains soft
+
+- **GIVEN** a request has prompt-cache locality but no turn-state, previous-response, file pin, or other hard continuity evidence
+- **WHEN** its locality owner is another replica
+- **THEN** the receiving replica may use the existing soft local-rebind path

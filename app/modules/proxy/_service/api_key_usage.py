@@ -12,6 +12,7 @@ import anyio
 from app.core.exceptions import ProxyAuthError, ProxyRateLimitError
 from app.core.openai.models import CompactResponsePayload
 from app.core.utils.request_id import get_request_id
+from app.core.utils.shared_future import _await_task_deferring_cancellation
 from app.modules.api_keys.service import (
     ApiKeyData,
     ApiKeyInvalidError,
@@ -272,9 +273,10 @@ class _ApiKeyUsageMixin:
         api_key_reservation: ApiKeyUsageReservationData | None,
         response: CompactResponsePayload | None,
         request_service_tier: str | None,
-    ) -> None:
+    ) -> tuple[bool, bool]:
+        """Return (confirmed, reservation_released)."""
         if api_key is None or api_key_reservation is None:
-            return
+            return True, True
 
         reservation_id = api_key_reservation.reservation_id
         usage = response.usage if response is not None else None
@@ -307,6 +309,7 @@ class _ApiKeyUsageMixin:
                         )
                     else:
                         await api_keys_service.release_usage_reservation(reservation_id)
+                return True, True
             except Exception:
                 logger.warning(
                     "Failed to settle compact API key reservation key_id=%s request_id=%s",
@@ -314,6 +317,20 @@ class _ApiKeyUsageMixin:
                     get_request_id(),
                     exc_info=True,
                 )
+                try:
+                    async with proxy._repo_factory() as repos:
+                        api_keys_service = _service_api_keys_service()(repos.api_keys)
+                        await api_keys_service.release_usage_reservation(reservation_id)
+                except Exception:
+                    logger.warning(
+                        "Failed to release compact API key reservation after settlement failure "
+                        "key_id=%s request_id=%s",
+                        api_key.id,
+                        get_request_id(),
+                        exc_info=True,
+                    )
+                    return False, False
+                return False, True
 
     async def _settle_stream_api_key_usage(
         self,
@@ -321,6 +338,8 @@ class _ApiKeyUsageMixin:
         api_key_reservation: ApiKeyUsageReservationData | None,
         settlement: _StreamSettlement,
         request_id: str,
+        *,
+        wait_for_settlement: bool = False,
     ) -> bool:
         """Settle stream reservation. Returns True if settled."""
         if api_key is None or api_key_reservation is None:
@@ -360,6 +379,24 @@ class _ApiKeyUsageMixin:
                 return False
 
         task = asyncio.create_task(_settle_once(), name=f"proxy-stream-api-key-settle-{request_id}")
+        if wait_for_settlement:
+            # Ordered terminal/health callers opt in: finish the owned settle
+            # through cancellation without transferring it to background tracking.
+            result, cancellation = await _await_task_deferring_cancellation(task)
+            if not result:
+                fallback_task = asyncio.create_task(
+                    self._release_unsettled_stream_api_key_usage(
+                        api_key=api_key,
+                        api_key_reservation=api_key_reservation,
+                        request_id=request_id,
+                    ),
+                    name=f"proxy-stream-api-key-fallback-{request_id}",
+                )
+                result, fallback_cancellation = await _await_task_deferring_cancellation(fallback_task)
+                cancellation = cancellation or fallback_cancellation
+            if cancellation is not None:
+                raise cancellation
+            return result
         try:
             with anyio.CancelScope(shield=True):
                 return await asyncio.shield(task)
@@ -375,8 +412,6 @@ class _ApiKeyUsageMixin:
                     request_id=request_id,
                 )
             raise
-
-        return False
 
     def _track_stream_usage_settlement_task(
         self,
@@ -433,17 +468,17 @@ class _ApiKeyUsageMixin:
 
     def _schedule_cancel_safe_cleanup(
         self,
-        coro: Coroutine[Any, Any, None],
+        coro: Coroutine[Any, Any, object],
         *,
         action: str,
         request_id: str,
     ) -> None:
         task = asyncio.create_task(coro, name=f"proxy-{action}-{request_id}")
         proxy = cast(_ApiKeyUsageServiceProtocol, self)
-        proxy._background_cleanup_tasks.add(task)
+        proxy._background_cleanup_tasks.add(cast(asyncio.Task[None], task))
 
-        def _cleanup_done(done_task: asyncio.Task[None]) -> None:
-            proxy._background_cleanup_tasks.discard(done_task)
+        def _cleanup_done(done_task: asyncio.Task[object]) -> None:
+            proxy._background_cleanup_tasks.discard(cast(asyncio.Task[None], done_task))
             try:
                 done_task.result()
             except asyncio.CancelledError:
@@ -464,7 +499,7 @@ class _ApiKeyUsageMixin:
         api_key: ApiKeyData,
         api_key_reservation: ApiKeyUsageReservationData,
         request_id: str,
-    ) -> None:
+    ) -> bool:
         proxy = cast(_ApiKeyUsageServiceProtocol, self)
         with anyio.CancelScope(shield=True):
             try:
@@ -473,6 +508,7 @@ class _ApiKeyUsageMixin:
                     await api_keys_service.release_usage_reservation(
                         api_key_reservation.reservation_id,
                     )
+                return True
             except Exception:
                 logger.warning(
                     "Failed to release stream API key reservation key_id=%s request_id=%s",
@@ -480,3 +516,4 @@ class _ApiKeyUsageMixin:
                     request_id,
                     exc_info=True,
                 )
+                return False

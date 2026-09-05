@@ -42,20 +42,40 @@ _TEST_SYNC_TIMEOUT_SECONDS = 5.0
 
 @pytest_asyncio.fixture(autouse=True)
 async def _cleanup_http_bridge_sessions(app_instance):
-    yield
+    # Production shutdown closes registered sessions, then drains scheduled
+    # background closes. Tests can retire a pending session out of the registry
+    # while its reader is still running; join that leftover here so the next
+    # case does not GC an open relay.
     service = get_proxy_service_for_app(app_instance)
-    async with service._http_bridge_lock:
-        sessions = list(service._http_bridge_sessions.values())
-        inflight_sessions = list(service._http_bridge_inflight_sessions.values())
-        service._http_bridge_sessions.clear()
-        service._http_bridge_inflight_sessions.clear()
-        service._http_bridge_turn_state_index.clear()
-        service._http_bridge_previous_response_index.clear()
-    for session in sessions:
-        await service._close_http_bridge_session(session)
-    for inflight_future in inflight_sessions:
-        if not inflight_future.done():
-            inflight_future.cancel()
+    original_relay = service._relay_http_bridge_upstream_messages
+    owned: list[tuple[proxy_module.ProxyService, proxy_module._HTTPBridgeSession, asyncio.Task[None]]] = []
+
+    async def _track_relay(session: proxy_module._HTTPBridgeSession, *args: Any, **kwargs: Any) -> None:
+        reader = asyncio.current_task()
+        if reader is not None:
+            owned.append((service, session, reader))
+        await original_relay(session, *args, **kwargs)
+
+    setattr(service, "_relay_http_bridge_upstream_messages", _track_relay)
+    try:
+        yield
+    finally:
+        setattr(service, "_relay_http_bridge_upstream_messages", original_relay)
+        await service.close_all_http_bridge_sessions()
+        seen_readers: set[int] = set()
+        for owner, session, reader in owned:
+            marker = id(reader)
+            if marker in seen_readers:
+                continue
+            seen_readers.add(marker)
+            if reader.done():
+                continue
+            if session.upstream_reader is reader:
+                await owner._close_http_bridge_session(session)
+            else:
+                await proxy_module._await_cancelled_task(reader, label="http bridge upstream reader")
+        async with service._http_bridge_lock:
+            service._http_bridge_turn_state_index.clear()
 
 
 def _encode_jwt(payload: dict) -> str:
@@ -2497,6 +2517,119 @@ async def test_v1_responses_http_bridge_replayed_turn_state_alias_preserves_owne
     await service._reconnect_http_bridge_session(replayed, request_state=request_state)
     assert connect_headers_seen[-1]["x-codex-turn-state"] == replay_turn_state
     await service._close_http_bridge_session(session)
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_forwards_hard_continuation_with_canonical_prompt_cache_key(
+    async_client,
+    app_instance,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_bridge_settings_with_limits(
+        monkeypatch,
+        enabled=True,
+        instance_id="instance-b",
+        instance_ring=["instance-a", "instance-b"],
+    )
+    account_id = await _import_account(
+        async_client,
+        "acc_http_bridge_canonical_forward",
+        "http-bridge-canonical-forward@example.com",
+    )
+    service = get_proxy_service_for_app(app_instance)
+    prompt_cache_key = "canonical-forward-prompt-cache"
+    turn_state = "http_turn_canonical_forward"
+    response_id = "resp_canonical_forward"
+    durable_lookup = await service._durable_bridge.claim_live_session(
+        session_key_kind="prompt_cache",
+        session_key_value=prompt_cache_key,
+        api_key_id=None,
+        instance_id="instance-a",
+        lease_ttl_seconds=60.0,
+        account_id=account_id,
+        model="gpt-5.1",
+        service_tier=None,
+        latest_turn_state=turn_state,
+        latest_response_id=response_id,
+        allow_takeover=True,
+    )
+    await service._durable_bridge.register_turn_state(
+        session_id=durable_lookup.session_id,
+        api_key_id=None,
+        instance_id="instance-a",
+        owner_epoch=durable_lookup.owner_epoch,
+        turn_state=turn_state,
+        lease_ttl_seconds=60.0,
+    )
+    await service._durable_bridge.register_previous_response_id(
+        session_id=durable_lookup.session_id,
+        api_key_id=None,
+        instance_id="instance-a",
+        owner_epoch=durable_lookup.owner_epoch,
+        response_id=response_id,
+        lease_ttl_seconds=60.0,
+    )
+
+    class Ring:
+        async def list_active(self, *, require_endpoint: bool = False) -> list[str]:
+            assert require_endpoint is True
+            return ["instance-a", "instance-b"]
+
+        async def resolve_endpoint(self, instance_id: str) -> str:
+            assert instance_id == "instance-a"
+            return "http://instance-a"
+
+    forwarded: list[proxy_module._HTTPBridgeOwnerForward] = []
+
+    async def fake_forward_http_bridge_request_to_owner(
+        *, owner_forward: proxy_module._HTTPBridgeOwnerForward, **_kwargs: Any
+    ) -> AsyncGenerator[str, None]:
+        forwarded.append(owner_forward)
+        yield proxy_module.format_sse_event(
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_forwarded_complete",
+                    "object": "response",
+                    "status": "completed",
+                    "output": [],
+                },
+            }
+        )
+
+    original_ring = service._ring_membership
+    service._ring_membership = cast(Any, Ring())
+    monkeypatch.setattr(
+        service,
+        "_forward_http_bridge_request_to_owner",
+        fake_forward_http_bridge_request_to_owner,
+    )
+    try:
+        events = await _collect_sse_events(
+            async_client,
+            "/v1/responses",
+            json_body={
+                "model": "gpt-5.1",
+                "instructions": "Return exactly OK.",
+                "input": "continue",
+                "prompt_cache_key": prompt_cache_key,
+                "previous_response_id": response_id,
+                "stream": True,
+            },
+            headers={"x-codex-turn-state": turn_state},
+        )
+    finally:
+        service._ring_membership = original_ring
+
+    assert events[-1]["type"] == "response.completed"
+    assert len(forwarded) == 1
+    assert forwarded[0].owner_instance == "instance-a"
+    assert forwarded[0].owner_endpoint == "http://instance-a"
+    assert forwarded[0].key == proxy_module._HTTPBridgeSessionKey(
+        "prompt_cache",
+        prompt_cache_key,
+        None,
+    )
 
 
 @pytest.mark.asyncio

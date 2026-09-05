@@ -24,6 +24,7 @@ from app.core.resilience.network_recovery import (
 from app.core.upstream_proxy import UpstreamProxyRouteError
 from app.core.utils.request_id import ensure_request_id
 from app.core.utils.retry import backoff_seconds
+from app.core.utils.shared_future import _await_task_deferring_cancellation
 from app.core.utils.sse import format_sse_event
 from app.db.models import Account, StickySessionKind
 from app.modules.api_keys.service import ApiKeyData, ApiKeyUsageReservationData
@@ -382,20 +383,29 @@ class _StreamingRetryMixin:
                 pass
             await proxy._load_balancer.release_account_lease(lease)
 
-        async def _settle_stream_usage_before_pending_penalty(
+        async def _settle_stream_usage_before_pending_penalty_core(
             current_settlement: _StreamSettlement,
+            *,
+            settlement_order_required: bool = False,
         ) -> bool:
+            nonlocal settled
             apply_pending_penalty = post_refresh_transient_replacement_selected and bool(
                 pending_post_refresh_transient_penalties
             )
+            wait_for_health_write = (
+                settlement_order_required or current_settlement.settlement_order_required or apply_pending_penalty
+            )
+            settled_result = await proxy._settle_stream_api_key_usage(
+                api_key,
+                api_key_reservation,
+                current_settlement,
+                request_id,
+                wait_for_settlement=wait_for_health_write,
+            )
+            if not settled_result:
+                return False
+            settled = True
             if apply_pending_penalty:
-                settled_result = await proxy._settle_stream_api_key_usage(
-                    api_key,
-                    api_key_reservation,
-                    current_settlement,
-                    request_id,
-                    wait_for_settlement=True,
-                )
                 pending_penalties = list(pending_post_refresh_transient_penalties)
                 pending_post_refresh_transient_penalties.clear()
                 for pending_penalty in pending_penalties:
@@ -414,17 +424,39 @@ class _StreamingRetryMixin:
                     )
                     if transient_retry_count > 1:
                         await proxy._load_balancer.record_errors(failed_account, transient_retry_count - 1)
-                return settled_result
-            return await proxy._settle_stream_api_key_usage(
-                api_key,
-                api_key_reservation,
-                current_settlement,
-                request_id,
+            return settled_result
+
+        async def _settle_stream_usage_before_pending_penalty(
+            current_settlement: _StreamSettlement,
+            *,
+            settlement_order_required: bool = False,
+        ) -> bool:
+            apply_pending_penalty = post_refresh_transient_replacement_selected and bool(
+                pending_post_refresh_transient_penalties
             )
+            wait_for_health_write = (
+                settlement_order_required or current_settlement.settlement_order_required or apply_pending_penalty
+            )
+            if not wait_for_health_write:
+                return await _settle_stream_usage_before_pending_penalty_core(
+                    current_settlement,
+                    settlement_order_required=settlement_order_required,
+                )
+            owned = asyncio.create_task(
+                _settle_stream_usage_before_pending_penalty_core(
+                    current_settlement,
+                    settlement_order_required=settlement_order_required,
+                ),
+                name=f"stream-ordered-settlement-{request_id}",
+            )
+            result, cancellation = await _await_task_deferring_cancellation(owned)
+            if cancellation is not None:
+                raise cancellation
+            return result
 
         async def _drain_pending_post_refresh_penalty_on_terminal(
             current_settlement: _StreamSettlement,
-        ) -> None:
+        ) -> bool:
             nonlocal post_refresh_transient_replacement_selected, settled
             if pending_post_refresh_transient_penalties:
                 # A failed replacement selection still ends the request. Mark
@@ -432,6 +464,48 @@ class _StreamingRetryMixin:
                 # recorded before this path returns or re-raises.
                 post_refresh_transient_replacement_selected = True
                 settled = await _settle_stream_usage_before_pending_penalty(current_settlement)
+                return settled
+            return True
+
+        async def _finalize_terminal_settlement_after_downstream_close(
+            current_settlement: _StreamSettlement,
+            account: Account,
+            *,
+            settlement_order_required: bool = False,
+        ) -> None:
+            nonlocal settled
+
+            async def _finalize() -> None:
+                nonlocal settled
+                if not settled:
+                    settled = await _settle_stream_usage_before_pending_penalty_core(
+                        current_settlement,
+                        settlement_order_required=settlement_order_required,
+                    )
+                if not settled:
+                    return
+                if current_settlement.account_health_error:
+                    await proxy._handle_stream_error(
+                        account,
+                        _stream_settlement_error_payload(current_settlement),
+                        current_settlement.error_code or "upstream_error",
+                    )
+                elif current_settlement.record_success:
+                    await proxy._load_balancer.record_success(account)
+
+            finalize_task = asyncio.create_task(_finalize(), name=f"stream-terminal-settlement-{request_id}")
+            _, cancellation = await _await_task_deferring_cancellation(finalize_task)
+            if cancellation is not None:
+                raise cancellation
+
+        async def _aclose_stream_cancellation_safe(stream: AsyncIterator[str]) -> None:
+            aclose = getattr(stream, "aclose", None)
+            if aclose is None:
+                return
+            close_task = asyncio.create_task(aclose(), name=f"stream-aclose-{request_id}")
+            _, close_cancellation = await _await_task_deferring_cancellation(close_task)
+            if close_cancellation is not None:
+                raise close_cancellation
 
         async def _wait_for_process_network_recovery(
             account: Account,
@@ -514,27 +588,28 @@ class _StreamingRetryMixin:
             transient_retries = 0
 
             async def _iter_stream_once() -> AsyncIterator[str]:
+                inner_stream = proxy._stream_once(
+                    account,
+                    payload,
+                    headers,
+                    request_id,
+                    False,
+                    request_started_at=start,
+                    allow_transient_retry=True,
+                    api_key=api_key,
+                    api_key_reservation=api_key_reservation,
+                    settlement=settlement,
+                    suppress_text_done_events=suppress_text_done_events,
+                    upstream_stream_transport=upstream_stream_transport,
+                    request_transport=request_transport,
+                    useragent=useragent,
+                    useragent_group=useragent_group,
+                    client_ip=client_ip,
+                    tool_call_dedupe=tool_call_dedupe,
+                    enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+                )
                 try:
-                    async for line in proxy._stream_once(
-                        account,
-                        payload,
-                        headers,
-                        request_id,
-                        False,
-                        request_started_at=start,
-                        allow_transient_retry=True,
-                        api_key=api_key,
-                        api_key_reservation=api_key_reservation,
-                        settlement=settlement,
-                        suppress_text_done_events=suppress_text_done_events,
-                        upstream_stream_transport=upstream_stream_transport,
-                        request_transport=request_transport,
-                        useragent=useragent,
-                        useragent_group=useragent_group,
-                        client_ip=client_ip,
-                        tool_call_dedupe=tool_call_dedupe,
-                        enforce_openai_sdk_contract=enforce_openai_sdk_contract,
-                    ):
+                    async for line in inner_stream:
                         yield line
                 except ProxyResponseError as exc:
                     error = _parse_openai_error(exc.payload)
@@ -558,17 +633,31 @@ class _StreamingRetryMixin:
                             account_health_error=retryable_connect_failure,
                         ) from exc
                     raise
+                finally:
+                    await _aclose_stream_cancellation_safe(inner_stream)
 
             while True:
                 settlement.reset()
                 stream_timeout_tokens = _facade()._push_stream_attempt_timeout_overrides(
                     _facade()._remaining_budget_seconds(deadline)
                 )
+                attempt_stream = _iter_stream_once()
                 try:
-                    async for line in _iter_stream_once():
-                        yield line
+                    try:
+                        async for line in attempt_stream:
+                            yield line
+                    finally:
+                        await _aclose_stream_cancellation_safe(attempt_stream)
                     network_recovery.log_recovered()
                     return
+                except (asyncio.CancelledError, GeneratorExit):
+                    if settlement.status in {"success", "error"} and not settled:
+                        await _finalize_terminal_settlement_after_downstream_close(
+                            settlement,
+                            account,
+                            settlement_order_required=True,
+                        )
+                    raise
                 except _TerminalStreamError:
                     # `_stream_once()` has already yielded the terminal event.
                     # Returning preserves fail-closed delivery: replaying here
@@ -1511,7 +1600,7 @@ class _StreamingRetryMixin:
                         )
                         try:
                             settlement = _StreamSettlement()
-                            async for line in proxy._stream_once(
+                            inner_stream = proxy._stream_once(
                                 account,
                                 payload,
                                 headers,
@@ -1548,8 +1637,21 @@ class _StreamingRetryMixin:
                                 ),
                                 tool_call_dedupe=tool_call_dedupe,
                                 enforce_openai_sdk_contract=enforce_openai_sdk_contract,
-                            ):
-                                yield line
+                            )
+                            try:
+                                try:
+                                    async for line in inner_stream:
+                                        yield line
+                                finally:
+                                    await _aclose_stream_cancellation_safe(inner_stream)
+                            except (asyncio.CancelledError, GeneratorExit):
+                                if settlement.status in {"success", "error"} and not settled:
+                                    await _finalize_terminal_settlement_after_downstream_close(
+                                        settlement,
+                                        account,
+                                        settlement_order_required=True,
+                                    )
+                                raise
                         except (_TransientStreamError, ProxyResponseError) as tex:
                             if account.id == account_model_replacement_account_id:
                                 # Account/model routing gets exactly one selected
@@ -1623,7 +1725,7 @@ class _StreamingRetryMixin:
                                     settlement.error = tex.error
                                 settlement.account_health_error = _facade()._should_penalize_stream_error(error_code)
                                 settled = await _settle_stream_usage_before_pending_penalty(settlement)
-                                if settlement.account_health_error:
+                                if settled and settlement.account_health_error:
                                     await proxy._handle_stream_error(
                                         account,
                                         _stream_settlement_error_payload(settlement),
@@ -1841,15 +1943,22 @@ class _StreamingRetryMixin:
                             break  # outer loop: select different account
                         finally:
                             pop_stream_timeout_overrides(stream_timeout_tokens)
-                        settled = await _settle_stream_usage_before_pending_penalty(settlement)
-                        if settlement.account_health_error:
-                            await proxy._handle_stream_error(
+                        if settlement.settlement_order_required:
+                            await _finalize_terminal_settlement_after_downstream_close(
+                                settlement,
                                 account,
-                                _stream_settlement_error_payload(settlement),
-                                settlement.error_code or "upstream_error",
+                                settlement_order_required=True,
                             )
-                        elif settlement.record_success:
-                            await proxy._load_balancer.record_success(account)
+                        else:
+                            settled = await _settle_stream_usage_before_pending_penalty(settlement)
+                            if settled and settlement.account_health_error:
+                                await proxy._handle_stream_error(
+                                    account,
+                                    _stream_settlement_error_payload(settlement),
+                                    settlement.error_code or "upstream_error",
+                                )
+                            elif settled and settlement.record_success:
+                                await proxy._load_balancer.record_success(account)
                         network_recovery.log_recovered()
                         upstream_transport_metric_status = settlement.status
                         _record_upstream_transport_metric_once(settlement.status)
@@ -1901,10 +2010,21 @@ class _StreamingRetryMixin:
                         outcome="owner_previsible_retryable_failure",
                     )
                     continue
-                except _TerminalStreamError as exc:
-                    await _drain_pending_post_refresh_penalty_on_terminal(settlement)
-                    if _facade()._should_penalize_stream_error(exc.code):
-                        await proxy._handle_stream_error(account, exc.error, exc.code)
+                except _TerminalStreamError:
+                    if settlement.settlement_order_required:
+                        await _finalize_terminal_settlement_after_downstream_close(
+                            settlement,
+                            account,
+                            settlement_order_required=True,
+                        )
+                    else:
+                        health_write_allowed = await _settle_stream_usage_before_pending_penalty(settlement)
+                        if health_write_allowed and settlement.account_health_error:
+                            await proxy._handle_stream_error(
+                                account,
+                                _stream_settlement_error_payload(settlement),
+                                settlement.error_code or "upstream_error",
+                            )
                     return
                 except ProxyResponseError as exc:
                     if _facade()._is_proxy_budget_exhausted_error(exc):
@@ -2046,13 +2166,17 @@ class _StreamingRetryMixin:
                                 and account.id != file_preferred_account_id
                                 and attempt < max_attempts - 1
                             )
-                            async for line in _stream_post_refresh_with_capacity_recovery(
+                            post_refresh_stream = _stream_post_refresh_with_capacity_recovery(
                                 account,
                                 settlement=settlement,
                                 can_try_other_account=can_try_other_account,
                                 tool_call_dedupe=tool_call_dedupe,
-                            ):
-                                yield line
+                            )
+                            try:
+                                async for line in post_refresh_stream:
+                                    yield line
+                            finally:
+                                await _aclose_stream_cancellation_safe(post_refresh_stream)
                         except ProxyResponseError as retry_exc:
                             if _facade()._is_proxy_budget_exhausted_error(retry_exc):
                                 await _settle_process_network_budget_exhaustion(account, settlement)
@@ -2088,7 +2212,7 @@ class _StreamingRetryMixin:
                                 settlement.error = _upstream_error_from_openai(error)
                                 settlement.account_health_error = _facade()._should_penalize_stream_error(error_code)
                                 settled = await _settle_stream_usage_before_pending_penalty(settlement)
-                                if settlement.account_health_error:
+                                if settled and settlement.account_health_error:
                                     await proxy._handle_stream_error(
                                         account,
                                         _stream_settlement_error_payload(settlement),
@@ -2190,13 +2314,14 @@ class _StreamingRetryMixin:
                                 )
                                 excluded_account_ids.add(account.id)
                                 continue
-                            await _drain_pending_post_refresh_penalty_on_terminal(settlement)
-                            await proxy._handle_stream_error(
-                                account,
-                                current_error_payload,
-                                current_error_code,
-                                http_status=retry_exc.status_code,
-                            )
+                            health_write_allowed = await _drain_pending_post_refresh_penalty_on_terminal(settlement)
+                            if health_write_allowed:
+                                await proxy._handle_stream_error(
+                                    account,
+                                    current_error_payload,
+                                    current_error_code,
+                                    http_status=retry_exc.status_code,
+                                )
                             if propagate_http_errors:
                                 raise
                             error_message = error.message if error else None
@@ -2214,18 +2339,27 @@ class _StreamingRetryMixin:
                             failed_account is account
                             for failed_account, *_rest in pending_post_refresh_transient_penalties
                         )
-                        if pending_post_refresh_transient_penalties:
-                            await _drain_pending_post_refresh_penalty_on_terminal(settlement)
-                        if settlement.account_health_error and not current_account_penalty_queued:
-                            await proxy._handle_stream_error(
+                        ordered_settlement_required = bool(pending_post_refresh_transient_penalties)
+                        if ordered_settlement_required:
+                            health_write_allowed = await _drain_pending_post_refresh_penalty_on_terminal(settlement)
+                            if (
+                                health_write_allowed
+                                and settlement.account_health_error
+                                and not current_account_penalty_queued
+                            ):
+                                await proxy._handle_stream_error(
+                                    account,
+                                    _stream_settlement_error_payload(settlement),
+                                    settlement.error_code or "upstream_error",
+                                )
+                            elif health_write_allowed and settlement.record_success:
+                                await proxy._load_balancer.record_success(account)
+                        else:
+                            await _finalize_terminal_settlement_after_downstream_close(
+                                settlement,
                                 account,
-                                _stream_settlement_error_payload(settlement),
-                                settlement.error_code or "upstream_error",
+                                settlement_order_required=True,
                             )
-                        elif settlement.record_success:
-                            await proxy._load_balancer.record_success(account)
-                        if not settled:
-                            settled = await _settle_stream_usage_before_pending_penalty(settlement)
                         upstream_transport_metric_status = settlement.status
                         _record_upstream_transport_metric_once(settlement.status)
                         return
@@ -2260,8 +2394,8 @@ class _StreamingRetryMixin:
                             excluded_account_ids.add(account.id)
                             require_security_work_authorized = True
                             continue
-                    await _drain_pending_post_refresh_penalty_on_terminal(settlement)
-                    if _facade()._should_penalize_stream_error(error_code):
+                    health_write_allowed = await _drain_pending_post_refresh_penalty_on_terminal(settlement)
+                    if health_write_allowed and _facade()._should_penalize_stream_error(error_code):
                         await proxy._handle_stream_error(
                             account,
                             _upstream_error_from_openai(error),

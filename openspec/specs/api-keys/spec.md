@@ -6,35 +6,35 @@ Define API key lifecycle, enforcement, accounting, and dashboard management cont
 ## Requirements
 ### Requirement: API Key creation
 
-The system SHALL allow the admin to create API keys via `POST /api/api-keys` with a `name` (required), `allowed_models` (optional list), `weekly_token_limit` (optional integer), `expires_at` (optional ISO 8601 datetime), and `assigned_account_ids` (optional list). The system MUST generate a key in the format `sk-clb-{48 hex chars}`, store only the `sha256` hash in the database, and return the plain key exactly once in the creation response. The system MUST accept timezone-aware ISO 8601 datetimes for `expiresAt`, normalize them to UTC naive for persistence, and return the expiration as UTC in API responses.
+The system SHALL allow the admin to create API keys via `POST /api/api-keys/` with a `name` (required), `allowed_models` (optional list), `weekly_token_limit` (optional integer), `expires_at` (optional ISO 8601 datetime), and `assigned_account_ids` (optional list). The system MUST generate a key in the format `sk-clb-{48 hex chars}`, store only the `sha256` hash in the database, and return the plain key exactly once in the creation response. The system MUST accept timezone-aware ISO 8601 datetimes for `expiresAt`, normalize them to UTC naive for persistence, and return the expiration as UTC in API responses.
 
 When `assigned_account_ids` is omitted or empty, the created key SHALL remain unscoped and apply to all accounts. When `assigned_account_ids` is provided with one or more valid account IDs, the created key SHALL enable account-assignment scope and persist those assignments.
 
 #### Scenario: Create unscoped key without assigned accounts
 
-- **WHEN** admin submits `POST /api/api-keys` without `assignedAccountIds`
+- **WHEN** admin submits `POST /api/api-keys/` without `assignedAccountIds`
 - **THEN** the created key returns `accountAssignmentScopeEnabled = false`
 - **AND** `assignedAccountIds = []`
 
 #### Scenario: Create scoped key with assigned accounts
 
-- **WHEN** admin submits `POST /api/api-keys` with `assignedAccountIds` containing valid account IDs
+- **WHEN** admin submits `POST /api/api-keys/` with `assignedAccountIds` containing valid account IDs
 - **THEN** the created key returns `accountAssignmentScopeEnabled = true`
 - **AND** `assignedAccountIds` matches the supplied accounts
 
 #### Scenario: Reject unknown assigned account IDs on create
 
-- **WHEN** admin submits `POST /api/api-keys` with an unknown account ID in `assignedAccountIds`
+- **WHEN** admin submits `POST /api/api-keys/` with an unknown account ID in `assignedAccountIds`
 - **THEN** the system returns 400
 
 #### Scenario: Create key and show plain key
 
-- **WHEN** admin submits `POST /api/api-keys` with a valid payload
+- **WHEN** admin submits `POST /api/api-keys/` with a valid payload
 - **THEN** the response contains the full plain key exactly once and the system never returns the plain key on subsequent reads
 
 #### Scenario: Create key with timezone-aware expiration
 
-- **WHEN** admin submits `POST /api/api-keys` with `{ "name": "dev-key", "expiresAt": "2025-12-31T00:00:00Z" }`
+- **WHEN** admin submits `POST /api/api-keys/` with `{ "name": "dev-key", "expiresAt": "2025-12-31T00:00:00Z" }`
 - **THEN** the system persists the expiration successfully without PostgreSQL datetime binding errors
 - **AND** the response returns `expiresAt` representing the same UTC instant
 
@@ -843,3 +843,56 @@ without corresponding proxy request and usage fields.
 
 - **WHEN** the requested model is `gpt-5.6-luna-2026-07-13`
 - **THEN** cost accounting resolves it to the `gpt-5.6-luna` price entry
+
+### Requirement: One-time API-key secret responses prevent storage
+
+Every successful response containing a full plain API key MUST include `Cache-Control: no-store, no-cache, must-revalidate, private`, `Pragma: no-cache`, and `Expires: 0`. This applies to the canonical create URL (`POST /api/api-keys/`) and regeneration. The policy MUST NOT alter payload, generation, persistence, authorization, errors, or logging; plain keys MUST remain absent from logs.
+
+#### Scenario: Create through the canonical collection URL
+
+- **WHEN** an authorized admin creates a key through `POST /api/api-keys/`
+- **THEN** all three directives are present
+- **AND** the existing one-time plain-key payload remains
+
+#### Scenario: Regenerate a key
+
+- **WHEN** an authorized admin regenerates a key
+- **THEN** all three directives are present
+- **AND** the existing regenerated-key payload remains
+
+#### Scenario: Unauthorized write stays rejected
+
+- **WHEN** a read-only principal attempts create or regenerate
+- **THEN** existing 403 behavior remains
+- **AND** no plain key or secret-response headers are returned
+
+### Requirement: Keyed owner-unavailable streams settle before account health
+
+Default stream API-key reservation settlement MUST continue to await in the request path. Cancellation MAY transfer tracked cleanup without changing that default. This requirement MUST NOT detach ordinary settlement from the response path.
+
+When a keyed websocket stream terminates with an account-health error, when a keyed HTTP SSE failure is rewritten to `previous_response_owner_unavailable`, or when a keyed HTTP SSE terminal queue drains empty before terminal health or success is recorded, the finalizer MUST wait for settlement to commit before the account-health write. If the primary settlement fails, the finalizer MUST wait for fallback release to commit before recording account health. If neither operation confirms settlement, the account-health write and any deferred penalties MUST remain unapplied.
+
+#### Scenario: Websocket health-error settlement precedes the health write
+
+- **GIVEN** a keyed websocket stream that terminates with an account-health error
+- **WHEN** the finalizer settles the reservation
+- **THEN** it waits for the settlement to commit before recording the account-health error
+
+#### Scenario: Owner-unavailable rewrite settles before health
+
+- **GIVEN** a keyed HTTP SSE stream rewrites an upstream failure to `previous_response_owner_unavailable`
+- **WHEN** the stream records account-health recovery for the original failure
+- **THEN** reservation settlement or fail-safe release confirms first
+
+#### Scenario: Empty terminal queue settles before health or success
+
+- **GIVEN** a keyed HTTP SSE bridge queue drains empty on a terminal path
+- **WHEN** the stream records terminal account health or success
+- **THEN** reservation settlement or fail-safe release confirms first
+
+#### Scenario: Unconfirmed settlement leaves health unapplied
+
+- **GIVEN** a keyed websocket or HTTP SSE stream reaches an ordering-sensitive terminal path
+- **WHEN** both primary settlement and fallback release fail
+- **THEN** the stream does not record account health
+- **AND** any deferred penalty remains unapplied

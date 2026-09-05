@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -130,7 +131,7 @@ def _record_continuation_reasoning_tokens(
     ).inc(reasoning_token_count)
 
 
-type OpenRound = Callable[[JsonObject], AsyncIterator[str]]
+type OpenRound = Callable[[JsonObject], AsyncGenerator[str, None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,7 +226,7 @@ async def fold_responses_stream_with_codex_continuation(
     open_round: OpenRound,
     config: CodexContinuationConfig,
     client_label: str = UNKNOWN_LABEL,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     base_body = dict(cast(dict[str, Any], base_payload))
     effort_label = continuation_effort_label(base_body)
     original_input = _input_items(base_body.get("input"))
@@ -258,77 +259,77 @@ async def fold_responses_stream_with_codex_continuation(
             terminal: dict[str, Any] | None = None
             usage: dict[str, Any] | None = None
 
-            round_stream = open_round(cast(JsonObject, next_payload))
-            async for event_block in round_stream:
-                event = _parse_event_block(event_block)
-                if isinstance(event, _DoneType):
-                    saw_done = True
-                    continue
-                if event is None:
-                    yield event_block
-                    yielded_any = True
-                    continue
-
-                event_type = _event_type(event)
-                if event_type in {"response.created", "response.in_progress"}:
-                    if round_number == 1:
-                        if event_type == "response.created":
-                            base_response = _response_payload(event)
-                        event["sequence_number"] = seq.next()
-                        yield _format_event(event)
+            async with contextlib.aclosing(open_round(cast(JsonObject, next_payload))) as round_stream:
+                async for event_block in round_stream:
+                    event = _parse_event_block(event_block)
+                    if isinstance(event, _DoneType):
+                        saw_done = True
+                        continue
+                    if event is None:
+                        yield event_block
                         yielded_any = True
-                    continue
+                        continue
 
-                if event_type in _TERMINAL_EVENT_TYPES:
-                    terminal = event
-                    usage = _response_usage(event)
-                    saw_done = await _drain_round_stream(round_stream, saw_done=saw_done)
-                    break
+                    event_type = _event_type(event)
+                    if event_type in {"response.created", "response.in_progress"}:
+                        if round_number == 1:
+                            if event_type == "response.created":
+                                base_response = _response_payload(event)
+                            event["sequence_number"] = seq.next()
+                            yield _format_event(event)
+                            yielded_any = True
+                        continue
 
-                upstream_output_index = event.get("output_index")
-                if event_type == "response.output_item.added":
-                    item = _item_payload(event)
-                    if item.get("type") == "reasoning":
-                        item_kind[upstream_output_index] = "reasoning"
-                        output_index_map[upstream_output_index] = downstream_output_index
-                        event["output_index"] = downstream_output_index
-                        downstream_output_index += 1
-                        event["sequence_number"] = seq.next()
-                        yield _format_event(event)
-                        yielded_any = True
-                    else:
-                        item_kind[upstream_output_index] = "buffered"
-                        buffered_outputs.append(
-                            _BufferedOutput(
-                                upstream_output_index=upstream_output_index,
-                                item_type=item.get("type") if isinstance(item.get("type"), str) else None,
-                                events=[event],
-                                item=item,
+                    if event_type in _TERMINAL_EVENT_TYPES:
+                        terminal = event
+                        usage = _response_usage(event)
+                        saw_done = await _drain_round_stream(round_stream, saw_done=saw_done)
+                        break
+
+                    upstream_output_index = event.get("output_index")
+                    if event_type == "response.output_item.added":
+                        item = _item_payload(event)
+                        if item.get("type") == "reasoning":
+                            item_kind[upstream_output_index] = "reasoning"
+                            output_index_map[upstream_output_index] = downstream_output_index
+                            event["output_index"] = downstream_output_index
+                            downstream_output_index += 1
+                            event["sequence_number"] = seq.next()
+                            yield _format_event(event)
+                            yielded_any = True
+                        else:
+                            item_kind[upstream_output_index] = "buffered"
+                            buffered_outputs.append(
+                                _BufferedOutput(
+                                    upstream_output_index=upstream_output_index,
+                                    item_type=item.get("type") if isinstance(item.get("type"), str) else None,
+                                    events=[event],
+                                    item=item,
+                                )
                             )
-                        )
-                    continue
+                        continue
 
-                kind = item_kind.get(upstream_output_index)
-                if kind == "reasoning":
-                    if upstream_output_index in output_index_map:
-                        event["output_index"] = output_index_map[upstream_output_index]
-                    event["sequence_number"] = seq.next()
-                    if event_type == "response.output_item.done":
-                        reasoning_item = _item_payload(event)
-                        round_reasoning.append(reasoning_item)
-                        final_output.append(reasoning_item)
-                    yield _format_event(event)
-                    yielded_any = True
-                elif kind == "buffered":
-                    entry = _find_buffer(buffered_outputs, upstream_output_index)
-                    if entry is not None:
-                        entry.events.append(event)
+                    kind = item_kind.get(upstream_output_index)
+                    if kind == "reasoning":
+                        if upstream_output_index in output_index_map:
+                            event["output_index"] = output_index_map[upstream_output_index]
+                        event["sequence_number"] = seq.next()
                         if event_type == "response.output_item.done":
-                            entry.item = _item_payload(event) or entry.item
-                else:
-                    event["sequence_number"] = seq.next()
-                    yield _format_event(event)
-                    yielded_any = True
+                            reasoning_item = _item_payload(event)
+                            round_reasoning.append(reasoning_item)
+                            final_output.append(reasoning_item)
+                        yield _format_event(event)
+                        yielded_any = True
+                    elif kind == "buffered":
+                        entry = _find_buffer(buffered_outputs, upstream_output_index)
+                        if entry is not None:
+                            entry.events.append(event)
+                            if event_type == "response.output_item.done":
+                                entry.item = _item_payload(event) or entry.item
+                    else:
+                        event["sequence_number"] = seq.next()
+                        yield _format_event(event)
+                        yielded_any = True
 
             saw_terminal = terminal is not None
             _sum_usage(total_usage, usage)

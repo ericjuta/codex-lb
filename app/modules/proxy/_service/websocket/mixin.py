@@ -409,6 +409,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _rewrite_websocket_suppressed_duplicate_tool_call_completion_event,
     _sanitize_websocket_connect_failure,
     _sanitize_websocket_previous_response_error,
+    _sanitize_websocket_previous_response_input_items,
     _sanitize_websocket_terminal_error_fields,
     _serialize_websocket_error_event,
     _trim_websocket_previous_response_input_items,
@@ -1790,7 +1791,9 @@ class _WebSocketMixin:
         client_full_resend_retry_safe = False
         if responses_payload.previous_response_id is not None and isinstance(responses_payload.input, list):
             previous_response_input_items = cast(list[JsonValue], responses_payload.input)
-            client_full_resend_input_items = previous_response_input_items
+            client_full_resend_input_items = _sanitize_websocket_previous_response_input_items(
+                previous_response_input_items
+            )
             client_full_resend_retry_safe = _websocket_client_previous_response_full_resend_is_retry_safe(
                 previous_response_id=responses_payload.previous_response_id,
                 input_value=responses_payload.input,
@@ -1851,7 +1854,9 @@ class _WebSocketMixin:
             original_input_items = cast(list[JsonValue], responses_payload.input)
             original_input_item_count = len(original_input_items)
             original_input_fingerprint = _facade()._fingerprint_input_items(original_input_items)
-            original_full_resend_payload = responses_payload
+            original_full_resend_payload = responses_payload.model_copy(
+                update={"input": _sanitize_websocket_previous_response_input_items(original_input_items)}
+            )
             responses_payload = responses_payload.model_copy(
                 update={
                     "previous_response_id": session_anchor.previous_response_id,
@@ -4649,7 +4654,10 @@ class _WebSocketMixin:
                 "account_health_error_handled",
                 False,
             )
-        if request_state.suppressed_duplicate_tool_call and error_code == "stream_incomplete":
+        if (
+            request_state.suppressed_duplicate_tool_call
+            and error_code == _facade()._SUPPRESSED_DUPLICATE_TOOL_CALL_ERROR_CODE
+        ):
             settlement.account_health_error = False
         if (
             error_code == "stream_incomplete"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from types import SimpleNamespace
 from typing import cast
 
@@ -190,7 +190,7 @@ async def test_fold_responses_stream_continues_truncated_round_and_reuses_payloa
     ]
     opened_payloads: list[JsonObject] = []
 
-    async def open_round(payload: JsonObject) -> AsyncIterator[str]:
+    async def open_round(payload: JsonObject) -> AsyncGenerator[str, None]:
         opened_payloads.append(payload)
         events = round_events[len(opened_payloads) - 1]
         for event in events:
@@ -281,7 +281,7 @@ async def test_fold_responses_stream_stops_and_delivers_truncated_round_tool_cal
     # the buffered call, and reports the overriding stopped reason.
     opened_payloads: list[JsonObject] = []
 
-    async def open_round(payload: JsonObject) -> AsyncIterator[str]:
+    async def open_round(payload: JsonObject) -> AsyncGenerator[str, None]:
         opened_payloads.append(payload)
         yield _event(_created("resp_visible"))
         for event in _reasoning_events(output_index=0, item_id="rs_1", encrypted_content="enc1"):
@@ -341,7 +341,7 @@ async def test_fold_responses_stream_counts_terminal_stop_decision(
 ) -> None:
     # min_n=2 leaves tier 1 outside the continuation window, so the truncated
     # round terminates the fold with a tier_out_of_window stop decision.
-    async def open_round(payload: JsonObject) -> AsyncIterator[str]:
+    async def open_round(payload: JsonObject) -> AsyncGenerator[str, None]:
         del payload
         yield _event(_created("resp_stop"))
         for event in _reasoning_events(output_index=0, item_id="rs_stop", encrypted_content="enc_stop"):
@@ -399,7 +399,7 @@ def test_record_continuation_decision_noops_without_prometheus(monkeypatch: pyte
 async def test_fold_responses_stream_drains_terminal_round_before_returning() -> None:
     round_drained = False
 
-    async def open_round(payload: JsonObject) -> AsyncIterator[str]:
+    async def open_round(payload: JsonObject) -> AsyncGenerator[str, None]:
         nonlocal round_drained
         del payload
         try:
@@ -557,7 +557,7 @@ async def test_fold_labels_decision_with_client_and_effort(
     decision_counter: _ObservedCounter,
     reasoning_tokens_counter: _ObservedCounter,
 ) -> None:
-    async def open_round(payload: JsonObject) -> AsyncIterator[str]:
+    async def open_round(payload: JsonObject) -> AsyncGenerator[str, None]:
         del payload
         yield _event(_created("resp_lbl"))
         for event in _reasoning_events(output_index=0, item_id="rs_lbl", encrypted_content="enc_lbl"):

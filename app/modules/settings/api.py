@@ -19,11 +19,11 @@ from app.core.auth.dependencies import (
     set_dashboard_error_format,
     validate_dashboard_session,
 )
-from app.core.clients.http import _build_ssl_context
+from app.core.clients.http import _shared_ssl_context
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.exceptions import DashboardBadRequestError
-from app.core.upstream_proxy import resolve_proxy_endpoint
+from app.core.upstream_proxy import UpstreamProxyRouteError, resolve_proxy_endpoint
 from app.db.models import Account, AccountProxyBinding, AccountStatus, ProxyEndpoint, ProxyPool, ProxyPoolMember
 from app.dependencies import SettingsContext, get_proxy_service_for_app, get_settings_context
 from app.modules.proxy.account_cache import clear_account_routing_unavailable, get_account_selection_cache
@@ -216,6 +216,10 @@ async def create_upstream_proxy_endpoint(
     _write_access=Depends(require_dashboard_write_access),
     context: SettingsContext = Depends(get_settings_context),
 ) -> UpstreamProxyEndpointResponse:
+    if payload.scheme.lower() in {"http", "https"} and payload.username is not None and ":" in payload.username:
+        # Mirrors the resolver: HTTP(S) Basic user-id cannot encode a colon.
+        # SOCKS5/SOCKS5H RFC 1929 usernames may contain ':'.
+        raise DashboardBadRequestError('Proxy usernames cannot contain ":"', code="invalid_proxy_username")
     encryptor = TokenEncryptor()
     row = ProxyEndpoint(
         name=payload.name,
@@ -241,7 +245,11 @@ async def test_upstream_proxy_endpoint(
     row = await context.session.get(ProxyEndpoint, endpoint_id)
     if row is None:
         raise DashboardBadRequestError("Proxy endpoint not found", code="proxy_endpoint_not_found")
-    endpoint = resolve_proxy_endpoint(row, encryptor=TokenEncryptor())
+    try:
+        endpoint = resolve_proxy_endpoint(row, encryptor=TokenEncryptor())
+    except UpstreamProxyRouteError as exc:
+        # Persisted rows the resolver now rejects report the reason instead of 500.
+        return UpstreamProxyEndpointTestResponse(endpoint_id=row.id, ok=False, elapsed_ms=0, error=exc.reason)
     started = time.monotonic()
     try:
         status_code = await _probe_upstream_proxy_endpoint(endpoint)
@@ -488,7 +496,7 @@ async def _probe_upstream_proxy_endpoint(endpoint) -> int:
             username=endpoint.username,
             password=endpoint.password,
             rdns=endpoint.proxy_url.split(":", 1)[0] == "socks5h",
-            ssl=_build_ssl_context(),
+            ssl=_shared_ssl_context(),
         )
         async with aiohttp.ClientSession(
             connector=connector,

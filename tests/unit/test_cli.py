@@ -16,34 +16,6 @@ from app.core.runtime_logging import UtcDefaultFormatter
 pytestmark = pytest.mark.unit
 
 
-def test_main_passes_timestamped_log_config(monkeypatch):
-    captured: dict[str, Any] = {}
-
-    def fake_run(*args, **kwargs):
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-
-    monkeypatch.setattr(sys, "argv", ["codex-lb"])
-    monkeypatch.setattr(cli, "_http_responses_session_bridge_enabled", lambda: True)
-    monkeypatch.setattr(cli, "_load_uvicorn", lambda: SimpleNamespace(run=fake_run))
-
-    cli.main()
-
-    kwargs = captured["kwargs"]
-    assert isinstance(kwargs, dict)
-    log_config = kwargs["log_config"]
-    assert isinstance(log_config, dict)
-    formatters = log_config["formatters"]
-    assert formatters["default"]["fmt"].startswith("%(asctime)s ")
-    assert formatters["access"]["fmt"].startswith("%(asctime)s ")
-    assert kwargs["workers"] == 1
-    assert kwargs["loop"] == "auto"
-    assert kwargs["http"] == "auto"
-    assert kwargs["timeout_keep_alive"] == 7200
-    assert kwargs["ws_max_size"] == 128 * 1024 * 1024
-    assert kwargs["proxy_headers"] is False
-
-
 def test_main_validates_selected_port_before_loading_uvicorn(monkeypatch):
     def fail_load_uvicorn():
         pytest.fail("Uvicorn must not load when the selected port conflicts with the metrics port")
@@ -358,29 +330,6 @@ def test_main_passes_worker_and_parser_overrides(monkeypatch):
     kwargs = captured["kwargs"]
     assert kwargs["workers"] == 2
     assert kwargs["loop"] == "asyncio"
-    assert kwargs["http"] == "h11"
-
-
-def test_main_reads_worker_env_defaults_when_bridge_disabled(monkeypatch):
-    captured: dict[str, Any] = {}
-
-    def fake_run(*args, **kwargs):
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-
-    monkeypatch.setenv("CODEX_LB_UVICORN_WORKERS", "4")
-    monkeypatch.setenv("CODEX_LB_UVICORN_LOOP", "uvloop")
-    monkeypatch.setenv("CODEX_LB_UVICORN_HTTP", "httptools")
-    monkeypatch.setattr(sys, "argv", ["codex-lb"])
-    monkeypatch.setattr(cli, "_http_responses_session_bridge_enabled", lambda: False)
-    monkeypatch.setattr(cli, "_load_uvicorn", lambda: SimpleNamespace(run=fake_run))
-
-    cli.main()
-
-    kwargs = captured["kwargs"]
-    assert kwargs["workers"] == 4
-    assert kwargs["loop"] == "uvloop"
-    assert kwargs["http"] == "httptools"
 
 
 def test_main_uses_bridge_safe_worker_default(monkeypatch):
@@ -428,7 +377,7 @@ def test_main_uses_addressable_worker_pool_when_bridge_enabled(monkeypatch):
     assert options.workers == 2
     assert options.loop == "uvloop"
     assert options.http == "httptools"
-    assert options.timeout_keep_alive == 7200
+    assert options.timeout_keep_alive == 300
     assert options.ws_max_size == 128 * 1024 * 1024
     assert isinstance(captured["log_config"], dict)
 

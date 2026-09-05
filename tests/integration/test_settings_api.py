@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import text
 
 from app.core.auth import generate_unique_account_id
-from app.db.models import Account, AccountStatus
+from app.db.models import Account, AccountStatus, ProxyEndpoint
 from app.db.session import SessionLocal
 
 pytestmark = pytest.mark.integration
@@ -441,6 +441,64 @@ async def test_upstream_proxy_admin_controls(async_client):
     assert admin_payload["defaultPoolId"] == pool_payload["id"]
     assert admin_payload["endpoints"][0]["id"] == endpoint_payload["id"]
     assert admin_payload["pools"][0]["endpointIds"] == [endpoint_payload["id"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scheme", ["http", "https"])
+async def test_upstream_proxy_endpoint_create_rejects_colon_in_http_username(async_client, scheme):
+    response = await async_client.post(
+        "/api/settings/upstream-proxy/endpoints",
+        json={
+            "name": "Colon proxy",
+            "scheme": scheme,
+            "host": "proxy.internal",
+            "port": 8080,
+            "username": "user:name",
+            "password": "secret",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_proxy_username"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scheme", ["socks5", "socks5h"])
+async def test_upstream_proxy_endpoint_create_accepts_colon_in_socks_username(async_client, scheme):
+    response = await async_client.post(
+        "/api/settings/upstream-proxy/endpoints",
+        json={
+            "name": "SOCKS colon proxy",
+            "scheme": scheme,
+            "host": "proxy.internal",
+            "port": 1080,
+            "username": "user:name",
+            "password": "secret",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["scheme"] == scheme
+    assert payload["username"] == "user:name"
+    assert "password" not in payload
+
+
+@pytest.mark.asyncio
+async def test_upstream_proxy_endpoint_test_reports_unresolvable_persisted_row(async_client):
+    async with SessionLocal() as session:
+        row = ProxyEndpoint(name="Legacy", scheme="https", host="proxy.internal", port=8080, username="user:name")
+        session.add(row)
+        await session.commit()
+        endpoint_id = row.id
+
+    response = await async_client.post(f"/api/settings/upstream-proxy/endpoints/{endpoint_id}/test")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error"] == "invalid_proxy_username"
+    assert payload["statusCode"] is None
 
 
 @pytest.mark.asyncio

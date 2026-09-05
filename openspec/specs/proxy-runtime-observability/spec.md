@@ -279,3 +279,163 @@ contain request ids, account ids, or free-form upstream messages.
 - **THEN** `codex_lb_account_transient_errors_total{code="upstream_websocket_open_timeout"}`
   increments by one
 
+### Requirement: Request metric labels have bounded cardinality
+
+The service MUST expose request counter and duration metrics with finite-vocabulary `method` and `path` labels. The `method` label MUST be one of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`, or `OTHER`; any other HTTP method MUST map to `OTHER`. The `path` label MUST preserve the existing `/v1/...`, `/api/...`, and `/health/...` collapse values and the existing bare `/health` value. Paths under `/backend-api/` MUST map to `/backend-api/...`, and paths under `/internal/` MUST map to `/internal/...`; every other path MUST map to the single `/other` sentinel. Metric labels MUST NOT contain raw or truncated unmatched paths.
+
+#### Scenario: Unmatched paths share one metric label
+
+- **WHEN** requests use distinct paths outside the `/v1/`, `/api/`, `/health/`, `/backend-api/`, and `/internal/` prefixes, including SPA-looking paths
+- **THEN** request counter and duration metrics use `path="/other"` for every such request
+- **AND** no raw unmatched path or truncated unmatched path becomes a metric label value
+
+#### Scenario: Primary proxy paths use bounded labels
+
+- **WHEN** requests use `/backend-api/codex/responses`, dynamic `/backend-api/files/{file_id}/uploaded`, or `/internal/bridge/...` paths
+- **THEN** request counter and duration metrics use `/backend-api/...` for every `/backend-api/` path and `/internal/...` for every `/internal/` path
+- **AND** no dynamic file ID or other raw suffix becomes a metric label value
+
+#### Scenario: Unsupported methods share the OTHER label
+
+- **WHEN** a request uses an HTTP method outside the supported method vocabulary
+- **THEN** request counter and duration metrics use `method="OTHER"`
+
+#### Scenario: Existing collapsed paths remain stable
+
+- **WHEN** a request uses a path under `/v1/`, `/api/`, or `/health/`, or uses bare `/health`
+- **THEN** the metric path label retains its existing value
+
+### Requirement: Rendered log records redact URL userinfo and keyed secrets
+
+Every log record rendered by the application's text, access, and JSON formatters MUST have URL userinfo, in both the `scheme://user:password@` and the username-only `scheme://user@` forms, replaced with `scheme://[REDACTED]@` and `Basic <token>` authorization tokens (in the `Basic`, `basic`, and `BASIC` scheme spellings) replaced with `Basic [REDACTED]`, regardless of the originating logger and including exception and stack text. Structured extra keys MUST be redacted like values. Records at WARNING level or higher MUST additionally have keyed secrets (`password=`, `token=`, `api_key=`, bearer, basic and authorization values in any letter case, JSON secret fields embedded in strings, and structured extra fields whose key names a secret, whatever the value type) redacted. Redaction MUST never raise and MUST fail closed: if a redaction pass fails, the affected text is replaced with a `[REDACTED: log redaction failed]` placeholder and the record is still emitted with its timestamp, level, and logger; structured extras that are cyclic, pathologically deep, or unprintable MUST still be emitted with redaction applied to every finite, printable part. Application startup MUST route `warnings.warn` output through the same log handlers. Log records that contain no secret patterns MUST render byte-identically to the unredacted rendering.
+
+#### Scenario: Unclosed aiohttp connection repr is credential-free
+
+- **GIVEN** an aiohttp connection is finalized without release and its connection key holds a credentialed proxy URL
+- **WHEN** the loop exception handler logs `Unclosed connection` through the `asyncio` logger
+- **THEN** the rendered record contains `proxy=URL('scheme://[REDACTED]@host:port')`
+- **AND** the password appears in neither the text nor the JSON rendering
+
+#### Scenario: Userinfo containing unencoded sub-delims is redacted
+
+- **GIVEN** a proxy password containing an RFC 3986 sub-delim such as `'`, which yarl leaves unencoded in the URL userinfo, or a raw environment proxy string that is not percent-encoded at all
+- **WHEN** the URL is rendered in any log record at any level
+- **THEN** the record contains `scheme://[REDACTED]@host:port` and neither the raw nor the percent-encoded password
+
+#### Scenario: Username-only URL userinfo is redacted
+
+- **GIVEN** a URL whose userinfo carries only a username (`scheme://user@host:port`) with no `:password` part
+- **WHEN** the URL is rendered in any log record at any level, text or JSON
+- **THEN** the record contains `scheme://[REDACTED]@host:port` and the username does not appear
+
+#### Scenario: Proxy error repr with a Basic token is masked
+
+- **GIVEN** an aiohttp proxy error whose tunnel request headers carry `Proxy-Authorization: Basic <token>`
+- **WHEN** the error is logged with `%r` at any level, or its repr is logged by the loop's exception handler for an unretrieved task
+- **THEN** the rendered record contains `'Proxy-Authorization': 'Basic [REDACTED]'`
+- **AND** neither the token nor the password appears in the text or JSON rendering
+
+#### Scenario: Secret-keyed structured extras are masked
+
+- **GIVEN** a WARNING or higher record carries an extra field such as `{"password": "..."}` or `{"access_token": "..."}`
+- **WHEN** the JSON formatter renders the record
+- **THEN** the field value is replaced with `[REDACTED]` whatever its type (string, list, number, bytes, mapping); a null value stays null
+- **AND** fields such as `attempt` or `tokens` keep their values
+- **AND** an extra key carrying URL userinfo is rendered as `scheme://[REDACTED]@host`
+
+#### Scenario: Secret-free records are unchanged
+
+- **WHEN** a record such as the one-time bootstrap token banner contains no URL userinfo or keyed secret pattern
+- **THEN** the rendered output is byte-identical to the unredacted rendering
+
+#### Scenario: Redaction failure never breaks logging and fails closed
+
+- **WHEN** a redaction pass raises while rendering a record
+- **THEN** the record is still emitted, in text and JSON, with its timestamp, level and logger
+- **AND** the affected text is rendered as `[REDACTED: log redaction failed]` rather than the original text
+
+#### Scenario: Cyclic or unprintable structured extras never drop the record
+
+- **GIVEN** a record carries an extra whose container refers back to itself, or whose `repr()` raises
+- **WHEN** the JSON formatter renders the record
+- **THEN** the record is emitted, the back-reference collapses to a `{...}` / `[...]` placeholder and the unprintable value to an `<unprintable ...>` marker
+- **AND** secret-keyed fields and URL userinfo in the finite part of the extra are still redacted
+
+#### Scenario: Secret-keyed mappings rendered as Python repr are masked
+
+- **GIVEN** a WARNING or higher record renders a mapping with `%r`, or the JSON formatter falls back to text for a structured extra
+- **WHEN** the rendered text contains `'password': 'x'`, `'access_token': [...]` or `'api_key': 123`
+- **THEN** each secret-keyed value is replaced with `[REDACTED]` (quotes kept for quoted strings)
+- **AND** `'Proxy-Authorization': 'Basic <token>'` keeps rendering as `'Basic [REDACTED]'`
+
+### Requirement: Secret-pattern redaction stays on the current line
+
+Keyed, bearer, basic, authorization, JSON, and Python-repr secret patterns MUST be applied independently to each CR/LF-delimited line of rendered log text. A match MUST NOT consume CR or LF or any text from a following line. Unterminated JSON secret values MUST be redacted through the end of the current line. A Bearer credential MUST treat a glued `:` tail on the same line as credential material. Same-line comma and ampersand separators MUST keep their existing truncation behavior. Records below WARNING MUST still skip these keyed patterns.
+
+#### Scenario: Authorization does not swallow the next traceback line
+
+- **GIVEN** a WARNING or higher record whose exception text contains `authorization=Basic X` followed by a newline and `status=failed`
+- **WHEN** the text or JSON formatter renders the record
+- **THEN** the Basic credential is replaced with `[REDACTED]`
+- **AND** the following line still contains `status=failed`
+
+#### Scenario: Unterminated JSON secret is redacted through end of line
+
+- **GIVEN** a WARNING or higher record contains `{"token":"abc` with no closing quote before the line ending, then a following `safe diagnostic line`
+- **WHEN** the text or JSON formatter renders the record
+- **THEN** the token value is replaced with `[REDACTED]`
+- **AND** `safe diagnostic line` remains
+
+#### Scenario: Bearer glued colon tail is redacted
+
+- **GIVEN** a WARNING or higher record contains `Bearer abc.def:GLUEDTAIL, status=502`
+- **WHEN** the text or JSON formatter renders the record
+- **THEN** the rendered text contains `Bearer [REDACTED], status=502`
+- **AND** neither `abc.def` nor `GLUEDTAIL` appears
+
+#### Scenario: Same-line authorization truncation is unchanged
+
+- **GIVEN** a WARNING or higher record contains `Authorization: Basic dXNlcjpwYXNz status=failed` on one line with no comma
+- **WHEN** the text formatter renders the record
+- **THEN** the credential is redacted
+- **AND** `status=failed` is not present on that line
+
+#### Scenario: Line terminators are preserved and redaction is idempotent
+
+- **GIVEN** rendered secret-bearing text that uses LF and CRLF separators
+- **WHEN** secret-pattern redaction is applied once and then again
+- **THEN** the terminator bytes and line count are unchanged
+- **AND** the second pass equals the first
+
+### Requirement: Loop exception handler output redacts context value reprs
+
+Application startup MUST install an asyncio loop exception handler that sanitizes the `message` and redacts the `repr()` of every other context value the default handler would render before delegating to the previously installed or default handler. If the exception's `str()`, `repr()`, or formatted traceback would change under redaction, the handler MUST replace that exception with a secret-free snapshot that does not carry the raw cause or context. `source_traceback` and `handle_traceback` MUST use formatted-text redaction. Secret-free context output MUST be byte-identical to the default handler output. Installation MUST be idempotent. Both `install_redacting_loop_exception_handler` and application lifespan MUST call `logging.captureWarnings(True)` so uvicorn workers inherit the same handlers.
+
+The previously installed handler and the default fallback MUST catch `BaseException` except `KeyboardInterrupt` and `SystemExit` (including `CancelledError`) and MUST emit the sanitized context plus a fixed `Unhandled error in exception handler` record without rethrowing. Fail-closed MUST omit `exception`, `source_traceback`, and `handle_traceback`, keeping only the sanitized `message` and opaque stand-ins for remaining values, so the report is still emitted and no unredacted value reaches the delegate. A context value whose `repr()` raises MUST be replaced by an opaque stand-in.
+
+#### Scenario: Unclosed aiohttp connection repr is credential-free before logging
+
+- **GIVEN** an aiohttp connection is finalized without release and its connection key holds a credentialed proxy URL
+- **WHEN** the loop exception handler receives `Unclosed connection` with the connection object in its context
+- **THEN** the `asyncio` log record already contains `proxy=URL('scheme://[REDACTED]@host:port')`
+- **AND** the password appears nowhere in the record, independent of the formatter in use, including passwords carrying sub-delims such as `'` that yarl leaves unencoded
+
+#### Scenario: Unretrieved task exception repr is redacted
+
+- **WHEN** a task whose exception text or repr carries URL userinfo or a `Basic <token>` header is garbage-collected unretrieved
+- **THEN** the `Task exception was never retrieved` record renders the task repr with `[REDACTED]` in place of the credential
+
+#### Scenario: Secret-free contexts and failures are transparent
+
+- **WHEN** the context contains no secret pattern
+- **THEN** the emitted record message and exception info are byte-identical to the default handler output
+- **WHEN** a handler was already installed
+- **THEN** the previously installed handler still receives the (redacted) context
+- **WHEN** a context value's `repr()` raises
+- **THEN** the record is still emitted with its `message` line intact and that value rendered as an opaque stand-in naming the value type and the exception type
+- **WHEN** the previous handler or default fallback raises `CancelledError` or another `BaseException` other than `KeyboardInterrupt` or `SystemExit`
+- **THEN** the sanitized context is still emitted with a fixed `Unhandled error in exception handler` record and the exception is not rethrown
+- **WHEN** the redaction pass itself fails
+- **THEN** the record is still emitted with a sanitized `message` and opaque stand-ins
+- **AND** `exception`, `source_traceback`, and `handle_traceback` are omitted
+

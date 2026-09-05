@@ -401,5 +401,13 @@
         "disabled": "TOTP 已禁用"
       }
     }
+  },
+  "routeRecovery": {
+    "goToDashboard": "前往仪表盘",
+    "loadErrorDescription": "仪表盘更新或网络中断可能阻止了此页面加载。",
+    "loadErrorTitle": "无法加载此页面",
+    "notFoundDescription": "请求的仪表盘页面不存在或已移动。",
+    "notFoundTitle": "找不到页面",
+    "reload": "重新加载页面"
   }
 }

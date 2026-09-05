@@ -9,7 +9,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.crypto import TokenEncryptor
-from app.core.upstream_proxy import UpstreamProxyRouteError, resolve_upstream_route
+from app.core.upstream_proxy import UpstreamProxyRouteError, resolve_proxy_endpoint, resolve_upstream_route
 from app.core.upstream_proxy.resolver import _is_missing_upstream_proxy_schema
 from app.db.models import (
     Account,
@@ -168,3 +168,42 @@ async def test_account_bound_pool_does_not_fall_back_to_default(
 
     assert exc_info.value.reason == "pool_has_no_active_endpoints"
     assert exc_info.value.pool_id == "empty_bound"
+
+
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_resolver_rejects_colon_in_http_proxy_username(scheme: str) -> None:
+    encryptor = _encryptor()
+    endpoint = ProxyEndpoint(
+        id="colon",
+        name="colon",
+        scheme=scheme,
+        host="proxy.test",
+        port=8080,
+        username="user:name",
+        password_encrypted=encryptor.encrypt("secret"),
+    )
+
+    with pytest.raises(UpstreamProxyRouteError) as exc_info:
+        resolve_proxy_endpoint(endpoint, encryptor=encryptor)
+
+    assert exc_info.value.reason == "invalid_proxy_username"
+
+
+@pytest.mark.parametrize("scheme", ["socks5", "socks5h"])
+def test_resolver_accepts_colon_in_socks_proxy_username(scheme: str) -> None:
+    encryptor = _encryptor()
+    endpoint = ProxyEndpoint(
+        id="socks-colon",
+        name="socks-colon",
+        scheme=scheme,
+        host="proxy.test",
+        port=1080,
+        username="user:name",
+        password_encrypted=encryptor.encrypt("secret"),
+    )
+
+    resolved = resolve_proxy_endpoint(endpoint, encryptor=encryptor)
+
+    assert resolved.username == "user:name"
+    assert resolved.password == "secret"
+    assert resolved.scheme == scheme

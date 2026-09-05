@@ -49,6 +49,7 @@ from app.core.resilience.backpressure import BackpressureMiddleware
 from app.core.resilience.bulkhead import BulkheadMiddleware, get_bulkhead
 from app.core.resilience.memory_monitor import configure as configure_memory_monitor
 from app.core.retention.scheduler import build_data_retention_scheduler
+from app.core.runtime_logging import install_redacting_loop_exception_handler
 from app.core.shutdown import close_control_plane_task_admission
 from app.core.usage.refresh_scheduler import build_usage_refresh_scheduler
 from app.core.usage.reset_credits_refresh_scheduler import build_rate_limit_reset_credits_scheduler
@@ -146,6 +147,13 @@ async def lifespan(app: FastAPI):
     import app.core.startup as startup_module
 
     shutdown_state = import_module("app.core.shutdown")
+    # First app code on uvicorn's loop: mask credential-bearing object reprs
+    # (aiohttp ConnectionKey proxy URLs, BasicAuth) before the default handler
+    # renders them into the 'asyncio' logger. captureWarnings also lives in
+    # install_redacting_loop_exception_handler so spawned workers, which never
+    # run cli.main(), still route ResourceWarning reprs through redactors.
+    logging.captureWarnings(True)
+    install_redacting_loop_exception_handler(asyncio.get_running_loop())
     metrics_server = None
     metrics_server_task: asyncio.Task[None] | None = None
     ring_service = None
@@ -219,7 +227,13 @@ async def lifespan(app: FastAPI):
         prometheus_module = import_module("prometheus_client")
         make_asgi_app = getattr(prometheus_module, "make_asgi_app")
         metrics_app = make_asgi_app(registry=scrape_registry)
-        config = uvicorn.Config(metrics_app, host="0.0.0.0", port=settings.metrics_port, log_level="warning")
+        config = uvicorn.Config(
+            metrics_app,
+            host="0.0.0.0",
+            port=settings.metrics_port,
+            log_level="warning",
+            log_config=None,
+        )
         metrics_server = uvicorn.Server(config)
 
         async def _serve_metrics(srv: _MetricsServer) -> None:

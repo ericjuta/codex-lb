@@ -8,6 +8,7 @@ from typing import cast
 import aiohttp
 import pytest
 
+from app.core.clients.proxy import ProxyResponseError
 from app.core.config.settings import get_settings
 from app.core.openai.requests import ResponsesRequest
 from app.modules.api_keys.service import ApiKeyUsageReservationData
@@ -1297,3 +1298,88 @@ def test_build_owner_forward_headers_drops_connection_named_headers() -> None:
     assert "Connection" not in headers
     assert "connection" not in headers
     assert headers.get("x-request-id") == "req-123"
+
+
+def test_build_owner_forward_headers_drop_illegal_control_char_client_headers() -> None:
+    payload = _payload()
+    context = HTTPBridgeForwardContext(
+        origin_instance="instance-a",
+        target_instance="instance-b",
+        codex_session_affinity=False,
+        downstream_turn_state=None,
+    )
+
+    headers = build_owner_forward_headers(
+        headers={
+            "x-request-trace": "ok\tvalue",
+            "x-bad-trace": "bad\x00value",
+            "x-bad-name\t": "bad",
+        },
+        payload=payload,
+        context=context,
+    )
+
+    assert headers["x-request-trace"] == "ok\tvalue"
+    assert "x-bad-trace" not in headers
+    assert "x-bad-name\t" not in headers
+
+
+def test_build_owner_forward_headers_allow_htab_in_signed_metadata_values() -> None:
+    payload = _payload()
+    context = HTTPBridgeForwardContext(
+        origin_instance="instance-a",
+        target_instance="instance-b",
+        codex_session_affinity=False,
+        downstream_turn_state="http_turn\tgenerated",
+        original_affinity_kind="session_header",
+        original_affinity_key="sid\t123",
+    )
+
+    headers = build_owner_forward_headers(
+        headers={"authorization": "Bearer\tclient"},
+        payload=payload,
+        context=context,
+    )
+
+    assert headers["x-codex-turn-state"] == "http_turn\tgenerated"
+    assert headers[HTTP_BRIDGE_AFFINITY_KEY_HEADER] == "sid\t123"
+    assert headers["authorization"] == "Bearer\tclient"
+
+
+def test_build_owner_forward_headers_reject_illegal_control_char_affinity_metadata() -> None:
+    payload = _payload()
+    context = HTTPBridgeForwardContext(
+        origin_instance="instance-a",
+        target_instance="instance-b",
+        codex_session_affinity=False,
+        downstream_turn_state=None,
+        original_affinity_kind="prompt_cache",
+        original_affinity_key="cache\x00key",
+    )
+
+    with pytest.raises(ProxyResponseError) as exc_info:
+        build_owner_forward_headers(headers={}, payload=payload, context=context)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.payload["error"]["code"] == "bridge_forward_invalid"
+
+
+def test_build_owner_forward_headers_reject_illegal_control_char_reservation_metadata() -> None:
+    payload = _payload()
+    context = HTTPBridgeForwardContext(
+        origin_instance="instance-a",
+        target_instance="instance-b",
+        codex_session_affinity=False,
+        downstream_turn_state=None,
+        reservation=ApiKeyUsageReservationData(
+            reservation_id="reservation-1",
+            key_id="key-1",
+            model="gpt-5.4\npriority",
+        ),
+    )
+
+    with pytest.raises(ProxyResponseError) as exc_info:
+        build_owner_forward_headers(headers={}, payload=payload, context=context)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.payload["error"]["code"] == "bridge_forward_invalid"

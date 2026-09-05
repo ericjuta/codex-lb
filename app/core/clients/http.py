@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import os
 import socket
@@ -107,6 +108,17 @@ def _build_ssl_context() -> ssl.SSLContext:
     return context
 
 
+@functools.cache
+def _shared_ssl_context() -> ssl.SSLContext:
+    """Return the immutable verification context shared by outbound connectors."""
+
+    return _build_ssl_context()
+
+
+def _reset_shared_ssl_context() -> None:
+    _shared_ssl_context.cache_clear()
+
+
 def _apply_tcp_keepalive(sock: socket.socket) -> None:
     """Enable OS keepalive probes on an upstream socket.
 
@@ -173,7 +185,7 @@ class HttpClientLease:
 
 async def _build_http_client() -> HttpClient:
     settings = get_settings()
-    ssl_context = _build_ssl_context()
+    ssl_context = _shared_ssl_context()
     proxy_env = (
         settings.upstream_websocket_proxy_env() if hasattr(settings, "upstream_websocket_proxy_env") else os.environ
     )
@@ -397,6 +409,7 @@ async def close_http_client() -> None:
         client = _http_client
         _http_client = None
         _last_generationless_network_rotation_at = None
+        _reset_shared_ssl_context()
         clients = (
             *((client,) if client is not None else ()),
             *_retired_http_clients,

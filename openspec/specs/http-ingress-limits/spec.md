@@ -130,3 +130,86 @@ The HTTP ingress guard MUST NOT authenticate callers or replace, bypass, or relo
 
 - **WHEN** a request declares a body larger than its ingress budget
 - **THEN** the service returns the deterministic ingress 413 without invoking router-level authorization
+
+### Requirement: Keep-alive timers do not outlive lost connections
+
+The server MUST release the per-connection keep-alive timer whenever an HTTP connection is lost, regardless of whether the peer closed it cleanly or the loss was reported with an error (connection reset, timeout, or any other transport error). No per-connection server state (protocol, transport wrapper, request cycle, or request scope) MAY remain reachable from the event loop solely because a keep-alive timer is still armed for a connection that no longer exists. Clean-close teardown and the timer's idle-close behavior on intact connections MUST be unchanged, and the server MUST NOT close the transport again on the error path.
+
+#### Scenario: Peer resets an idle keep-alive connection after a response
+
+- **WHEN** a client completes an HTTP/1.1 request on a keep-alive connection and then closes the connection abnormally so the server observes a connection-reset error rather than end-of-stream
+- **THEN** the server cancels the connection's keep-alive timer immediately
+- **AND** the connection's protocol state becomes garbage-collectable without waiting for the keep-alive window to elapse
+
+#### Scenario: Clean close is unchanged
+
+- **WHEN** a client completes a request and closes the connection cleanly
+- **THEN** the server closes the transport and cancels the keep-alive timer as before
+- **AND** the connection's protocol state becomes garbage-collectable
+
+#### Scenario: Idle intact connection is still closed by the timer
+
+- **WHEN** a keep-alive connection stays open and idle for the configured keep-alive window
+- **THEN** the server closes the connection when the timer fires
+
+### Requirement: HTTP protocol selection preserves auto, h11, and httptools
+
+The server MUST honor the existing `--http` / `UVICORN_HTTP` choices `auto`, `h11`, and `httptools` while applying keep-alive timer cleanup. Explicit `h11` MUST select the h11 timer-cleanup subclass. Explicit `httptools` MUST select the httptools timer-cleanup subclass and MUST fail if httptools cannot be imported. `auto` MUST prefer the httptools timer-cleanup subclass when httptools is importable and MUST fall back to the h11 timer-cleanup subclass otherwise. Protocol selection MUST NOT add h2c or other upgrade-offer behavior.
+
+#### Scenario: Explicit h11 mode
+
+- **WHEN** the server starts with `--http h11`
+- **THEN** inbound HTTP/1.1 connections use the h11 keep-alive timer-cleanup subclass
+- **AND** the keep-alive timer is still released on connection loss
+
+#### Scenario: Explicit httptools mode
+
+- **WHEN** the server starts with `--http httptools` and httptools is installed
+- **THEN** inbound HTTP/1.1 connections use the httptools keep-alive timer-cleanup subclass
+- **AND** the keep-alive timer is still released on connection loss
+
+#### Scenario: Explicit httptools fails when unavailable
+
+- **WHEN** the server starts with `--http httptools` and httptools cannot be imported
+- **THEN** startup fails
+- **AND** no h2c or other upgrade-offer behavior is added
+
+#### Scenario: Auto prefers httptools when available
+
+- **WHEN** the server starts with `--http auto` and httptools is importable
+- **THEN** inbound HTTP/1.1 connections use the httptools keep-alive timer-cleanup subclass
+- **AND** protocol selection does not add h2c or other upgrade-offer behavior
+
+### Requirement: Idle keep-alive window is bounded and configurable
+
+The server MUST close an idle HTTP/1.1 keep-alive connection after a configurable window. The default window MUST be 300 seconds. The window MUST be configurable via the `--timeout-keep-alive` CLI flag and the `UVICORN_TIMEOUT_KEEP_ALIVE` environment variable, with the CLI flag taking precedence, and an invalid (non-integer) value MUST fail startup with a clear error.
+
+#### Scenario: Default keep-alive window
+
+- **WHEN** the server starts without `--timeout-keep-alive` or `UVICORN_TIMEOUT_KEEP_ALIVE`
+- **THEN** idle keep-alive connections are closed after 300 seconds
+
+#### Scenario: Operator overrides the keep-alive window
+
+- **WHEN** the operator starts the server with `--timeout-keep-alive <seconds>` or sets `UVICORN_TIMEOUT_KEEP_ALIVE=<seconds>`
+- **THEN** idle keep-alive connections are closed after the configured window
+
+#### Scenario: Invalid keep-alive window fails startup
+
+- **WHEN** `UVICORN_TIMEOUT_KEEP_ALIVE` or `--timeout-keep-alive` is not an integer
+- **THEN** startup fails with an error naming the flag and variable
+
+### Requirement: Image-route start-time middleware relays responses in the request task
+
+The image-route start-time middleware MUST be a pure ASGI middleware that invokes the downstream application in the same task and forwards response messages directly. It MUST NOT be registered via Starlette `BaseHTTPMiddleware` (including `@app.middleware("http")`). Response bodies forwarded on success paths MUST be byte-identical to the downstream application's output. This requirement applies only to the image-route start-time middleware and MUST NOT require every other HTTP middleware to be pure ASGI.
+
+#### Scenario: Streaming body is forwarded unchanged
+
+- **WHEN** a route returns a streaming response through the image-route start-time middleware
+- **THEN** the sequence of ASGI response messages, including headers, body bytes, and `more_body` flags, is identical to the sequence emitted without the middleware
+
+#### Scenario: Mid-stream failure propagates without a synthetic terminator
+
+- **WHEN** a response body generator raises after at least one body chunk has been sent
+- **THEN** the exception propagates to the ASGI server
+- **AND** the stack does not emit an additional `http.response.body` message with `more_body=false` before propagating

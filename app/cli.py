@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sqlite3
 import sys
@@ -104,11 +105,14 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ssl-keyfile", default=os.getenv("SSL_KEYFILE"))
     parser.add_argument(
         "--timeout-keep-alive",
-        default=os.getenv("UVICORN_TIMEOUT_KEEP_ALIVE", "7200"),
+        default=os.getenv("UVICORN_TIMEOUT_KEEP_ALIVE", "300"),
         help=(
-            "Seconds to keep idle HTTP connections open. Codex CLI reuses local "
-            "connections for large compact POSTs; short keepalive windows can leave the "
-            "client writing to a stale socket before the request reaches the app."
+            "Seconds an idle keep-alive HTTP connection stays open between requests "
+            "(env: UVICORN_TIMEOUT_KEEP_ALIVE). Keep it above any client's connection-pool "
+            "idle timeout (reqwest default 90s; Codex CLI opens a fresh connection per "
+            "/responses request, so this mainly matters for other SDKs and reverse proxies) "
+            "and well under an hour, because every idle connection is held for the full "
+            "window. uvicorn's stock 5s default is too short for pooled clients."
         ),
     )
     parser.add_argument(
@@ -162,6 +166,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     workers = _parse_server_workers(args.workers)
     os.environ["PORT"] = str(port)
     get_settings()
+    # Route warnings.warn() output (for example aiohttp ResourceWarning reprs
+    # that embed connection keys) through the redacting log handlers instead
+    # of raw stderr.
+    logging.captureWarnings(True)
     if workers > 1 and _http_responses_session_bridge_enabled():
         from app.core.runtime.bridge_worker_pool import run_bridge_worker_pool
 
@@ -181,13 +189,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
         return
 
+    from app.core.http_protocol import load_http_protocol_class
+
     _load_uvicorn().run(
         "app.main:app",
         host=args.host,
         port=port,
         workers=workers,
         loop=args.loop,
-        http=args.http,
+        http=load_http_protocol_class(args.http),
         ssl_certfile=args.ssl_certfile,
         ssl_keyfile=args.ssl_keyfile,
         timeout_keep_alive=timeout_keep_alive,

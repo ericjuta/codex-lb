@@ -30,6 +30,7 @@ from app.core.types import JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError
 from app.core.utils.request_id import ensure_request_id, get_request_id
 from app.core.utils.retry import backoff_seconds
+from app.core.utils.shared_future import _await_task_deferring_cancellation
 from app.db.models import Account, DashboardSettings, StickySessionKind
 from app.modules.api_keys.service import (
     ApiKeyData,
@@ -126,7 +127,7 @@ class _CompactServiceProtocol(Protocol):
         api_key_reservation: ApiKeyUsageReservationData | None,
         response: CompactResponsePayload | None,
         request_service_tier: str | None,
-    ) -> None: ...
+    ) -> tuple[bool, bool]: ...
 
     async def _write_request_log(self, **kwargs: Any) -> None: ...
 
@@ -657,6 +658,119 @@ class _CompactMixin:
         )
         if preferred_account_id is None:
             preferred_account_id = await proxy._resolve_file_account_for_responses(payload, headers)
+        deferred_permanent_health: list[tuple[Account, str]] = []
+        settlement_attempted = False
+        settlement_task: asyncio.Task[ProxyResponseError | None] | None = None
+
+        async def flush_deferred_health() -> None:
+            permanent_pending = list(deferred_permanent_health)
+            deferred_permanent_health.clear()
+            for failed_account, failed_code in permanent_pending:
+                try:
+                    await proxy._load_balancer.mark_permanent_failure(failed_account, failed_code)
+                except Exception:
+                    logger.warning(
+                        "Failed to flush deferred compact permanent health account_id=%s request_id=%s",
+                        failed_account.id,
+                        request_id,
+                        exc_info=True,
+                    )
+
+        async def _owned_compact_settlement(
+            *,
+            api_key: ApiKeyData | None,
+            api_key_reservation: ApiKeyUsageReservationData | None,
+            response: CompactResponsePayload | None,
+            request_service_tier: str | None,
+        ) -> ProxyResponseError | None:
+            nonlocal settlement_attempted
+            try:
+                settlement_confirmed, reservation_released = await proxy._settle_compact_api_key_usage(
+                    api_key=api_key,
+                    api_key_reservation=api_key_reservation,
+                    response=response,
+                    request_service_tier=request_service_tier,
+                )
+                if reservation_released:
+                    await flush_deferred_health()
+                if settlement_confirmed:
+                    return None
+                if not reservation_released or response is not None:
+                    return ProxyResponseError(
+                        502,
+                        openai_error(
+                            "usage_settlement_failed",
+                            "Compact API key usage could not be settled",
+                            error_type="server_error",
+                        ),
+                        failure_phase="usage_settlement",
+                        failure_detail="compact_api_key_usage_persistence_failed",
+                    )
+                return None
+            finally:
+                settlement_attempted = True
+
+        async def settle_compact_usage(
+            *,
+            api_key: ApiKeyData | None,
+            api_key_reservation: ApiKeyUsageReservationData | None,
+            response: CompactResponsePayload | None,
+            request_service_tier: str | None,
+        ) -> None:
+            nonlocal settlement_task
+            if settlement_task is None:
+                settlement_task = asyncio.create_task(
+                    _owned_compact_settlement(
+                        api_key=api_key,
+                        api_key_reservation=api_key_reservation,
+                        response=response,
+                        request_service_tier=request_service_tier,
+                    ),
+                    name=f"compact-api-key-settlement-{request_id}",
+                )
+            settlement_error, cancellation = await _await_task_deferring_cancellation(settlement_task)
+            if cancellation is not None:
+                raise cancellation
+            if settlement_error is not None:
+                raise settlement_error
+
+        async def settle_on_terminal_exit() -> None:
+            if settlement_task is not None:
+                try:
+                    _, cancellation = await _await_task_deferring_cancellation(settlement_task)
+                except Exception:
+                    logger.warning(
+                        "Failed to settle compact reservation after unexpected exit request_id=%s",
+                        request_id,
+                        exc_info=True,
+                    )
+                    return
+                if cancellation is not None:
+                    raise cancellation
+                return
+            try:
+                await settle_compact_usage(
+                    api_key=api_key,
+                    api_key_reservation=api_key_reservation,
+                    response=None,
+                    request_service_tier=request_service_tier,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to settle compact reservation after unexpected exit request_id=%s",
+                    request_id,
+                    exc_info=True,
+                )
+
+        async def record_or_defer_permanent_health(
+            failed_account: Account,
+            failed_code: str,
+        ) -> None:
+            if api_key is not None and api_key_reservation is not None:
+                deferred_permanent_health.append((failed_account, failed_code))
+                return
+            await proxy._load_balancer.mark_permanent_failure(failed_account, failed_code)
+
         try:
 
             async def _call_compact(
@@ -896,7 +1010,7 @@ class _CompactMixin:
                     # is the sole settler) the API-key reservation would leak held
                     # quota. Settle BEFORE raising, mirroring the transport/permanent
                     # preflight branches above.
-                    await proxy._settle_compact_api_key_usage(
+                    await settle_compact_usage(
                         api_key=api_key,
                         api_key_reservation=api_key_reservation,
                         response=None,
@@ -914,7 +1028,7 @@ class _CompactMixin:
                     await proxy._load_balancer.release_account_lease(selected_account_response_create_lease)
                     # Sole-settler leak guard (see above): settle the reservation
                     # before this budget-exhausted terminal raise.
-                    await proxy._settle_compact_api_key_usage(
+                    await settle_compact_usage(
                         api_key=api_key,
                         api_key_reservation=api_key_reservation,
                         response=None,
@@ -942,7 +1056,7 @@ class _CompactMixin:
                     # ensure_fresh_with_budget translates terminal process-network
                     # recovery outcomes before the compact upstream settlement
                     # branches run, so this boundary owns reservation cleanup.
-                    await proxy._settle_compact_api_key_usage(
+                    await settle_compact_usage(
                         api_key=api_key,
                         api_key_reservation=api_key_reservation,
                         response=None,
@@ -985,7 +1099,7 @@ class _CompactMixin:
                     await proxy._load_balancer.release_account_lease(selected_account_response_create_lease)
                     # Sole-settler leak guard (see above): settle the reservation
                     # before this budget-exhausted terminal raise.
-                    await proxy._settle_compact_api_key_usage(
+                    await settle_compact_usage(
                         api_key=api_key,
                         api_key_reservation=api_key_reservation,
                         response=None,
@@ -1006,7 +1120,7 @@ class _CompactMixin:
                         network_recovery.log_recovered()
                         actual_service_tier = _service_tier_from_response(response)
                         await proxy._load_balancer.record_success(account)
-                        await proxy._settle_compact_api_key_usage(
+                        await settle_compact_usage(
                             api_key=api_key,
                             api_key_reservation=api_key_reservation,
                             response=response,
@@ -1015,9 +1129,11 @@ class _CompactMixin:
                         log_status = "success"
                         return response
                     except ProxyResponseError as exc:
+                        if exc.failure_phase == "usage_settlement":
+                            raise
                         compact_continuity_error = _compact_previous_response_not_found_error(exc)
                         if compact_continuity_error is not None:
-                            await proxy._settle_compact_api_key_usage(
+                            await settle_compact_usage(
                                 api_key=api_key,
                                 api_key_reservation=api_key_reservation,
                                 response=None,
@@ -1036,7 +1152,7 @@ class _CompactMixin:
                                 try:
                                     await proxy._handle_proxy_error(account, exc)
                                 except Exception:
-                                    await proxy._settle_compact_api_key_usage(
+                                    await settle_compact_usage(
                                         api_key=api_key,
                                         api_key_reservation=api_key_reservation,
                                         response=None,
@@ -1062,7 +1178,7 @@ class _CompactMixin:
                                     # the bridge/forwarded path (``owns_reservation``
                                     # false) the reservation would leak held quota.
                                     # Settle BEFORE raising.
-                                    await proxy._settle_compact_api_key_usage(
+                                    await settle_compact_usage(
                                         api_key=api_key,
                                         api_key_reservation=api_key_reservation,
                                         response=None,
@@ -1078,7 +1194,7 @@ class _CompactMixin:
                                 # A translated refresh-recovery error escapes the
                                 # current upstream-error handler, so settle before
                                 # handing it to the request-level error boundary.
-                                await proxy._settle_compact_api_key_usage(
+                                await settle_compact_usage(
                                     api_key=api_key,
                                     api_key_reservation=api_key_reservation,
                                     response=None,
@@ -1087,8 +1203,34 @@ class _CompactMixin:
                                 raise
                             except RefreshError as refresh_exc:
                                 if refresh_exc.is_permanent:
-                                    await proxy._load_balancer.mark_permanent_failure(account, refresh_exc.code)
-                                await proxy._settle_compact_api_key_usage(
+                                    if preferred_account_id is None:
+                                        # This compact request is not bound to an
+                                        # account-owned response, turn state, or
+                                        # file. Retire the revoked account and
+                                        # continue the same pre-visible request on
+                                        # another healthy account. For API-key
+                                        # requests the health write is deferred
+                                        # until after usage settlement.
+                                        await record_or_defer_permanent_health(
+                                            account,
+                                            refresh_exc.code,
+                                        )
+                                        last_exc = exc
+                                        excluded_account_ids.add(account.id)
+                                        transient_exhausted = True
+                                        break
+                                    await record_or_defer_permanent_health(
+                                        account,
+                                        refresh_exc.code,
+                                    )
+                                    await settle_compact_usage(
+                                        api_key=api_key,
+                                        api_key_reservation=api_key_reservation,
+                                        response=None,
+                                        request_service_tier=request_service_tier,
+                                    )
+                                    raise exc
+                                await settle_compact_usage(
                                     api_key=api_key,
                                     api_key_reservation=api_key_reservation,
                                     response=None,
@@ -1104,7 +1246,7 @@ class _CompactMixin:
                                     exc_info=True,
                                 )
                                 if not _should_retry_transient_stream_error("upstream_unavailable", message):
-                                    await proxy._settle_compact_api_key_usage(
+                                    await settle_compact_usage(
                                         api_key=api_key,
                                         api_key_reservation=api_key_reservation,
                                         response=None,
@@ -1112,7 +1254,7 @@ class _CompactMixin:
                                     )
                                     _raise_proxy_unavailable(message)
                                 if preferred_account_id is not None:
-                                    await proxy._settle_compact_api_key_usage(
+                                    await settle_compact_usage(
                                         api_key=api_key,
                                         api_key_reservation=api_key_reservation,
                                         response=None,
@@ -1181,7 +1323,7 @@ class _CompactMixin:
                         if recovery_decision == "retry":
                             continue
                         if recovery_decision == "exhausted":
-                            await proxy._settle_compact_api_key_usage(
+                            await settle_compact_usage(
                                 api_key=api_key,
                                 api_key_reservation=api_key_reservation,
                                 response=None,
@@ -1202,7 +1344,7 @@ class _CompactMixin:
                                 require_security_work_authorized = True
                                 transient_exhausted = True
                                 break
-                            await proxy._settle_compact_api_key_usage(
+                            await settle_compact_usage(
                                 api_key=api_key,
                                 api_key_reservation=api_key_reservation,
                                 response=None,
@@ -1215,7 +1357,7 @@ class _CompactMixin:
                             transient_exhausted = True
                             break
                         if _is_account_neutral_error_code(code):
-                            await proxy._settle_compact_api_key_usage(
+                            await settle_compact_usage(
                                 api_key=api_key,
                                 api_key_reservation=api_key_reservation,
                                 response=None,
@@ -1223,7 +1365,7 @@ class _CompactMixin:
                             )
                             raise
                         if code == "upstream_request_timeout":
-                            await proxy._settle_compact_api_key_usage(
+                            await settle_compact_usage(
                                 api_key=api_key,
                                 api_key_reservation=api_key_reservation,
                                 response=None,
@@ -1290,7 +1432,7 @@ class _CompactMixin:
                             excluded_account_ids.add(account.id)
                             transient_exhausted = True
                             break
-                        await proxy._settle_compact_api_key_usage(
+                        await settle_compact_usage(
                             api_key=api_key,
                             api_key_reservation=api_key_reservation,
                             response=None,
@@ -1300,7 +1442,7 @@ class _CompactMixin:
                 if transient_exhausted:
                     continue  # outer loop: try different account
             # All account attempts exhausted — raise last error
-            await proxy._settle_compact_api_key_usage(
+            await settle_compact_usage(
                 api_key=api_key,
                 api_key_reservation=api_key_reservation,
                 response=None,
@@ -1313,6 +1455,7 @@ class _CompactMixin:
                 openai_error("upstream_unavailable", "All account attempts exhausted"),
             )
         except ProxyResponseError as exc:
+            await settle_on_terminal_exit()
             failure_metadata = _request_log_failure_metadata(exc)
             error = _parse_openai_error(exc.payload)
             log_error_code = log_error_code or _normalize_error_code(
@@ -1325,7 +1468,7 @@ class _CompactMixin:
             route_fail_closed_reason = exc.reason
             log_error_code = "upstream_proxy_unavailable"
             log_error_message = exc.reason
-            await proxy._settle_compact_api_key_usage(
+            await settle_compact_usage(
                 api_key=api_key,
                 api_key_reservation=api_key_reservation,
                 response=None,
@@ -1335,6 +1478,9 @@ class _CompactMixin:
                 502,
                 openai_error("upstream_proxy_unavailable", f"Upstream proxy route unavailable: {exc.reason}"),
             ) from exc
+        except BaseException:
+            await settle_on_terminal_exit()
+            raise
         finally:
             usage = response.usage if response else None
             reasoning_effort = payload.reasoning.effort if payload.reasoning else None

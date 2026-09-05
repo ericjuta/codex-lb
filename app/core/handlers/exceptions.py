@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -14,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from starlette._utils import get_route_path
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.core.errors import dashboard_error, openai_error
 from app.core.exceptions import (
@@ -165,15 +165,20 @@ async def _record_image_route_exception_observability(
     )
 
 
+class ImageRouteStartedAtMiddleware:
+    """Stamp image-route ingress time without a per-request relay task."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and _image_route_from_path(get_route_path(scope)) is not None:
+            scope.setdefault("state", {})[IMAGE_ROUTE_STARTED_AT_STATE] = time.perf_counter()
+        await self.app(scope, receive, send)
+
+
 def add_exception_handlers(app: FastAPI) -> None:
-    @app.middleware("http")
-    async def _image_route_started_at_middleware(
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        if _image_route_from_path(get_route_path(request.scope)) is not None:
-            setattr(request.state, IMAGE_ROUTE_STARTED_AT_STATE, time.perf_counter())
-        return await call_next(request)
+    app.add_middleware(ImageRouteStartedAtMiddleware)
 
     @app.exception_handler(MultipartPayloadTooLarge)
     async def multipart_payload_too_large_handler(

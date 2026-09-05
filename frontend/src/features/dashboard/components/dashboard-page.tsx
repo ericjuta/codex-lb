@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
@@ -33,9 +33,13 @@ import {
 import { useDashboardPreferencesStore } from "@/hooks/use-dashboard-preferences";
 import { useThemeStore } from "@/hooks/use-theme";
 import { REQUEST_STATUS_LABELS } from "@/utils/constants";
+import { getErrorMessageOrNull } from "@/utils/errors";
 import { formatModelLabel, formatSlug } from "@/utils/formatters";
 
 const MODEL_OPTION_DELIMITER = ":::";
+
+type RetainedDashboardLoadErrors = Partial<Record<OverviewTimeframe, string>>;
+type OverviewRetryTimeframes = Partial<Record<OverviewTimeframe, true>>;
 
 export function DashboardPage() {
   const navigate = useNavigate();
@@ -53,6 +57,10 @@ export function DashboardPage() {
     [searchParams],
   );
   const dashboardQuery = useDashboard(overviewTimeframe);
+  const [retainedDashboardLoadErrors, setRetainedDashboardLoadErrors] =
+    useState<RetainedDashboardLoadErrors>({});
+  const [overviewRetryTimeframes, setOverviewRetryTimeframes] =
+    useState<OverviewRetryTimeframes>({});
   const projectionsQuery = useDashboardProjections(Boolean(dashboardQuery.data));
   const { filters, logsQuery, optionsQuery, updateFilters } = useRequestLogs();
   const { resumeMutation, limitWarmupMutation } = useAccountMutations();
@@ -173,8 +181,33 @@ export function DashboardPage() {
     [optionsQuery.data?.statuses],
   );
 
+  const dashboardLoadError = getErrorMessageOrNull(dashboardQuery.error);
+  const retainedDashboardLoadError = retainedDashboardLoadErrors[overviewTimeframe];
+  if (overview && retainedDashboardLoadError !== undefined) {
+    setRetainedDashboardLoadErrors((current) => {
+      if (current[overviewTimeframe] === undefined) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[overviewTimeframe];
+      return next;
+    });
+  } else if (
+    !overview &&
+    dashboardLoadError !== null &&
+    retainedDashboardLoadError !== dashboardLoadError
+  ) {
+    setRetainedDashboardLoadErrors((current) => ({
+      ...current,
+      [overviewTimeframe]: dashboardLoadError,
+    }));
+  }
+  const displayedDashboardLoadError =
+    dashboardLoadError ?? retainedDashboardLoadError ?? null;
+  const overviewRetryBusy =
+    dashboardQuery.isFetching || overviewRetryTimeframes[overviewTimeframe] === true;
   const errorMessage =
-    (dashboardQuery.error instanceof Error && dashboardQuery.error.message) ||
+    (overview ? dashboardLoadError : null) ||
     (optionsQuery.error instanceof Error && optionsQuery.error.message) ||
     null;
 
@@ -198,6 +231,7 @@ export function DashboardPage() {
             onClick={handleRefresh}
             disabled={isRefreshing}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50"
+            aria-label="Refresh dashboard"
             title="Refresh dashboard"
           >
             <RefreshCw className={`h-4 w-4${isRefreshing ? " animate-spin" : ""}`} />
@@ -207,8 +241,62 @@ export function DashboardPage() {
 
       {errorMessage ? <AlertMessage variant="error">{errorMessage}</AlertMessage> : null}
 
-      {!view ? (
+      {(dashboardQuery.isPending || dashboardQuery.isFetching) &&
+      !view &&
+      displayedDashboardLoadError === null ? (
         <DashboardSkeleton />
+      ) : !view ? (
+        <div className="space-y-3 rounded-xl border bg-card p-4">
+          <div role="alert">
+            <AlertMessage variant="error">{displayedDashboardLoadError ?? "Request failed"}</AlertMessage>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-busy={overviewRetryBusy}
+            disabled={overviewRetryBusy}
+            onClick={() => {
+              const retryTimeframe = overviewTimeframe;
+              setRetainedDashboardLoadErrors((current) => ({
+                ...current,
+                [retryTimeframe]: displayedDashboardLoadError ?? "Request failed",
+              }));
+              setOverviewRetryTimeframes((current) => ({
+                ...current,
+                [retryTimeframe]: true,
+              }));
+              void dashboardQuery.refetch().finally(() => {
+                if (
+                  queryClient.getQueryData([
+                    "dashboard",
+                    "overview",
+                    retryTimeframe,
+                  ]) !== undefined
+                ) {
+                  setRetainedDashboardLoadErrors((current) => {
+                    if (current[retryTimeframe] === undefined) {
+                      return current;
+                    }
+                    const next = { ...current };
+                    delete next[retryTimeframe];
+                    return next;
+                  });
+                }
+                setOverviewRetryTimeframes((current) => {
+                  if (current[retryTimeframe] !== true) {
+                    return current;
+                  }
+                  const next = { ...current };
+                  delete next[retryTimeframe];
+                  return next;
+                });
+              });
+            }}
+          >
+            Retry
+          </Button>
+        </div>
       ) : (
         <>
           <StatsGrid stats={view.stats} />

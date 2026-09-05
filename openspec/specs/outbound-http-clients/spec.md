@@ -157,3 +157,100 @@ The proxy MUST NOT record a transient, permanent, quota, rate-limit, or circuit-
 - **WHEN** resolving a configured upstream proxy hostname fails with a permanent name-not-found result
 - **THEN** the failure remains `upstream_unavailable`
 - **AND** the proxy does not classify the host process as disconnected
+
+### Requirement: Routed streaming upstream responses are released when the consumer stops before EOF
+
+When an upstream streaming request is issued through a resolved upstream proxy route, the response body is consumed unbuffered and the consumer routinely stops before the body reaches EOF: on the terminal stream event, on the stream idle timeout, on cancellation, on downstream disconnect, and when the response is mapped to an error before the body is drained. On every such exit the proxy MUST release or close the upstream response object before it closes the per-stream client that owns the connection, so the connection is returned or closed synchronously and no connection object is left to be finalized by the garbage collector.
+
+The release MUST work for every response shape the routed path can receive: an aiohttp response (`release()`), a response that exposes only `close()` or only `aclose()` (those methods MUST be invoked), a SOCKS-owned wrapped response that MUST be released before the private session that carried it is closed, and a buffered or duck-typed response that exposes neither `release()`, `close()`, nor `aclose()` (no-op). Release MUST run only after the last event block has been yielded to the consumer and MUST NOT change the forwarded bytes, the error mapping, the retry classification, or the cancellation semantics of the stream.
+
+#### Scenario: Terminal event arrives while upstream holds the connection open
+
+- **GIVEN** a routed HTTP stream whose upstream emits `response.completed` and then keeps the connection open
+- **WHEN** the proxy stops reading on the terminal event
+- **THEN** the upstream response is released before the per-stream client is closed
+- **AND** no `Unclosed connection` event is reported to the event loop exception handler after a full garbage collection
+- **AND** the forwarded event blocks are byte-identical to the upstream frames
+
+#### Scenario: Stream idle timeout
+
+- **GIVEN** a routed HTTP stream whose upstream goes silent after the first event
+- **WHEN** the stream idle timeout elapses
+- **THEN** the synthetic `stream_idle_timeout` failure event is yielded as before
+- **AND** the upstream response is released before the per-stream client is closed
+
+#### Scenario: Cancellation or downstream disconnect mid-stream
+
+- **GIVEN** a routed HTTP stream that is cancelled, or whose consumer calls `aclose()`, while a body read is pending
+- **WHEN** the stream generator unwinds
+- **THEN** the upstream response is released before the per-stream client is closed
+- **AND** the cancellation propagates to the caller unchanged
+
+#### Scenario: Error status mapped before the body is drained
+
+- **GIVEN** a routed HTTP stream whose upstream answers with a non-2xx status
+- **WHEN** the proxy raises the mapped `ProxyResponseError`
+- **THEN** the upstream response is released before the per-stream client is closed
+
+#### Scenario: Close-only or aclose-only response is released
+
+- **GIVEN** a routed response object that exposes only `close()` or only `aclose()`
+- **WHEN** the stream ends
+- **THEN** that method is invoked before the per-stream client is closed
+
+#### Scenario: Response without a release method
+
+- **GIVEN** a routed response object that exposes neither `release()`, `close()` nor `aclose()`
+- **WHEN** the stream ends
+- **THEN** teardown is a no-op for the response and the stream result is unchanged
+
+### Requirement: Routed aiohttp egress carries proxy credentials outside the proxy URL
+
+When the Codex upstream client dispatches a routed HTTP request or WebSocket connect through aiohttp, it MUST pass a credential-free proxy URL (`scheme://host:port`) and MUST carry the endpoint username and password as a `Proxy-Authorization` Basic header whose bytes are identical to the header aiohttp derives from URL userinfo (latin1 encoding). The client MUST NOT place proxy credentials in the aiohttp proxy URL. Because aiohttp forwards proxy headers only on the CONNECT tunnel, a route whose ordered pool contains any credentialed endpoint MUST fail closed for a non-TLS (`http`/`ws`) upstream target before any connection is opened and ahead of every transport branch (aiohttp and SOCKS), surfacing as a credential-free connect-phase transport error, so a credential-free fallback endpoint cannot absorb the misconfigured primary. Route resolution MUST fail closed for an `http` or `https` proxy username containing `:`. SOCKS5/SOCKS5H RFC 1929 usernames MAY contain `:`. SOCKS transports keep carrying credentials through their existing field inputs. HTTP/SOCKS endpoints MAY still store credentials; aiohttp dispatch MUST still pass a credential-free proxy URL.
+
+#### Scenario: Credentialed https endpoint uses Proxy-Authorization
+
+- **GIVEN** a resolved `https` proxy endpoint with a username and password
+- **WHEN** the Codex upstream client sends a routed request or opens a routed WebSocket through aiohttp
+- **THEN** the aiohttp `proxy` argument contains no userinfo
+- **AND** the CONNECT request carries a `Proxy-Authorization` header whose value is byte-identical to the userinfo-derived token
+- **AND** the aiohttp connection-key repr and the proxy-error message text contain neither the password nor its Basic token
+- **AND** the proxy-error repr, which carries the tunnel request headers, renders with `Basic [REDACTED]` through the log formatters
+
+#### Scenario: Credentialed route to a plaintext target fails closed
+
+- **GIVEN** a resolved route whose primary proxy endpoint carries credentials and whose fallback does not
+- **WHEN** the Codex upstream client is asked to reach an `http` or `ws` upstream URL, for an idempotent or non-idempotent request or a WebSocket open
+- **THEN** the client fails before dispatch with a credential-free connect-phase transport error
+- **AND** no endpoint in the pool, including the credential-free fallback, receives the request on any transport
+
+#### Scenario: HTTP username with a colon is rejected at resolution
+
+- **WHEN** an `http` or `https` proxy endpoint username contains `:`
+- **THEN** route resolution fails closed with reason `invalid_proxy_username`
+
+#### Scenario: SOCKS username with a colon is accepted at resolution
+
+- **WHEN** a `socks5` or `socks5h` proxy endpoint username contains `:`
+- **THEN** route resolution succeeds and preserves the username
+
+### Requirement: Dashboard rejects and reports proxy usernames the resolver cannot encode
+
+The dashboard MUST reject an `http` or `https` upstream proxy endpoint whose username contains `:` at creation with a 400 error coded `invalid_proxy_username`, mirroring the resolver rule (RFC 7617 Basic credentials cannot encode a colon in the user-id). SOCKS5/SOCKS5H RFC 1929 usernames MAY contain `:`. The endpoint test route MUST report a resolver rejection of an already persisted endpoint as a failed probe carrying the resolver reason rather than surfacing an unhandled error.
+
+#### Scenario: HTTP colon username is rejected at creation
+
+- **WHEN** an operator creates an `http` or `https` upstream proxy endpoint whose username contains `:`
+- **THEN** the request is rejected with a 400 error coded `invalid_proxy_username`
+
+#### Scenario: SOCKS colon username is accepted at creation
+
+- **WHEN** an operator creates a `socks5` or `socks5h` upstream proxy endpoint whose username contains `:`
+- **THEN** the endpoint is created and the username is preserved
+
+#### Scenario: Endpoint test reports a persisted row the resolver rejects
+
+- **GIVEN** a persisted endpoint the resolver rejects (for example an HTTP username containing `:`)
+- **WHEN** the endpoint test route is invoked for it
+- **THEN** the response reports `ok: false` with the resolver reason as `error` and no status code
+- **AND** no probe is sent

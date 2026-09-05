@@ -195,6 +195,70 @@ When a direct WebSocket `response.create` request includes both `previous_respon
 - **AND** the downstream client receives a retryable continuity failure rather than a fabricated fresh turn
 
 
+### Requirement: WebSocket tool-search fresh retries require completed client-owned pairs
+
+The direct WebSocket fresh-retry predicate MUST treat `tool_search_call` / `tool_search_output` items as retry-safe only when they form a completed, ordered, self-contained pair whose declared execution owner is omitted or `client`. A status of `completed`, an omitted status, or a null status MUST be treated as completed-compatible; every other status MUST be rejected as incomplete. The call MUST carry dictionary `arguments`. The output MUST carry a `tools` list or a string `output`, but not both. The predicate MUST reject server-owned execution, an output without its matching preceding call, an incomplete status, or an otherwise malformed pair. This check MUST NOT change HTTP compact or HTTP fresh-resend pair policy, and MUST NOT change the ordinary anchored WebSocket trimming boundary.
+
+#### Scenario: Completed client-owned tool-search pair is retry-safe
+
+- **GIVEN** a direct WebSocket full resend contains a completed `tool_search_call` with dictionary `arguments`
+- **AND** a matching completed `tool_search_output` with a string `output` or a `tools` list
+- **AND** both items omit `execution` or declare `execution: "client"`
+- **WHEN** the proxy evaluates the payload for an anchor-free retry
+- **THEN** the tool-search pair is accepted as self-contained replay state
+
+#### Scenario: Server-owned tool-search output is not retry-safe
+
+- **GIVEN** a direct WebSocket full resend contains a completed client-owned `tool_search_call`
+- **AND** its matching `tool_search_output` declares `execution: "server"`
+- **WHEN** the proxy evaluates the payload for an anchor-free retry
+- **THEN** the request is not retained as a fresh retry
+
+#### Scenario: Orphan or incomplete tool-search items are not retry-safe
+
+- **GIVEN** a direct WebSocket full resend contains a `tool_search_output` without its matching preceding call, or a tool-search item whose status is neither `completed`, omitted, nor null
+- **WHEN** the proxy evaluates the payload for an anchor-free retry
+- **THEN** the request is not retained as a fresh retry
+
+#### Scenario: Reused tool-search call IDs are not retry-safe
+
+- **GIVEN** a direct WebSocket full resend reuses a tool-search `call_id` for a second call or a second output
+- **WHEN** the proxy evaluates the payload for an anchor-free retry
+- **THEN** the request is not retained as a fresh retry
+
+### Requirement: WebSocket fresh retries omit response-owned tool-search IDs
+
+When the proxy retains a self-contained direct WebSocket `response.create` payload for a fresh retry without `previous_response_id`, it MUST remove the top-level `id` field from every `tool_search_call` and `tool_search_output` input item in that retained retry payload. It MUST preserve each paired item’s type, `call_id`, arguments or output, status, relative order, and all other input history. This requirement applies whether the original anchor was supplied by the client or injected from WebSocket continuity state. Preparing the retry MUST NOT mutate caller-owned input and MUST NOT change the ordinary anchored submission.
+
+#### Scenario: Client-supplied anchor retains a sanitized full-history retry
+
+- **GIVEN** a direct Responses WebSocket request supplies `previous_response_id` and self-contained full history containing a paired `tool_search_call` and `tool_search_output` with response-owned IDs
+- **WHEN** the proxy prepares both the ordinary anchored submission and its retained anchor-free retry
+- **THEN** the ordinary anchored submission follows the existing trimming and forwarding behavior
+- **AND** the retained retry preserves the complete original history and paired tool-search content without either tool-search `id`
+- **AND** the inbound request remains unchanged
+
+#### Scenario: Proxy-injected anchor retains a sanitized full-history retry
+
+- **GIVEN** WebSocket continuity state lets the proxy replace a matching historical prefix with an injected `previous_response_id`
+- **AND** that historical prefix contains a paired `tool_search_call` and `tool_search_output` with response-owned IDs
+- **WHEN** the proxy retains the original payload for an anchor-free retry
+- **THEN** the anchored submission still contains only the existing incremental delta
+- **AND** the retained retry contains the complete original history and paired tool-search content without either tool-search `id`
+- **AND** the inbound request remains unchanged
+
+#### Scenario: Stale-anchor retry sends the sanitized retained body
+- **GIVEN** the proxy retained a sanitized direct WebSocket fresh-retry body after a client-supplied or injected `previous_response_id`
+- **WHEN** upstream rejects that anchored request with `previous_response_not_found` before `response.created`
+- **THEN** the proxy reconnects and sends the retained sanitized body without `previous_response_id`
+- **AND** the sent `tool_search_call` and `tool_search_output` items still have no top-level `id`
+
+#### Scenario: Unrelated input identity is preserved
+
+- **GIVEN** a retained fresh-retry payload contains non-tool-search items or tool-search fields other than the top-level `id`
+- **WHEN** the retry payload is sanitized
+- **THEN** those items and fields remain unchanged
+
 ### Requirement: Compact trimming preserves prioritised historical side effects
 
 The service MUST retain recognised historical side-effect tool calls as bounded
@@ -1038,15 +1102,7 @@ When a Codex or OpenAI-compatible Responses WebSocket request receives an upstre
 
 ### Requirement: Compact auth failures fail over after forced refresh
 
-The proxy MUST recover from account-local compact authentication failures before
-surfacing them to the compact client. When a `/backend-api/codex/responses/compact`
-request receives an upstream `401 invalid_api_key` response for the selected
-account, the proxy MUST attempt one forced token refresh and retry the compact
-request on that same account. If the refreshed retry also returns `401`, the
-proxy MUST classify and record the account failure, exclude that account from
-the current compact request, and try another eligible account when one is
-available. The proxy MUST NOT surface the repeated account-local `401` to the
-compact client before exhausting eligible accounts.
+The proxy MUST recover from account-local compact authentication failures before surfacing them to the compact client. When a `/backend-api/codex/responses/compact` request receives an upstream `401 invalid_api_key` or `401 token_invalidated` response for the selected account, the proxy MUST attempt one forced token refresh and retry the compact request on that same account. If the refreshed retry also returns `401`, the proxy MUST classify and record the account failure, exclude that account from the current compact request, and try another eligible account when one is available. If the forced refresh itself confirms a permanent credential failure, the proxy MUST mark the selected account for re-authentication, exclude it from the current compact request, and try another eligible account when account ownership permits. The proxy MUST NOT surface an account-local `401` before exhausting eligible accounts, and MUST NOT move a file-pinned or continuity-pinned compact request to another account. When no safe replacement is available, the proxy MUST preserve the terminal auth error and settlement behavior.
 
 #### Scenario: Refreshed compact auth failure uses another account
 
@@ -1056,11 +1112,38 @@ compact client before exhausting eligible accounts.
 - **THEN** the downstream compact response succeeds from the second account
 - **AND** the selected account is excluded from further attempts for that compact request
 
+#### Scenario: Refreshed compact token invalidation uses another account
+
+- **GIVEN** at least two accounts are eligible for a compact request
+- **AND** the selected account returns `401 token_invalidated` for compact before and after a forced refresh
+- **WHEN** another eligible account can complete the compact request
+- **THEN** the downstream compact response succeeds from the second account
+- **AND** the selected account is marked `reauth_required`
+- **AND** the selected account is excluded from further attempts for that compact request
+
 #### Scenario: Compact 401 is not a generic same-contract retry
 
 - **WHEN** low-level compact transport receives HTTP 401 from upstream
 - **THEN** the service-level auth refresh/failover path handles it
 - **AND** the low-level compact transport does not mark it as a generic same-contract transport retry
+
+#### Scenario: Permanent forced-refresh failure uses another account
+
+- **GIVEN** at least two accounts are eligible for an account-neutral compact request
+- **AND** the selected account returns an upstream authentication failure
+- **WHEN** its forced refresh reports a permanent revoked-credential failure
+- **THEN** the selected account is marked `reauth_required` and excluded
+- **AND** the compact request succeeds from another eligible account when it completes
+- **AND** the selected account's authentication error is not surfaced to the client
+
+#### Scenario: Permanent forced-refresh failure preserves an account pin
+
+- **GIVEN** a compact request is pinned to an account by file or continuity ownership
+- **AND** that account returns an upstream authentication failure
+- **WHEN** its forced refresh reports a permanent credential failure
+- **THEN** the account is marked `reauth_required`
+- **AND** the request is not sent to another account
+- **AND** the terminal authentication error is surfaced after settlement
 
 ### Requirement: Pre-visible proxy auth failures fail over after forced refresh
 
@@ -1856,3 +1939,39 @@ This transport-ingress 413 applies before parsing and is distinct from the exist
 - **WHEN** a Responses HTTP request fits the raw and decompressed transport-ingress budget
 - **AND** its serialized `response.create` still exceeds the upstream websocket budget after historical slimming
 - **THEN** the existing application-level guard returns HTTP 400 with `error.code = payload_too_large`, `error.type = invalid_request_error`, and `error.param = input`
+
+### Requirement: Ordered owner-unavailable settlement preserves external errors
+
+Settlement ordering for streaming Responses owner-unavailable failures MUST NOT change the downstream or request-log error envelope. The client and request log MUST continue to use `previous_response_owner_unavailable`. Account-health recovery MAY retain the original upstream recovery code internally and MUST NOT expose a raw stale-anchor identifier.
+
+#### Scenario: Ordered rewrite keeps the public and logged classifier
+
+- **WHEN** a streaming `/v1/responses` failure is rewritten after ordered reservation settlement
+- **THEN** the downstream error code is `previous_response_owner_unavailable`
+- **AND** the request-log error code is `previous_response_owner_unavailable`
+- **AND** no raw stale-anchor identifier is exposed
+
+### Requirement: Suppressed duplicate side-effect replays receive a dedicated terminal failure
+
+When a replayed side-effecting tool call is suppressed and its upstream turn subsequently reports `response.completed`, the proxy MUST deliver a `response.failed` terminal with code `duplicate_tool_call_replay_suppressed`. It MUST use the downstream response id, treat the request as non-success, and MUST NOT penalize the upstream account for the intentionally fenced terminal.
+
+#### Scenario: Direct SSE reports the dedicated terminal
+
+- **GIVEN** a direct SSE request suppresses a replayed side-effecting tool call
+- **WHEN** the upstream emits `response.completed` for that replay
+- **THEN** the client receives `response.failed` with code `duplicate_tool_call_replay_suppressed`
+- **AND** the request log records `duplicate_tool_call_replay_suppressed`, not `stream_incomplete`
+
+#### Scenario: HTTP bridge reports the dedicated terminal
+
+- **GIVEN** an HTTP bridge request suppresses a replayed side-effecting tool call
+- **WHEN** the upstream emits `response.completed` for that replay
+- **THEN** the client receives `response.failed` with code `duplicate_tool_call_replay_suppressed`
+- **AND** the request log records `duplicate_tool_call_replay_suppressed`
+
+#### Scenario: WebSocket reports the dedicated terminal
+
+- **GIVEN** a WebSocket request suppresses a replayed side-effecting tool call
+- **WHEN** the upstream emits `response.completed` for that replay
+- **THEN** the downstream terminal uses `duplicate_tool_call_replay_suppressed`
+- **AND** the upstream account is not penalized for the intentionally suppressed replay

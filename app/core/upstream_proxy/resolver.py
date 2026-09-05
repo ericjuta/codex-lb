@@ -137,6 +137,10 @@ def _resolve_endpoint(endpoint: ProxyEndpoint, *, encryptor: TokenEncryptor | No
     scheme = endpoint.scheme.lower().strip()
     if scheme not in _SUPPORTED_SCHEMES:
         raise UpstreamProxyRouteError("unsupported_proxy_scheme")
+    if scheme in {"http", "https"} and endpoint.username is not None and ":" in endpoint.username:
+        # RFC 7617 Basic user-id cannot encode a colon. SOCKS5/SOCKS5H RFC 1929
+        # usernames may contain ':'.
+        raise UpstreamProxyRouteError("invalid_proxy_username")
     password: str | None = None
     if endpoint.password_encrypted is not None:
         try:

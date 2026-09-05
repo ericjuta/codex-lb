@@ -5,7 +5,7 @@ import json
 import sys
 import time
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 import anyio
@@ -467,12 +467,15 @@ _WEBSOCKET_TOOL_CALL_ITEM_TYPES_BY_OUTPUT_TYPE = {
     "function_call_output": "function_call",
     "custom_tool_call_output": "custom_tool_call",
     "apply_patch_call_output": "apply_patch_call",
+    "tool_search_output": "tool_search_call",
 }
 _WEBSOCKET_TOOL_CALL_ITEM_TYPES = frozenset(_WEBSOCKET_TOOL_CALL_ITEM_TYPES_BY_OUTPUT_TYPE.values())
 
 
 def _websocket_input_items_are_self_contained_fresh_replay(input_items: list[JsonValue]) -> bool:
     seen_call_ids_by_type: dict[str, set[str]] = {item_type: set() for item_type in _WEBSOCKET_TOOL_CALL_ITEM_TYPES}
+    seen_tool_search_call_ids = seen_call_ids_by_type["tool_search_call"]
+    unsettled_tool_search_call_ids: set[str] = set()
     for item in input_items:
         if not isinstance(item, dict):
             continue
@@ -480,15 +483,50 @@ def _websocket_input_items_are_self_contained_fresh_replay(input_items: list[Jso
         call_id_value = item.get("call_id")
         call_id = call_id_value if isinstance(call_id_value, str) and call_id_value else None
         if item_type in _WEBSOCKET_TOOL_CALL_ITEM_TYPES:
+            if item_type == "tool_search_call":
+                if (
+                    call_id is None
+                    or call_id in seen_tool_search_call_ids
+                    or not _websocket_tool_search_call_is_client_owned_self_contained(item)
+                ):
+                    return False
+                seen_tool_search_call_ids.add(call_id)
+                unsettled_tool_search_call_ids.add(call_id)
+                continue
             if call_id is not None:
                 seen_call_ids_by_type[item_type].add(call_id)
             continue
         call_item_type = _WEBSOCKET_TOOL_CALL_ITEM_TYPES_BY_OUTPUT_TYPE.get(item_type or "")
         if call_item_type is None:
             continue
+        if item_type == "tool_search_output":
+            if (
+                call_id is None
+                or call_id not in unsettled_tool_search_call_ids
+                or not _websocket_tool_search_output_is_client_owned_self_contained(item)
+            ):
+                return False
+            unsettled_tool_search_call_ids.remove(call_id)
+            continue
         if call_id is None or call_id not in seen_call_ids_by_type[call_item_type]:
             return False
-    return True
+    return not unsettled_tool_search_call_ids
+
+
+def _websocket_tool_search_call_is_client_owned_self_contained(item: Mapping[str, JsonValue]) -> bool:
+    return (
+        item.get("status") in (None, "completed")
+        and isinstance(item.get("arguments"), dict)
+        and item.get("execution") in (None, "client")
+    )
+
+
+def _websocket_tool_search_output_is_client_owned_self_contained(item: Mapping[str, JsonValue]) -> bool:
+    if item.get("status") not in (None, "completed"):
+        return False
+    has_tools = isinstance(item.get("tools"), list)
+    has_output = isinstance(item.get("output"), str)
+    return item.get("execution") in (None, "client") and has_tools != has_output
 
 
 def _websocket_client_previous_response_full_resend_is_retry_safe(
@@ -1235,7 +1273,7 @@ def _rewrite_websocket_suppressed_duplicate_tool_call_completion_event(
     request_state: _WebSocketRequestState,
 ) -> tuple[OpenAIEvent | None, dict[str, JsonValue] | None, str | None, str]:
     rewritten_event_payload = response_failed_event(
-        "stream_incomplete",
+        _facade()._SUPPRESSED_DUPLICATE_TOOL_CALL_ERROR_CODE,
         _facade()._SUPPRESSED_DUPLICATE_TOOL_CALL_MESSAGE,
         error_type="server_error",
         response_id=_websocket_downstream_response_id(request_state),
@@ -1756,6 +1794,30 @@ def _trim_websocket_previous_response_input_items(input_items: list[JsonValue]) 
     if not all(_is_websocket_previous_response_output_item(item) for item in prefix):
         return input_items
     return input_items[first_output_index:]
+
+
+def _sanitize_websocket_previous_response_input_items(input_items: list[JsonValue]) -> list[JsonValue]:
+    sanitized = input_items
+    for index, item in enumerate(input_items):
+        stripped = _strip_websocket_replayed_tool_search_id(item)
+        if stripped is item:
+            continue
+        if sanitized is input_items:
+            sanitized = input_items.copy()
+        sanitized[index] = stripped
+    return sanitized
+
+
+def _strip_websocket_replayed_tool_search_id(item: JsonValue) -> JsonValue:
+    if (
+        not isinstance(item, dict)
+        or _websocket_input_item_type(item) not in {"tool_search_call", "tool_search_output"}
+        or "id" not in item
+    ):
+        return item
+    stripped = dict(item)
+    stripped.pop("id", None)
+    return stripped
 
 
 def _is_websocket_previous_response_output_item(item: JsonValue) -> bool:

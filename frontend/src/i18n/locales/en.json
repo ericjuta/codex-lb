@@ -401,5 +401,13 @@
         "disabled": "TOTP disabled"
       }
     }
+  },
+  "routeRecovery": {
+    "goToDashboard": "Go to Dashboard",
+    "loadErrorDescription": "A dashboard update or network interruption may have blocked this page.",
+    "loadErrorTitle": "This page could not load",
+    "notFoundDescription": "The dashboard page you requested does not exist or may have moved.",
+    "notFoundTitle": "Page not found",
+    "reload": "Reload page"
   }
 }
