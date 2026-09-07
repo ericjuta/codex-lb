@@ -21,6 +21,8 @@ pytestmark = pytest.mark.unit
 _IMAGE_PATHS = (
     "/v1/images/generations",
     "/v1/images/edits",
+    "/backend-api/codex/images/generations",
+    "/backend-api/codex/images/edits",
 )
 
 
@@ -141,8 +143,8 @@ async def test_image_route_started_at_strips_root_path() -> None:
         "/v1/responses",
         "/v1/images/generations/",
         "/api/dashboard/overview",
-        "/backend-api/codex/images/generations",
-        "/backend-api/codex/images/edits",
+        "/backend-api/codex/images/generations/",
+        "/backend-api/codex/images/edits/",
     ],
 )
 async def test_non_image_http_scope_is_left_untouched(path: str) -> None:

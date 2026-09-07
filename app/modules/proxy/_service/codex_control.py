@@ -218,7 +218,7 @@ class _CodexControlMixin:
         effective_privacy_policy = (
             CodexControlRequestPrivacyPolicy.PRIVATE_REALTIME if normalized_path == "realtime/calls" else privacy_policy
         )
-        sensitive_realtime_request = effective_privacy_policy.redacts_sensitive_details
+        sensitive_request = effective_privacy_policy.redacts_sensitive_details
         useragent, useragent_group = _request_log_useragent_fields(headers)
         request_id = get_request_id() or ensure_request_id(None)
         start = _service_time().monotonic()
@@ -244,7 +244,7 @@ class _CodexControlMixin:
         request_kind = f"codex_control_{normalized_path.replace('/', '_')}"
 
         def _account_id_for_log(account_id: str) -> str:
-            return "<redacted>" if sensitive_realtime_request else account_id
+            return "<redacted>" if sensitive_request else account_id
 
         async def _handle_proxy_error(account: Account, exc: ProxyResponseError) -> None:
             if effective_privacy_policy.redacts_sensitive_details:
@@ -280,7 +280,7 @@ class _CodexControlMixin:
                 prefer_earlier_reset_window=_prefer_earlier_reset_window(settings),
                 routing_strategy=routing_strategy,
                 model=selection_model,
-                redact_sensitive_details=sensitive_realtime_request,
+                redact_sensitive_details=sensitive_request,
             )
             account = selection.account
             if not account:
@@ -358,7 +358,7 @@ class _CodexControlMixin:
                     routing_strategy=routing_strategy,
                     model=selection_model,
                     exclude_account_ids=excluded_account_ids,
-                    redact_sensitive_details=sensitive_realtime_request,
+                    redact_sensitive_details=sensitive_request,
                 )
 
             try:
@@ -449,7 +449,7 @@ class _CodexControlMixin:
                                     routing_strategy=routing_strategy,
                                     model=selection_model,
                                     exclude_account_ids={account.id},
-                                    redact_sensitive_details=sensitive_realtime_request,
+                                    redact_sensitive_details=sensitive_request,
                                 )
                                 if selection.account is not None:
                                     account = selection.account
@@ -479,11 +479,11 @@ class _CodexControlMixin:
                             request_id,
                             path,
                             _account_id_for_log(account.id),
-                            exc_info=not sensitive_realtime_request,
+                            exc_info=not sensitive_request,
                         )
                         _raise_proxy_unavailable(
                             "Request to upstream failed"
-                            if sensitive_realtime_request
+                            if sensitive_request
                             else (str(timeout_exc) or "Request to upstream timed out")
                         )
                 failed_account = _proxy_response_failed_account(exc, account)
@@ -512,30 +512,28 @@ class _CodexControlMixin:
             ) from exc
         finally:
             await proxy._write_request_log(
-                account_id=None if sensitive_realtime_request else account_id_value,
+                account_id=None if sensitive_request else account_id_value,
                 api_key=api_key,
                 request_id=request_id,
                 model=None,
                 latency_ms=int((_service_time().monotonic() - start) * 1000),
                 status=log_status,
-                error_code=None if sensitive_realtime_request else log_error_code,
-                error_message=None if sensitive_realtime_request else log_error_message,
+                error_code=None if sensitive_request else log_error_code,
+                error_message=None if sensitive_request else log_error_message,
                 transport=_REQUEST_TRANSPORT_HTTP,
-                failure_phase=None if sensitive_realtime_request else failure_metadata.failure_phase,
-                failure_detail=None if sensitive_realtime_request else failure_metadata.failure_detail,
-                failure_exception_type=(
-                    None if sensitive_realtime_request else failure_metadata.failure_exception_type
-                ),
-                upstream_status_code=None if sensitive_realtime_request else failure_metadata.upstream_status_code,
-                upstream_error_code=None if sensitive_realtime_request else failure_metadata.upstream_error_code,
-                bridge_stage=None if sensitive_realtime_request else failure_metadata.bridge_stage,
-                upstream_proxy_route_mode=None if sensitive_realtime_request else route_mode,
-                upstream_proxy_pool_id=None if sensitive_realtime_request else route_pool_id,
-                upstream_proxy_endpoint_id=None if sensitive_realtime_request else route_endpoint_id,
+                failure_phase=None if sensitive_request else failure_metadata.failure_phase,
+                failure_detail=None if sensitive_request else failure_metadata.failure_detail,
+                failure_exception_type=(None if sensitive_request else failure_metadata.failure_exception_type),
+                upstream_status_code=None if sensitive_request else failure_metadata.upstream_status_code,
+                upstream_error_code=None if sensitive_request else failure_metadata.upstream_error_code,
+                bridge_stage=None if sensitive_request else failure_metadata.bridge_stage,
+                upstream_proxy_route_mode=None if sensitive_request else route_mode,
+                upstream_proxy_pool_id=None if sensitive_request else route_pool_id,
+                upstream_proxy_endpoint_id=None if sensitive_request else route_endpoint_id,
                 upstream_proxy_fallback_used=(
-                    None if sensitive_realtime_request else (route_fallback_used if route_endpoint_id else None)
+                    None if sensitive_request else (route_fallback_used if route_endpoint_id else None)
                 ),
-                upstream_proxy_fail_closed_reason=(None if sensitive_realtime_request else route_fail_closed_reason),
+                upstream_proxy_fail_closed_reason=(None if sensitive_request else route_fail_closed_reason),
                 useragent=useragent,
                 useragent_group=useragent_group,
             )

@@ -92,9 +92,9 @@ _CODEX_JSON_IMAGE_EDIT_PATH = "/backend-api/codex/images/edits"
 
 
 def _image_route_from_path(path: str) -> ImageRoute | None:
-    if path == "/v1/images/generations":
+    if path in {"/v1/images/generations", "/backend-api/codex/images/generations"}:
         return "generations"
-    if path == "/v1/images/edits":
+    if path in {"/v1/images/edits", "/backend-api/codex/images/edits"}:
         return "edits"
     return None
 

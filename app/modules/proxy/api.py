@@ -738,6 +738,20 @@ class _PassthroughCodexControlAdapter:
         return _codex_control_response(response)
 
 
+class _PrivateImageCodexControlAdapter:
+    privacy_policy: Final[CodexControlRequestPrivacyPolicy] = CodexControlRequestPrivacyPolicy.PRIVATE_IMAGE
+    success_gate: Final[None] = None
+
+    async def finalize(
+        self,
+        request: Request,
+        context: ProxyContext,
+        response: CodexControlResponse,
+    ) -> Response:
+        del request, context
+        return _codex_control_response(response)
+
+
 @dataclass(slots=True)
 class _RealtimeCallCodexControlAdapter:
     context: ProxyContext
@@ -807,6 +821,7 @@ class _RealtimeCallCodexControlAdapter:
 
 
 _PASSTHROUGH_CODEX_CONTROL_ADAPTER = _PassthroughCodexControlAdapter()
+_PRIVATE_IMAGE_CODEX_CONTROL_ADAPTER = _PrivateImageCodexControlAdapter()
 
 
 async def _codex_control_proxy(
@@ -888,6 +903,36 @@ async def codex_memories_trace_summarize(
     api_key: ApiKeyData | None = Security(validate_proxy_api_key),
 ) -> Response:
     return await _codex_control_proxy(request, "memories/trace_summarize", context, api_key)
+
+
+@router.post("/images/generations")
+async def codex_images_generations(
+    request: Request,
+    context: ProxyContext = Depends(get_proxy_context),
+    api_key: ApiKeyData | None = Security(validate_proxy_api_key),
+) -> Response:
+    return await _codex_control_proxy(
+        request,
+        "images/generations",
+        context,
+        api_key,
+        adapter=_PRIVATE_IMAGE_CODEX_CONTROL_ADAPTER,
+    )
+
+
+@router.post("/images/edits")
+async def codex_images_edits(
+    request: Request,
+    context: ProxyContext = Depends(get_proxy_context),
+    api_key: ApiKeyData | None = Security(validate_proxy_api_key),
+) -> Response:
+    return await _codex_control_proxy(
+        request,
+        "images/edits",
+        context,
+        api_key,
+        adapter=_PRIVATE_IMAGE_CODEX_CONTROL_ADAPTER,
+    )
 
 
 @realtime_call_router.post("/realtime/calls")

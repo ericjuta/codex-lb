@@ -549,11 +549,15 @@ class CodexControlResponse:
 
 class CodexControlRequestPrivacyPolicy(Enum):
     STANDARD = "standard"
+    PRIVATE_IMAGE = "private_image"
     PRIVATE_REALTIME = "private_realtime"
 
     @property
     def redacts_sensitive_details(self) -> bool:
-        return self is CodexControlRequestPrivacyPolicy.PRIVATE_REALTIME
+        return self in {
+            CodexControlRequestPrivacyPolicy.PRIVATE_IMAGE,
+            CodexControlRequestPrivacyPolicy.PRIVATE_REALTIME,
+        }
 
 
 def _should_drop_inbound_header(name: str) -> bool:
@@ -4544,8 +4548,8 @@ async def codex_control_request(
     error_code: str | None = None
     error_message: str | None = None
     payload_summary: dict[str, JsonValue] | None = None
-    sensitive_realtime_payload = effective_privacy_policy.redacts_sensitive_details
-    if not sensitive_realtime_payload and payload and content_type and "json" in content_type.lower():
+    sensitive_payload = effective_privacy_policy.redacts_sensitive_details
+    if not sensitive_payload and payload and content_type and "json" in content_type.lower():
         with contextlib.suppress(Exception):
             decoded = json.loads(payload)
             if isinstance(decoded, dict):
@@ -4556,13 +4560,13 @@ async def codex_control_request(
         headers=upstream_headers,
         method=request_method,
         payload_summary=(
-            "sensitive realtime payload redacted"
-            if sensitive_realtime_payload
+            "sensitive private payload redacted"
+            if sensitive_payload
             else _summarize_json_payload(payload_summary or {})
         ),
         payload_json=(
             payload.decode("utf-8", errors="replace")
-            if not sensitive_realtime_payload and payload is not None and settings.log_upstream_request_payload
+            if not sensitive_payload and payload is not None and settings.log_upstream_request_payload
             else None
         ),
         privacy_policy=effective_privacy_policy,

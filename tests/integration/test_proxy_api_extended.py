@@ -647,23 +647,43 @@ async def test_thread_goal_set_uses_active_account_when_budget_selection_is_empt
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("endpoint", "upstream_path", "payload"),
+    ("endpoint", "upstream_path", "payload", "privacy_policy"),
     [
-        ("/backend-api/codex/analytics-events/events", "analytics-events/events", {"events": []}),
+        (
+            "/backend-api/codex/analytics-events/events",
+            "analytics-events/events",
+            {"events": []},
+            core_proxy.CodexControlRequestPrivacyPolicy.STANDARD,
+        ),
         (
             "/backend-api/codex/memories/trace_summarize",
             "memories/trace_summarize",
             {"model": "gpt-5.1", "raw_memories": []},
+            core_proxy.CodexControlRequestPrivacyPolicy.STANDARD,
+        ),
+        (
+            "/backend-api/codex/images/generations",
+            "images/generations",
+            {"model": "gpt-image-2", "prompt": "A geometric fox icon"},
+            core_proxy.CodexControlRequestPrivacyPolicy.PRIVATE_IMAGE,
+        ),
+        (
+            "/backend-api/codex/images/edits",
+            "images/edits",
+            {"model": "gpt-image-2", "prompt": "Make it blue", "images": [{"image_url": "data:image/png;base64,AAAA"}]},
+            core_proxy.CodexControlRequestPrivacyPolicy.PRIVATE_IMAGE,
         ),
         (
             "/backend-api/codex/safety/arc",
             "safety/arc",
             {"decision": "allow"},
+            core_proxy.CodexControlRequestPrivacyPolicy.STANDARD,
         ),
         (
             "/backend-api/codex/alpha/search",
             "alpha/search",
             {"id": "sess_1", "model": "gpt-5.1", "input": [], "commands": {"search": []}},
+            core_proxy.CodexControlRequestPrivacyPolicy.STANDARD,
         ),
     ],
 )
@@ -673,6 +693,7 @@ async def test_codex_control_json_endpoints_forward_upstream(
     endpoint,
     upstream_path,
     payload,
+    privacy_policy,
 ):
     await _import_account(async_client, "acc_codex_control", "codex-control@example.com")
     calls = []
@@ -687,6 +708,7 @@ async def test_codex_control_json_endpoints_forward_upstream(
         access_token,
         account_id,
         timeout_seconds=None,
+        privacy_policy=core_proxy.CodexControlRequestPrivacyPolicy.STANDARD,
         **_kwargs,
     ):
         calls.append(
@@ -699,6 +721,7 @@ async def test_codex_control_json_endpoints_forward_upstream(
                 "access_token": access_token,
                 "account_id": account_id,
                 "timeout_seconds": timeout_seconds,
+                "privacy_policy": privacy_policy,
             }
         )
         return core_proxy.CodexControlResponse(
@@ -724,6 +747,7 @@ async def test_codex_control_json_endpoints_forward_upstream(
             "access_token": "access-token",
             "account_id": "acc_codex_control",
             "timeout_seconds": calls[0]["timeout_seconds"],
+            "privacy_policy": privacy_policy,
         }
     ]
     assert isinstance(calls[0]["timeout_seconds"], float)
