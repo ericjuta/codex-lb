@@ -130,10 +130,16 @@ Expected useful output:
 
 Interpretation:
 
-- `service_tier = "fast"`:
-  upstream entitlement exists for this account; continue to Step 3.
+Use successful-terminal `service_tier` as reported metadata, not proof of account entitlement or actual scheduling.
+
+- `service_tier = "priority"` or historical `"fast"`:
+  the response reports that tier; this alone does not prove Fast scheduling.
 - `service_tier = "default"`:
-  upstream completed normally, but this account did not receive `fast`.
+  the response reports default; this alone does not prove lack of Fast entitlement.
+- `service_tier = "auto"` or missing:
+  the tier is inconclusive; do not infer priority or default.
+- Failed or incomplete request:
+  leave the actual tier unset; only successful-terminal metadata can report it.
 - `result = "error"` with `Unsupported service_tier: fast`:
   the probe is wrong; remove raw `service_tier` from the JSON payload.
 
@@ -211,14 +217,18 @@ Dashboard shortcut:
 
 ## Result Matrix
 
+Compare the account, model, request settings, transport, and successful-terminal metadata through approved, redacted diagnostics. Do not retain account identifiers, credentials, prompts, or response bodies in reports. Unmatched runs cannot isolate proxy effects.
+
 - Direct upstream probe = `default`, `codex-lb` run = `default`:
-  proxy is behaving correctly; the account/upstream path is not yielding `fast`.
-- Direct upstream probe = `fast`, `codex-lb` run = `default`:
-  this is a real proxy regression; inspect websocket proxying and account selection.
-- Direct upstream probe = `fast`, `codex-lb` run = `fast`:
-  end-to-end support is confirmed.
+  matching metadata alone proves neither proxy correctness nor lack of Fast entitlement.
+- Direct upstream probe = `priority` or historical `fast`, `codex-lb` run = `default`:
+  reported tiers differ; compare matched runs and account selection before attributing a proxy regression.
+- Both runs report `priority` or historical `fast`:
+  both paths report priority-related metadata, not proof of Fast scheduling or end-to-end correctness.
+- Either successful terminal reports `auto` or omits the tier:
+  the tier remains inconclusive; preserve that uncertainty.
 - CLI run falls back to HTTP/SSE:
-  websocket transport regression in the proxy path.
+  fallback alone is not a transport regression; inspect handshake errors, client configuration, and upstream/proxy logs.
 
 ## Optional Deep-Dive: Capture Native `Codex CLI` Websocket Payload
 

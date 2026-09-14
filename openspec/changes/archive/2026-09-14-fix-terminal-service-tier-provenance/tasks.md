@@ -8,10 +8,10 @@
 
 - [x] 2.1 Prove conflicting, missing, and failed-terminal cases through response and request-log regressions.
 - [x] 2.2 Run focused tests, required repository validation, and independent review on the settled tree.
-- [ ] 2.3 Synchronize the normative specs and operational context, then validate and archive this change.
+- [x] 2.3 Synchronize the normative specs and operational context, then validate and archive this change.
 
 ## 3. Release
 
-- [ ] 3.1 Publish a PR targeting ericjuta/codex-lb main and satisfy current-head CI and review gates.
-- [ ] 3.2 Merge and deploy the verified revision without changing runtime settings.
-- [ ] 3.3 Verify deployment identity and readiness, then inspect aggregate normal-traffic terminal-tier evidence without model benchmarks or payload capture.
+- [x] 3.1 Publish a PR targeting ericjuta/codex-lb main and satisfy current-head CI and review gates.
+- [x] 3.2 Merge and deploy the verified revision without changing runtime settings.
+- [x] 3.3 Verify deployment identity and readiness, then inspect aggregate normal-traffic terminal-tier evidence without model benchmarks or payload capture.
