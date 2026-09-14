@@ -5125,6 +5125,23 @@ class _SseSession:
         return self._response
 
 
+class _QueuedSseSession:
+    def __init__(self, responses: list[_SsePostResponse]) -> None:
+        self._responses = responses
+        self.calls: list[dict[str, object]] = []
+
+    def post(
+        self,
+        url: str,
+        *,
+        json=None,
+        headers: dict[str, str] | None = None,
+        timeout=None,
+    ):
+        self.calls.append({"url": url, "json": json, "headers": headers, "timeout": timeout})
+        return self._responses.pop(0)
+
+
 class _SessionGenerationHarness:
     def __init__(self, failed_session: object, replacement_session: object) -> None:
         self.current_session = failed_session
@@ -5820,57 +5837,6 @@ def test_log_proxy_service_tier_trace_disabled(monkeypatch, caplog):
     assert "proxy_service_tier_trace" not in caplog.text
 
 
-def test_service_tier_mismatch_metric_records_without_trace_logging(monkeypatch, caplog):
-    counter = _ObservedCounter()
-
-    class Settings:
-        log_proxy_request_payload = False
-        log_proxy_request_shape = False
-        log_proxy_request_shape_raw_cache_key = False
-        log_proxy_service_tier_trace = False
-
-    monkeypatch.setattr(proxy_service, "get_settings", lambda: Settings())
-    monkeypatch.setattr(proxy_service, "PROMETHEUS_AVAILABLE", True)
-    monkeypatch.setattr(proxy_service, "service_tier_mismatch_total", counter)
-
-    caplog.set_level(logging.WARNING)
-    proxy_service._maybe_log_proxy_service_tier_trace(
-        "stream",
-        requested_service_tier="ultrafast",
-        actual_service_tier="default",
-    )
-
-    assert "proxy_service_tier_trace" not in caplog.text
-    assert counter.samples == [
-        {
-            "labels": {"kind": "stream", "requested_tier": "ultrafast", "actual_tier": "default"},
-            "value": 1.0,
-        }
-    ]
-
-
-def test_service_tier_mismatch_metric_skips_matching_tiers(monkeypatch):
-    counter = _ObservedCounter()
-
-    class Settings:
-        log_proxy_request_payload = False
-        log_proxy_request_shape = False
-        log_proxy_request_shape_raw_cache_key = False
-        log_proxy_service_tier_trace = False
-
-    monkeypatch.setattr(proxy_service, "get_settings", lambda: Settings())
-    monkeypatch.setattr(proxy_service, "PROMETHEUS_AVAILABLE", True)
-    monkeypatch.setattr(proxy_service, "service_tier_mismatch_total", counter)
-
-    proxy_service._maybe_log_proxy_service_tier_trace(
-        "compact",
-        requested_service_tier="priority",
-        actual_service_tier="priority",
-    )
-
-    assert counter.samples == []
-
-
 def test_log_upstream_request_trace(monkeypatch, caplog):
     class Settings:
         log_upstream_request_summary = True
@@ -6034,22 +6000,6 @@ async def test_stream_responses_applies_codex_continuation_in_core_client(monkey
         codex_continuation_rechunk_size = 64
         codex_continuation_max_total_output_tokens = 0
 
-    class QueueSseSession:
-        def __init__(self, responses: list[_SsePostResponse]) -> None:
-            self._responses = responses
-            self.calls: list[dict[str, object]] = []
-
-        def post(
-            self,
-            url: str,
-            *,
-            json=None,
-            headers: dict[str, str] | None = None,
-            timeout=None,
-        ):
-            self.calls.append({"url": url, "json": json, "headers": headers, "timeout": timeout})
-            return self._responses.pop(0)
-
     def sse(payload: Mapping[str, JsonValue]) -> bytes:
         return proxy_module.format_sse_event(payload).encode("utf-8")
 
@@ -6180,7 +6130,7 @@ async def test_stream_responses_applies_codex_continuation_in_core_client(monkey
             "stream": True,
         }
     )
-    session = QueueSseSession([round_one, round_two])
+    session = _QueuedSseSession([round_one, round_two])
 
     events = [
         parse_sse_data_json(event)
@@ -10008,14 +9958,197 @@ def test_logged_error_json_response_emits_proxy_error_log(caplog):
 
 
 @pytest.mark.asyncio
-async def test_stream_responses_logs_actual_service_tier_and_requested_tier_trace(monkeypatch, caplog):
-    settings = _make_proxy_settings(log_proxy_service_tier_trace=True)
+@pytest.mark.parametrize(
+    "terminal_case",
+    [
+        "conflicting-completed-tier",
+        "completed-without-tier",
+        "absent-completion",
+        "failed-completion",
+    ],
+)
+async def test_stream_responses_logs_actual_service_tier_and_requested_tier_trace(
+    monkeypatch,
+    caplog,
+    terminal_case: Literal[
+        "conflicting-completed-tier",
+        "completed-without-tier",
+        "absent-completion",
+        "failed-completion",
+    ],
+):
+    trace_enabled = terminal_case == "conflicting-completed-tier"
+    settings = _make_proxy_settings(log_proxy_service_tier_trace=trace_enabled)
+    settings.upstream_base_url = "https://chatgpt.com/backend-api"
+    settings.upstream_connect_timeout_seconds = 8.0
+    settings.stream_idle_timeout_seconds = 600.0
+    settings.http_responses_stream_request_budget_seconds = 7200.0
+    settings.image_inline_fetch_enabled = False
+    settings.log_upstream_request_payload = False
+    settings.log_upstream_request_summary = False
+    settings.upstream_stream_transport = "http"
+    settings.codex_continuation_enabled = True
+    settings.codex_continuation_max_continue = 1
     request_logs = _RequestLogsRecorder()
+    counter = _ObservedCounter()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     account = _make_account("acc_trace_stream")
 
+    def sse(event: Mapping[str, JsonValue]) -> bytes:
+        return proxy_module.format_sse_event(event).encode("utf-8")
+
+    created = sse(
+        {
+            "type": "response.created",
+            "response": {"id": "resp_trace_stream", "status": "in_progress", "service_tier": "auto"},
+        }
+    )
+    if terminal_case == "conflicting-completed-tier":
+        upstream_responses = [
+            _SsePostResponse(
+                [
+                    created,
+                    sse(
+                        {
+                            "type": "response.output_item.added",
+                            "output_index": 0,
+                            "item": {"id": "rs_trace_stream", "type": "reasoning"},
+                        }
+                    ),
+                    sse(
+                        {
+                            "type": "response.output_item.done",
+                            "output_index": 0,
+                            "item": {
+                                "id": "rs_trace_stream",
+                                "type": "reasoning",
+                                "encrypted_content": "enc-trace-stream",
+                            },
+                        }
+                    ),
+                    sse(
+                        {
+                            "type": "response.completed",
+                            "response": {
+                                "id": "resp_trace_stream",
+                                "status": "completed",
+                                "service_tier": "auto",
+                                "usage": {
+                                    "input_tokens": 100,
+                                    "output_tokens": 518,
+                                    "total_tokens": 618,
+                                    "output_tokens_details": {"reasoning_tokens": 516},
+                                },
+                            },
+                        }
+                    ),
+                ]
+            ),
+            _SsePostResponse(
+                [
+                    sse(
+                        {
+                            "type": "response.completed",
+                            "response": {
+                                "id": "resp_final_trace_stream",
+                                "status": "completed",
+                                "service_tier": "default",
+                                "usage": {
+                                    "input_tokens": 120,
+                                    "output_tokens": 2,
+                                    "total_tokens": 122,
+                                    "output_tokens_details": {"reasoning_tokens": 0},
+                                },
+                            },
+                        }
+                    )
+                ]
+            ),
+        ]
+    elif terminal_case == "completed-without-tier":
+        upstream_responses = [
+            _SsePostResponse(
+                [
+                    created,
+                    sse(
+                        {
+                            "type": "response.completed",
+                            "response": {
+                                "id": "resp_trace_stream",
+                                "status": "completed",
+                                "usage": {
+                                    "input_tokens": 1,
+                                    "output_tokens": 1,
+                                    "total_tokens": 2,
+                                    "output_tokens_details": {"reasoning_tokens": 0},
+                                },
+                            },
+                        }
+                    ),
+                ]
+            )
+        ]
+    elif terminal_case == "absent-completion":
+        upstream_responses = [_SsePostResponse([created])]
+    else:
+        upstream_responses = [
+            _SsePostResponse(
+                [
+                    sse(
+                        {
+                            "type": "response.in_progress",
+                            "response": {
+                                "id": "resp_trace_stream",
+                                "status": "in_progress",
+                                "service_tier": "auto",
+                            },
+                        }
+                    ),
+                    sse(
+                        {
+                            "type": "response.failed",
+                            "response": {
+                                "id": "resp_trace_stream",
+                                "status": "failed",
+                                "service_tier": "default",
+                                "error": {"code": "upstream_error", "message": "provider failed"},
+                            },
+                        }
+                    ),
+                ]
+            )
+        ]
+
+    session = _QueuedSseSession(upstream_responses)
+
+    async def folded_stream(
+        payload,
+        headers,
+        access_token,
+        account_id,
+        base_url=None,
+        raise_for_status=False,
+    ):
+        async for event in proxy_module.stream_responses(
+            payload,
+            headers,
+            access_token,
+            account_id,
+            base_url=base_url,
+            raise_for_status=raise_for_status,
+            session=cast(proxy_module.aiohttp.ClientSession, session),
+        ):
+            yield event
+
     monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
     monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(proxy_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(proxy_module, "_maybe_log_upstream_request_start", lambda **kwargs: None)
+    monkeypatch.setattr(proxy_module, "_maybe_log_upstream_request_complete", lambda **kwargs: None)
+    monkeypatch.setattr(proxy_module, "archive_json", lambda **kwargs: None)
+    monkeypatch.setattr(proxy_module, "archive_text", lambda **kwargs: None)
+    monkeypatch.setattr(proxy_service, "PROMETHEUS_AVAILABLE", True)
+    monkeypatch.setattr(proxy_service, "service_tier_mismatch_total", counter)
     monkeypatch.setattr(
         service._load_balancer,
         "select_account",
@@ -10023,11 +10156,7 @@ async def test_stream_responses_logs_actual_service_tier_and_requested_tier_trac
     )
     monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(return_value=account))
     monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock(return_value=True))
-
-    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
-        yield 'data: {"type":"response.completed","response":{"id":"resp_trace_stream","service_tier":"default"}}\n\n'
-
-    monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+    monkeypatch.setattr(proxy_service, "core_stream_responses", folded_stream)
 
     payload = ResponsesRequest.model_validate(
         {
@@ -10047,19 +10176,68 @@ async def test_stream_responses_logs_actual_service_tier_and_requested_tier_trac
     finally:
         reset_request_id(token)
 
-    assert chunks
+    downstream = [event for chunk in chunks if (event := parse_sse_data_json(chunk)) is not None]
+    terminal = downstream[-1]
+    response = cast(dict[str, JsonValue], terminal["response"])
+    expected_terminal_type = {
+        "conflicting-completed-tier": "response.completed",
+        "completed-without-tier": "response.completed",
+        "absent-completion": "response.failed",
+        "failed-completion": "response.failed",
+    }[terminal_case]
+    expected_status = (
+        "success" if terminal_case in {"conflicting-completed-tier", "completed-without-tier"} else "error"
+    )
+    expected_service_tier = (
+        "default" if terminal_case in {"conflicting-completed-tier", "failed-completion"} else "auto"
+    )
+    expected_actual_tier = "default" if terminal_case == "conflicting-completed-tier" else None
+
+    assert terminal["type"] == expected_terminal_type
+    assert response["id"] == "resp_trace_stream"
+    if terminal_case == "conflicting-completed-tier":
+        assert response["service_tier"] == "default"
+        metadata = cast(dict[str, JsonValue], response["metadata"])
+        assert metadata["proxy_rounds"] == [
+            {"round": 1, "reasoning_tokens": 516, "n": 1},
+            {"round": 2, "reasoning_tokens": 0, "n": None},
+        ]
+    elif terminal_case in {"completed-without-tier", "absent-completion"}:
+        assert "service_tier" not in response
+    else:
+        assert response["service_tier"] == "default"
+        error = cast(dict[str, JsonValue], response["error"])
+        assert error["code"] == "upstream_error"
+        assert error["message"] == "provider failed"
     assert request_id
-    assert request_logs.calls[0]["service_tier"] == "default"
-    assert request_logs.calls[0]["requested_service_tier"] == "priority"
-    assert request_logs.calls[0]["actual_service_tier"] == "default"
-    assert f"request_id={request_id}" in caplog.text
-    assert "response_id=resp_trace_stream" in caplog.text
-    assert "kind=stream" in caplog.text
-    assert "model=gpt-5.1" in caplog.text
-    assert "transport=http" in caplog.text
-    assert "status=success" in caplog.text
-    assert "requested_service_tier=priority" in caplog.text
-    assert "actual_service_tier=default" in caplog.text
+    assert len(request_logs.calls) == 1
+    request_log = request_logs.calls[0]
+    assert request_log["request_id"] == "resp_trace_stream"
+    assert request_log["status"] == expected_status
+    assert request_log["service_tier"] == expected_service_tier
+    assert request_log["requested_service_tier"] == "priority"
+    assert request_log["actual_service_tier"] == expected_actual_tier
+    assert counter.samples == (
+        [
+            {
+                "labels": {"kind": "stream", "requested_tier": "priority", "actual_tier": "default"},
+                "value": 1.0,
+            }
+        ]
+        if terminal_case == "conflicting-completed-tier"
+        else []
+    )
+    if trace_enabled:
+        assert f"request_id={request_id}" in caplog.text
+        assert "response_id=resp_trace_stream" in caplog.text
+        assert "kind=stream" in caplog.text
+        assert "model=gpt-5.1" in caplog.text
+        assert "transport=http" in caplog.text
+        assert "status=success" in caplog.text
+        assert "requested_service_tier=priority" in caplog.text
+        assert "actual_service_tier=default" in caplog.text
+    else:
+        assert "proxy_service_tier_trace" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -11031,14 +11209,24 @@ async def test_service_stream_responses_does_not_infer_previous_response_id_from
 
 
 @pytest.mark.asyncio
-async def test_compact_responses_logs_service_tier_trace_and_generates_request_id(monkeypatch, caplog):
-    settings = _make_proxy_settings(log_proxy_service_tier_trace=True)
+@pytest.mark.parametrize(
+    ("actual_tier", "trace_enabled"),
+    [("default", False), ("priority", True)],
+    ids=["mismatch-with-trace-disabled", "matching-with-trace-enabled"],
+)
+async def test_compact_responses_logs_service_tier_trace_and_generates_request_id(
+    monkeypatch, caplog, actual_tier: str, trace_enabled: bool
+):
+    settings = _make_proxy_settings(log_proxy_service_tier_trace=trace_enabled)
     request_logs = _RequestLogsRecorder()
+    counter = _ObservedCounter()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     account = _make_account("acc_trace_compact")
 
     monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
     monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(proxy_service, "PROMETHEUS_AVAILABLE", True)
+    monkeypatch.setattr(proxy_service, "service_tier_mismatch_total", counter)
     monkeypatch.setattr(
         service._load_balancer,
         "select_account",
@@ -11047,8 +11235,15 @@ async def test_compact_responses_logs_service_tier_trace_and_generates_request_i
     monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(return_value=account))
     monkeypatch.setattr(service, "_settle_compact_api_key_usage", AsyncMock(return_value=(True, True)))
 
-    async def fake_compact(payload, headers, access_token, account_id):
-        return OpenAIResponsePayload.model_validate({"output": [], "service_tier": "default"})
+    async def fake_compact(payload, headers, access_token, account_id) -> CompactResponsePayload:
+        return CompactResponsePayload.model_validate(
+            {
+                "object": "response.compaction",
+                "id": "resp_trace_compact",
+                "output": [],
+                "service_tier": actual_tier,
+            }
+        )
 
     monkeypatch.setattr(proxy_service, "core_compact_responses", fake_compact)
 
@@ -11069,16 +11264,38 @@ async def test_compact_responses_logs_service_tier_trace_and_generates_request_i
     finally:
         reset_request_id(token)
 
-    assert proxy_service._service_tier_from_response(response) == "default"
-    assert request_logs.calls[0]["service_tier"] == "default"
+    assert response.model_dump(exclude_none=True) == {
+        "object": "response.compaction",
+        "id": "resp_trace_compact",
+        "output": [],
+        "service_tier": actual_tier,
+    }
+    assert len(request_logs.calls) == 1
+    assert request_logs.calls[0]["status"] == "success"
+    assert request_logs.calls[0]["service_tier"] == actual_tier
     assert request_logs.calls[0]["requested_service_tier"] == "priority"
-    assert request_logs.calls[0]["actual_service_tier"] == "default"
+    assert request_logs.calls[0]["actual_service_tier"] == actual_tier
     assert request_id
-    assert f"request_id={request_id}" in caplog.text
-    assert "kind=compact" in caplog.text
-    assert "requested_service_tier=priority" in caplog.text
-    assert "actual_service_tier=default" in caplog.text
+    assert request_logs.calls[0]["request_id"] == request_id
+    if trace_enabled:
+        assert f"request_id={request_id}" in caplog.text
+        assert "kind=compact" in caplog.text
+        assert "status=success" in caplog.text
+        assert "requested_service_tier=priority" in caplog.text
+        assert f"actual_service_tier={actual_tier}" in caplog.text
+    else:
+        assert "proxy_service_tier_trace" not in caplog.text
     assert request_logs.calls[0]["transport"] == "http"
+    assert counter.samples == (
+        [
+            {
+                "labels": {"kind": "compact", "requested_tier": "priority", "actual_tier": "default"},
+                "value": 1.0,
+            }
+        ]
+        if actual_tier == "default"
+        else []
+    )
 
 
 @pytest.mark.asyncio
@@ -18330,8 +18547,12 @@ async def test_prepare_websocket_response_create_request_sanitizes_injected_anch
     fresh_payload = json.loads(prepared.request_state.fresh_upstream_request_text)
     assert "previous_response_id" not in fresh_payload
     assert fresh_payload["input"] == [*replay_safe_historical_input, new_input]
-    assert inbound_input[1]["id"] == "tsc_injected_replay"
-    assert inbound_input[2]["id"] == "tso_injected_replay"
+    tool_search_call = inbound_input[1]
+    tool_search_output = inbound_input[2]
+    assert isinstance(tool_search_call, dict)
+    assert isinstance(tool_search_output, dict)
+    assert tool_search_call["id"] == "tsc_injected_replay"
+    assert tool_search_output["id"] == "tso_injected_replay"
     assert prepared.request_state.previous_response_id == "resp_completed_tool_search_anchor"
 
 
@@ -18809,6 +19030,8 @@ async def test_prepare_websocket_response_create_request_sanitizes_tool_search_i
     fresh_payload = json.loads(prepared.request_state.fresh_upstream_request_text)
     assert "previous_response_id" not in fresh_payload
     assert fresh_payload["input"] == replay_safe_full_resend_input
+    assert isinstance(tool_search_call, dict)
+    assert isinstance(tool_search_output, dict)
     assert tool_search_call["id"] == "tsc_replayed"
     assert tool_search_output["id"] == "tso_replayed"
 
@@ -19226,8 +19449,12 @@ async def test_prepare_websocket_response_create_request_does_not_fresh_retry_se
     assert upstream_payload["input"] == full_resend_input
     assert prepared.request_state.fresh_upstream_request_is_retry_safe is False
     assert prepared.request_state.fresh_upstream_request_text is None
-    assert full_resend_input[1]["id"] == "tsc_server"
-    assert full_resend_input[2]["id"] == "tso_server"
+    tool_search_call = full_resend_input[1]
+    tool_search_output = full_resend_input[2]
+    assert isinstance(tool_search_call, dict)
+    assert isinstance(tool_search_output, dict)
+    assert tool_search_call["id"] == "tsc_server"
+    assert tool_search_output["id"] == "tso_server"
 
 
 @pytest.mark.asyncio
@@ -19298,7 +19525,9 @@ async def test_prepare_websocket_response_create_request_does_not_fresh_retry_or
     assert upstream_payload["input"] == full_resend_input
     assert prepared.request_state.fresh_upstream_request_is_retry_safe is False
     assert prepared.request_state.fresh_upstream_request_text is None
-    assert full_resend_input[1]["id"] == "tso_orphan"
+    tool_search_output = full_resend_input[1]
+    assert isinstance(tool_search_output, dict)
+    assert tool_search_output["id"] == "tso_orphan"
 
 
 @pytest.mark.asyncio
@@ -19376,7 +19605,9 @@ async def test_prepare_websocket_response_create_request_does_not_fresh_retry_in
     assert upstream_payload["input"] == full_resend_input
     assert prepared.request_state.fresh_upstream_request_is_retry_safe is False
     assert prepared.request_state.fresh_upstream_request_text is None
-    assert full_resend_input[1]["id"] == "tsc_incomplete"
+    tool_search_call = full_resend_input[1]
+    assert isinstance(tool_search_call, dict)
+    assert tool_search_call["id"] == "tsc_incomplete"
 
 
 @pytest.mark.asyncio
@@ -26735,7 +26966,8 @@ async def test_stream_responses_route_keyed_owner_rewrite_drops_health_when_sett
     )
     monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(return_value=account))
     monkeypatch.setattr(service, "_settle_stream_api_key_usage", settle_usage)
-    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+    handle_stream_error = AsyncMock()
+    monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error)
     monkeypatch.setattr(service._load_balancer, "record_success", AsyncMock())
 
     payload = ResponsesRequest.model_validate(
@@ -26757,7 +26989,7 @@ async def test_stream_responses_route_keyed_owner_rewrite_drops_health_when_sett
 
     assert any('"code":"previous_response_owner_unavailable"' in chunk for chunk in chunks)
     assert order == ["settle"]
-    service._handle_stream_error.assert_not_awaited()
+    handle_stream_error.assert_not_awaited()
     service._load_balancer.record_success.assert_not_awaited()
 
 
@@ -27063,7 +27295,8 @@ async def test_stream_post_refresh_pending_penalty_suppressed_when_settlement_un
     monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(side_effect=lambda account, **kwargs: account))
     monkeypatch.setattr(service, "_stream_once", fake_stream_once)
     monkeypatch.setattr(service, "_settle_stream_api_key_usage", settle_usage)
-    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock(side_effect=handle_stream_error))
+    handle_stream_error_mock = AsyncMock(side_effect=handle_stream_error)
+    monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error_mock)
     release_unsettled = AsyncMock(return_value=True)
     monkeypatch.setattr(service, "_release_unsettled_stream_api_key_usage", release_unsettled)
     monkeypatch.setattr(asyncio, "sleep", AsyncMock())
@@ -27088,7 +27321,7 @@ async def test_stream_post_refresh_pending_penalty_suppressed_when_settlement_un
     assert "response.completed" in chunks[-1]
     assert stream_calls == [account_a.id, account_a.id, account_b.id]
     assert order == ["health:invalid_api_key", "settle"]
-    service._handle_stream_error.assert_awaited_once()
+    handle_stream_error_mock.assert_awaited_once()
     release_unsettled.assert_awaited_once()
 
 
@@ -32779,7 +33012,9 @@ async def test_compact_successful_upstream_unconfirmed_settlement_raises_usage_s
     settle_result: tuple[bool, bool],
 ):
     settings = _make_proxy_settings()
-    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    request_logs = _RequestLogsRecorder()
+    counter = _ObservedCounter()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
     account = _make_account("acc_compact_success_unconfirmed")
     api_key = _make_api_key_data("key_compact_success_unconfirmed")
     reservation = proxy_service.ApiKeyUsageReservationData(
@@ -32792,6 +33027,8 @@ async def test_compact_successful_upstream_unconfirmed_settlement_raises_usage_s
 
     monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
     monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(proxy_service, "PROMETHEUS_AVAILABLE", True)
+    monkeypatch.setattr(proxy_service, "service_tier_mismatch_total", counter)
     monkeypatch.setattr(
         service._load_balancer,
         "select_account",
@@ -32804,10 +33041,16 @@ async def test_compact_successful_upstream_unconfirmed_settlement_raises_usage_s
     monkeypatch.setattr(
         proxy_service,
         "core_compact_responses",
-        AsyncMock(return_value=CompactResponsePayload.model_validate({"object": "response.compaction", "output": []})),
+        AsyncMock(
+            return_value=CompactResponsePayload.model_validate(
+                {"object": "response.compaction", "output": [], "service_tier": "default"}
+            )
+        ),
     )
 
-    payload = ResponsesCompactRequest.model_validate({"model": "gpt-5.1", "instructions": "hi", "input": []})
+    payload = ResponsesCompactRequest.model_validate(
+        {"model": "gpt-5.1", "instructions": "hi", "input": [], "service_tier": "priority"}
+    )
     with pytest.raises(proxy_module.ProxyResponseError) as exc_info:
         await service.compact_responses(
             payload,
@@ -32820,6 +33063,13 @@ async def test_compact_successful_upstream_unconfirmed_settlement_raises_usage_s
     assert _proxy_error_code(exc_info.value) == "usage_settlement_failed"
     record_error.assert_not_awaited()
     handle_stream_error.assert_not_awaited()
+    assert len(request_logs.calls) == 1
+    assert request_logs.calls[0]["status"] == "error"
+    assert request_logs.calls[0]["error_code"] == "usage_settlement_failed"
+    assert request_logs.calls[0]["service_tier"] == "default"
+    assert request_logs.calls[0]["requested_service_tier"] == "priority"
+    assert request_logs.calls[0]["actual_service_tier"] == "default"
+    assert counter.samples == []
 
 
 @pytest.mark.asyncio

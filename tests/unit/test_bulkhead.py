@@ -68,6 +68,7 @@ async def test_bulkhead_returns_429_when_proxy_http_lane_full():
     assert overloaded.headers["retry-after"] == "5"
     assert first_response.status_code == 200
 
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -132,6 +133,8 @@ async def test_bulkhead_exact_proxy_root_rejection_uses_proxy_lane_and_openai_en
     assert payload["error"]["type"] == "rate_limit_error"
     assert payload["error"]["code"] == "proxy_overloaded"
     assert "proxy_http lane" in payload["error"]["message"]
+
+
 @pytest.mark.asyncio
 async def test_bulkhead_compact_lane_isolated_from_general_proxy_http():
     app = FastAPI()

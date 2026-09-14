@@ -164,6 +164,12 @@ def _reset_global_state() -> None:
     except Exception:
         pass
     try:
+        import app.core.cache.invalidation as cache_invalidation
+
+        cache_invalidation._poller = None
+    except Exception:
+        pass
+    try:
         from app.core.middleware.firewall_cache import get_firewall_ip_cache as get_firewall_cache
 
         get_firewall_cache().invalidate_all()

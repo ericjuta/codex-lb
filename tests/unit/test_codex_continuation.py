@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator
+from copy import deepcopy
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -164,30 +165,85 @@ async def _collect_events(chunks: AsyncIterator[str]) -> list[dict[str, JsonValu
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("created_tier", "terminal_tier"),
+    [
+        pytest.param("auto", "priority", id="created-auto-terminal-priority"),
+        pytest.param("auto", "default", id="created-auto-terminal-default"),
+        pytest.param(None, "priority", id="created-absent-terminal-priority"),
+        pytest.param("auto", None, id="created-auto-terminal-omitted"),
+    ],
+)
 async def test_fold_responses_stream_continues_truncated_round_and_reuses_payload_shape(
     decision_counter: _ObservedCounter,
+    monkeypatch: pytest.MonkeyPatch,
+    created_tier: str | None,
+    terminal_tier: str | None,
 ) -> None:
     base_payload: JsonObject = {
         "model": "gpt-5.5",
         "instructions": "solve",
         "input": [{"role": "user", "content": "question"}],
         "previous_response_id": "resp_previous",
+        "service_tier": "priority",
         "stream": True,
     }
+    base_payload_snapshot = deepcopy(base_payload)
+    first_created = _created("resp_visible")
+    created_response = cast(dict[str, JsonValue], first_created["response"])
+    created_response["model"] = "gpt-5.5"
+    created_response["metadata"] = {"user_label": "visible"}
+    if created_tier is not None:
+        created_response["service_tier"] = created_tier
+    first_terminal = _completed("resp_visible", input_tokens=100, output_tokens=600, reasoning_tokens=516)
+    cast(dict[str, JsonValue], first_terminal["response"])["service_tier"] = "priority"
+    hidden_created = _created("resp_hidden")
+    cast(dict[str, JsonValue], hidden_created["response"])["service_tier"] = "flex"
+    hidden_terminal = _completed("resp_hidden", input_tokens=120, output_tokens=20, reasoning_tokens=10)
+    if terminal_tier is not None:
+        cast(dict[str, JsonValue], hidden_terminal["response"])["service_tier"] = terminal_tier
     round_events = [
         [
-            _created("resp_visible"),
+            first_created,
             *_reasoning_events(output_index=0, item_id="rs_1", encrypted_content="enc1"),
             *_message_events(output_index=1, item_id="msg_partial", text="partial answer"),
-            _completed("resp_visible", input_tokens=100, output_tokens=600, reasoning_tokens=516),
+            first_terminal,
         ],
         [
-            _created("resp_hidden"),
+            hidden_created,
             *_reasoning_events(output_index=0, item_id="rs_2", encrypted_content="enc2"),
             *_message_events(output_index=1, item_id="msg_final", text="final answer"),
-            _completed("resp_hidden", input_tokens=120, output_tokens=20, reasoning_tokens=10),
+            hidden_terminal,
         ],
     ]
+    reconstruction_inputs: list[tuple[dict[str, Any] | None, dict[str, Any] | None]] = []
+    reconstruction_snapshots: list[tuple[dict[str, Any] | None, dict[str, Any] | None]] = []
+    real_reconstruct_terminal = codex_continuation_module._reconstruct_terminal
+
+    def observe_reconstruct_terminal(
+        terminal: dict[str, Any] | None,
+        base_response: dict[str, Any] | None,
+        output_items: list[dict[str, Any]],
+        usage: dict[str, Any],
+        seq: int,
+        rounds: list[dict[str, Any]],
+        stopped_reason: str | None,
+        billed_usage: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        reconstruction_inputs.append((terminal, base_response))
+        reconstruction_snapshots.append((deepcopy(terminal), deepcopy(base_response)))
+        return real_reconstruct_terminal(
+            terminal,
+            base_response,
+            output_items,
+            usage,
+            seq,
+            rounds,
+            stopped_reason,
+            billed_usage,
+        )
+
+    monkeypatch.setattr(codex_continuation_module, "_reconstruct_terminal", observe_reconstruct_terminal)
     opened_payloads: list[JsonObject] = []
 
     async def open_round(payload: JsonObject) -> AsyncGenerator[str, None]:
@@ -205,9 +261,31 @@ async def test_fold_responses_stream_continues_truncated_round_and_reuses_payloa
     )
 
     assert len(opened_payloads) == 2
+    assert opened_payloads[0]["service_tier"] == "priority"
+    assert opened_payloads[1]["service_tier"] == "priority"
+    assert base_payload == base_payload_snapshot
     assert opened_payloads[0]["previous_response_id"] == "resp_previous"
     assert opened_payloads[0]["include"] == ["reasoning.encrypted_content"]
     assert "previous_response_id" not in opened_payloads[1]
+    assert len(reconstruction_inputs) == 1
+    captured_terminal, captured_created = reconstruction_inputs[0]
+    terminal_snapshot, created_snapshot = reconstruction_snapshots[0]
+    assert captured_terminal == terminal_snapshot
+    assert captured_created == created_snapshot
+    assert captured_terminal is not None
+    assert captured_created is not None
+    captured_terminal_response = cast(dict[str, JsonValue], captured_terminal["response"])
+    captured_created_response = cast(dict[str, JsonValue], captured_created)
+    assert captured_terminal_response["id"] == "resp_hidden"
+    if terminal_tier is None:
+        assert "service_tier" not in captured_terminal_response
+    else:
+        assert captured_terminal_response["service_tier"] == terminal_tier
+    assert captured_created_response["id"] == "resp_visible"
+    if created_tier is None:
+        assert "service_tier" not in captured_created_response
+    else:
+        assert captured_created_response["service_tier"] == created_tier
     replay_input = cast(list[JsonValue], opened_payloads[1]["input"])
     assert replay_input[0] == {"role": "user", "content": "question"}
     assert replay_input[1] == {
@@ -227,6 +305,12 @@ async def test_fold_responses_stream_continues_truncated_round_and_reuses_payloa
     assert event_types.count("response.completed") == 1
     assert event_types.count("response.output_item.done") == 3
     assert [event["sequence_number"] for event in events] == list(range(len(events)))
+    assert events[0]["type"] == "response.created"
+    emitted_created = cast(dict[str, JsonValue], events[0]["response"])
+    if created_tier is None:
+        assert "service_tier" not in emitted_created
+    else:
+        assert emitted_created["service_tier"] == created_tier
 
     deltas = "".join(
         str(event.get("delta", "")) for event in events if event.get("type") == "response.output_text.delta"
@@ -237,7 +321,13 @@ async def test_fold_responses_stream_continues_truncated_round_and_reuses_payloa
     terminal = events[-1]
     response = cast(dict[str, JsonValue], terminal["response"])
     assert response["id"] == "resp_visible"
+    assert response["model"] == "gpt-5.5"
+    if terminal_tier is None:
+        assert "service_tier" not in response
+    else:
+        assert response["service_tier"] == terminal_tier
     metadata = cast(dict[str, JsonValue], response["metadata"])
+    assert metadata["user_label"] == "visible"
     assert metadata["proxy_rounds"] == [
         {"round": 1, "reasoning_tokens": 516, "n": 1},
         {"round": 2, "reasoning_tokens": 10, "n": None},
@@ -269,6 +359,126 @@ async def test_fold_responses_stream_continues_truncated_round_and_reuses_payloa
             "value": 1.0,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_fold_responses_stream_hidden_eof_synthetic_terminal_omits_service_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_payload: JsonObject = {
+        "model": "gpt-5.5",
+        "input": [{"role": "user", "content": "question"}],
+        "service_tier": "priority",
+        "stream": True,
+    }
+    synthetic_inputs: list[dict[str, Any] | None] = []
+    synthetic_snapshots: list[dict[str, Any] | None] = []
+    real_synthetic_incomplete = codex_continuation_module._synthetic_incomplete
+
+    def observe_synthetic_incomplete(
+        base_response: dict[str, Any] | None,
+        output_items: list[dict[str, Any]],
+        usage: dict[str, Any],
+        seq: int,
+        reason: str,
+        rounds: list[dict[str, Any]],
+        billed_usage: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        synthetic_inputs.append(base_response)
+        synthetic_snapshots.append(deepcopy(base_response))
+        return real_synthetic_incomplete(
+            base_response,
+            output_items,
+            usage,
+            seq,
+            reason,
+            rounds,
+            billed_usage,
+        )
+
+    monkeypatch.setattr(codex_continuation_module, "_synthetic_incomplete", observe_synthetic_incomplete)
+    opened_payloads: list[JsonObject] = []
+
+    async def open_round(payload: JsonObject) -> AsyncGenerator[str, None]:
+        opened_payloads.append(payload)
+        if len(opened_payloads) != 1:
+            return
+
+        created = _created("resp_visible")
+        created_response = cast(dict[str, JsonValue], created["response"])
+        created_response["model"] = "gpt-5.5"
+        created_response["metadata"] = {"user_label": "visible"}
+        created_response["service_tier"] = "auto"
+        yield _event(created)
+        for event in _reasoning_events(output_index=0, item_id="rs_1", encrypted_content="enc1"):
+            yield _event(event)
+        completed = _completed("resp_visible", input_tokens=100, output_tokens=600, reasoning_tokens=516)
+        cast(dict[str, JsonValue], completed["response"])["service_tier"] = "default"
+        yield _event(completed)
+
+    events = await _collect_events(
+        fold_responses_stream_with_codex_continuation(
+            base_payload=base_payload,
+            open_round=open_round,
+            config=CodexContinuationConfig(max_continue=1, rechunk_size=64),
+        )
+    )
+
+    assert len(opened_payloads) == 2
+    assert len(synthetic_inputs) == 1
+    captured_created = synthetic_inputs[0]
+    assert captured_created == synthetic_snapshots[0]
+    assert captured_created is not None
+    assert captured_created["service_tier"] == "auto"
+    assert opened_payloads[0]["service_tier"] == "priority"
+    assert opened_payloads[1]["service_tier"] == "priority"
+    assert "previous_response_id" not in opened_payloads[1]
+    assert [event["type"] for event in events] == [
+        "response.created",
+        "response.output_item.added",
+        "response.output_item.done",
+        "response.incomplete",
+    ]
+    assert [event["sequence_number"] for event in events] == list(range(len(events)))
+    assert cast(dict[str, JsonValue], events[0]["response"])["service_tier"] == "auto"
+
+    terminal = events[-1]
+    assert terminal["type"] == "response.incomplete"
+    response = cast(dict[str, JsonValue], terminal["response"])
+    assert response["id"] == "resp_visible"
+    assert response["model"] == "gpt-5.5"
+    assert "service_tier" not in response
+    assert response["status"] == "incomplete"
+    assert response["incomplete_details"] == {"reason": "upstream_eof"}
+    assert response["output"] == [
+        {
+            "id": "rs_1",
+            "type": "reasoning",
+            "encrypted_content": "enc1",
+        }
+    ]
+    assert events[2]["item"] == cast(list[JsonValue], response["output"])[0]
+    assert response["usage"] == {
+        "input_tokens": 100,
+        "output_tokens": 516,
+        "total_tokens": 616,
+        "input_tokens_details": {"cached_tokens": 25},
+        "output_tokens_details": {"reasoning_tokens": 516},
+    }
+    metadata = cast(dict[str, JsonValue], response["metadata"])
+    assert metadata["user_label"] == "visible"
+    assert metadata["proxy_stopped_reason"] == "upstream_eof"
+    assert metadata["proxy_rounds"] == [
+        {"round": 1, "reasoning_tokens": 516, "n": 1},
+        {"round": 2, "reasoning_tokens": None, "n": None},
+    ]
+    assert metadata["proxy_billed_usage"] == {
+        "input_tokens": 100,
+        "output_tokens": 600,
+        "total_tokens": 700,
+        "input_tokens_details": {"cached_tokens": 25},
+        "output_tokens_details": {"reasoning_tokens": 516},
+    }
 
 
 @pytest.mark.asyncio

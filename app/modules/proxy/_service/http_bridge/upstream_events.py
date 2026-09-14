@@ -837,10 +837,11 @@ class _HTTPBridgeUpstreamEventsMixin:
                     matched_request_state.latency_response_created_ms = int(
                         max(0.0, now - matched_request_state.started_at) * 1000
                     )
-                actual_service_tier = _service_tier_from_event_payload(payload)
-                if actual_service_tier is not None:
-                    matched_request_state.actual_service_tier = actual_service_tier
-                    matched_request_state.service_tier = actual_service_tier
+                # Preserve any-event tier observations for billing. The shared
+                # terminal finalizer alone assigns actual-tier evidence.
+                observed_service_tier = _service_tier_from_event_payload(payload)
+                if observed_service_tier is not None:
+                    matched_request_state.service_tier = observed_service_tier
                 _record_http_bridge_tool_call_lifecycle(
                     matched_request_state,
                     event_type=event_type,

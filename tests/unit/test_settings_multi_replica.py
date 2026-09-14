@@ -78,11 +78,14 @@ def test_settings_metrics_port_from_env(monkeypatch, port: int):
     settings = Settings()
     assert settings.metrics_port == port
 
+
 @pytest.mark.parametrize("port", [0, -1, 65536, 70000])
 def test_settings_rejects_out_of_range_metrics_port(monkeypatch, port: int):
     monkeypatch.setenv("CODEX_LB_METRICS_PORT", str(port))
     with pytest.raises(ValidationError, match="metrics_port"):
         Settings()
+
+
 def test_settings_rejects_metrics_port_2455(monkeypatch):
     monkeypatch.setenv("CODEX_LB_METRICS_PORT", "2455")
     with pytest.raises(ValidationError) as exc_info:
@@ -96,10 +99,13 @@ def test_settings_log_format_from_env(monkeypatch, log_format: str):
     settings = Settings()
     assert settings.log_format == log_format
 
+
 def test_settings_rejects_unknown_log_format(monkeypatch):
     monkeypatch.setenv("CODEX_LB_LOG_FORMAT", "jsoon")
     with pytest.raises(ValidationError, match="log_format"):
         Settings()
+
+
 def test_settings_conversation_archive_queue_max_bytes_from_env(monkeypatch):
     monkeypatch.setenv("CODEX_LB_CONVERSATION_ARCHIVE_QUEUE_MAX_BYTES", "16777216")
     settings = Settings()

@@ -12,7 +12,7 @@ See `openspec/specs/proxy-runtime-observability/spec.md` for normative requireme
 - **Request tracing is opt-in:** outbound request summary and payload tracing remain configurable because payload logs can be noisy or sensitive.
 - **Error logs must be correlated:** request id, endpoint, status, code, and message are the minimum useful fields for debugging 4xx/5xx failures.
 - **Metrics stay low-cardinality:** Prometheus labels may include bounded values such as route shape, status, transport, error class, bridge outcome, SQLite retry outcome, and service tier. They must not include prompts, bearer tokens, raw request ids, response ids, or auth headers.
-- **Service-tier verification is observational:** codex-lb preserves the requested tier and records the upstream actual tier when upstream reports one. A mismatch is visible through request-log snapshots and the service-tier mismatch counter; it does not require changing the operator's tier preference.
+- **Service-tier verification is observational:** codex-lb records requested intent, successful explicit terminal-tier evidence, and billable fallback separately. These labels do not independently prove upstream scheduling or the exact egress payload. An explicit terminal `auto` is inconclusive, not proof of a downgrade or priority delivery. The repair does not change requested priority or transport.
 - **Health and performance are separate reads:** a green container, readiness probe, and clean local error window prove the proxy is locally serving. They do not prove every request is fast, so slow-tail analysis starts with request-log percentiles, output-size/request-shape buckets, upstream failure classes, and requested-versus-actual service tier before changing local runtime settings.
 
 ## Operational Notes
@@ -21,11 +21,52 @@ See `openspec/specs/proxy-runtime-observability/spec.md` for normative requireme
 - Prefer summary tracing in normal debugging sessions; enable payload tracing only when the exact normalized outbound request matters.
 - For direct compact `5xx` failures, look for `proxy_compact_failure` alongside `upstream_request_complete`; together they show the compact failure phase, failure detail, exception type, retry metadata, and affinity source.
 - For the greenfield sustained baseline, enable `CODEX_LB_METRICS_ENABLED=true` and scrape the metrics port. The minimum alert bundle covers readiness, request success rate, p95 latency, upstream timeout or `stream_incomplete` spikes, SQLite lock pressure, bridge continuity errors, service-tier mismatches, and container restart/OOM signals.
-- For service-tier verification, capture a snapshot with `scripts/codex_lb_live_snapshot.py` and inspect `request_logs.service_tier_counts` plus `request_logs.tier_mismatches`. The snapshot summarizes requested and actual tiers without printing prompts or auth headers.
+- For service-tier verification, capture a snapshot with `scripts/codex_lb_live_snapshot.py` and inspect `request_logs.service_tier_counts` plus `request_logs.tier_mismatches`. For postrepair records, actual tier means explicit successful terminal evidence, not a billable fallback. The snapshot prints neither prompts nor auth headers.
 - Treat health and latency as separate signals. A container can be running, restart-free, and answering `/health/ready` plus `/backend-api/codex/health` quickly while request logs still show slow-tail latency, upstream websocket open timeouts, or `stream_incomplete` errors. In that case the proxy is healthy enough to route traffic, but operators should investigate upstream service tier, prompt size, output size, websocket stability, and account/upstream behavior before calling the deployment fully healthy.
 - `upstream_websocket_open_timeout` storms that hit all accounts uniformly with a diurnal shape (quiet ~03-05 UTC) indicate chatgpt.com edge stalls, not a local fault; verify with direct socket probes against chatgpt.com vs other Cloudflare-fronted hosts. Tuning levers are `CODEX_LB_UPSTREAM_CONNECT_TIMEOUT_SECONDS` (keep above the observed 3-8s SYN-stall band so healthy-but-slow handshakes still land) and `CODEX_LB_PROXY_UPSTREAM_WEBSOCKET_CONNECT_LIMIT` (too low serializes handshakes behind the admission gate during storms). After lowering the connect timeout, watch `continuity_fail_closed` counts; a rise means the timeout is trimming recoverable handshakes.
-- When snapshots show requested `ultrafast` with actual upstream `default`, keep reporting it as a tier mismatch observation rather than a local proxy failure by itself. Correlate it with p95/max latency and recent error classes; do not hide it by changing the configured Codex CLI tier.
-- For a quick live health/performance read, pair `scripts/codex_lb_live_snapshot.py` with the configured Codex CLI smoke (`codex exec --ephemeral ... "Reply with OK only."`). The snapshot shows local health, latency percentiles, upstream failure classes, and tier mismatches; the CLI smoke proves the configured provider chain without exposing credentials.
+- When postrepair snapshots show requested `ultrafast` with an explicit successful terminal `default`, report it as a tier metadata mismatch rather than a local proxy failure or independent proof of upstream scheduling. Correlate it with p95/max latency and recent error classes; do not hide it by changing the configured Codex CLI tier.
+- For a quick live health/performance read, pair `scripts/codex_lb_live_snapshot.py` with the configured Codex CLI smoke (`codex exec --ephemeral ... "Reply with OK only."`). The snapshot shows local health, latency percentiles, upstream failure classes, and tier metadata; the CLI smoke proves the configured provider chain without exposing credentials. Neither proves how upstream scheduled the request.
+
+## Service-tier evidence boundaries
+
+For streaming traffic, `actual_service_tier` comes only from a nonblank
+`response.completed.response.service_tier` on a successful request. A completed
+response that omits the tier leaves actual tier null even when a created or
+in-progress event supplied one. Failed, incomplete, cancelled, and disconnected
+streams provide no actual-tier evidence.
+
+Billable tier is separate. An explicit successful terminal tier takes precedence;
+otherwise the existing observed-event/request fallback remains available for
+accounting without being copied into `actual_service_tier`. A successful compact
+response may report actual tier directly. Continuation folding preserves the
+final terminal tier or its absence, and a synthesized incomplete response cannot
+inherit a created tier as terminal evidence.
+
+The mismatch counter covers direct streaming and compact requests only. It does
+not cover native WebSocket or persistent HTTP bridge traffic, even though those
+paths receive the request-log terminal-tier repair. Count only successful
+requests with an explicit nonblank actual tier different from the normalized
+requested tier. Missing actual evidence and unsuccessful outcomes never count.
+
+Treat records produced by the repaired logic separately from historical records.
+Old logs and counter values are not backfilled or reinterpreted as terminal
+proof. In particular, an old `auto` may have come from an earlier event or from
+continuation folding. A time range that crosses the repair boundary cannot be
+read as a uniform set of successful terminal observations.
+
+Synthetic examples, not runtime observations, for requests asking for `priority`:
+
+| Created tier | Successful final response tier | Actual tier after repair | Billable tier | Counter result |
+| --- | --- | --- | --- | --- |
+| `auto` | `priority` | `priority` | `priority` | No mismatch. The final tier wins. |
+| `default` | Missing | null | `default` | No mismatch. The created tier is accounting fallback only. |
+| Missing | Missing | null | `priority` | No mismatch. Requested fallback is not actual evidence. |
+| `priority` | `auto` | `auto` | `auto` | Mismatch on direct streaming or compact only; `auto` does not establish scheduling. |
+
+If the second sequence fails, finishes incomplete, is cancelled, or disconnects,
+actual tier remains null and the counter does not increment. The same labels in
+an old record do not prove that its terminal sequence matched any row above.
+These reporting rules leave request priority and transport unchanged.
 
 ## Prompt-cache economics triage
 

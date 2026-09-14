@@ -280,6 +280,7 @@ async def test_request_decompression_rejects_one_byte_over_decoded_boundary(
     assert response.status_code == 413
     assert response.json()["error"]["code"] == "payload_too_large"
 
+
 @pytest.mark.asyncio
 async def test_zstd_streams_without_one_shot_allocation_attempt(monkeypatch):
     payload = {"input": "x" * 512}
@@ -315,6 +316,8 @@ async def test_zstd_streams_without_one_shot_allocation_attempt(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["data"] == payload
+
+
 @pytest.mark.asyncio
 async def test_request_decompression_uses_openai_envelope_for_unsupported_encoding(monkeypatch):
     monkeypatch.setenv("CODEX_LB_MAX_DECOMPRESSED_BODY_BYTES", "2048")

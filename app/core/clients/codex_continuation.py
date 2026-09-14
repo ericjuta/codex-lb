@@ -731,6 +731,10 @@ def _reconstruct_terminal(
 ) -> dict[str, Any]:
     terminal_response = _response_payload(terminal or {})
     response = dict(base_response or terminal_response)
+    if "service_tier" in terminal_response:
+        response["service_tier"] = terminal_response["service_tier"]
+    else:
+        response.pop("service_tier", None)
     response["output"] = output_items
     response["usage"] = usage
     response["status"] = terminal_response.get("status", "completed")
@@ -754,6 +758,7 @@ def _synthetic_incomplete(
     billed_usage: dict[str, Any] | None,
 ) -> dict[str, Any]:
     response = dict(base_response or {})
+    response.pop("service_tier", None)
     response["output"] = output_items
     response["usage"] = usage
     response["status"] = "incomplete"

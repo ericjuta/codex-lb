@@ -152,6 +152,7 @@ def _maybe_log_proxy_service_tier_trace(
         kind,
         requested_service_tier=requested_service_tier,
         actual_service_tier=actual_service_tier,
+        status=status,
     )
     settings = _service_get_settings()
     if not settings.log_proxy_service_tier_trace:
@@ -176,7 +177,10 @@ def _record_service_tier_mismatch(
     *,
     requested_service_tier: str | None,
     actual_service_tier: str | None,
+    status: str | None,
 ) -> None:
+    if status != "success":
+        return
     requested_tier = _service_tier_metric_label(requested_service_tier)
     actual_tier = _service_tier_metric_label(actual_service_tier)
     if requested_tier == "none" or actual_tier == "none" or requested_tier == actual_tier:

@@ -395,6 +395,7 @@ async def test_fail_pending_websocket_requests_records_bridge_upstream_transport
         }
     ]
 
+
 @pytest.mark.asyncio
 async def test_fail_pending_websocket_requests_attributes_request_state_api_key(monkeypatch):
     """Bridge failure fan-out passes api_key=None at the session level; each

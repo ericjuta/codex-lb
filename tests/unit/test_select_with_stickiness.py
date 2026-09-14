@@ -1082,6 +1082,8 @@ async def test_sticky_thread_below_threshold_does_not_reallocate():
 async def test_fresh_sticky_mapping_uses_normal_budget_gate():
     acc_a = _active("a", used_percent=10.0, secondary_used_percent=99.0)
     acc_b = _active("b", used_percent=20.0, secondary_used_percent=10.0)
+    acc_a.last_selected_at = 1.0
+    acc_b.last_selected_at = 2.0
     repo = _make_sticky_repo(existing_account_id=None)
 
     result = await _invoke_stickiness(

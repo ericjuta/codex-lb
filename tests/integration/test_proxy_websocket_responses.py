@@ -1671,22 +1671,48 @@ def _ws_msg(event: dict[str, Any]) -> _FakeUpstreamMessage:
     return _FakeUpstreamMessage("text", text=json.dumps(event, separators=(",", ":")))
 
 
-def test_backend_responses_websocket_folds_truncated_reasoning_continuation(app_instance, monkeypatch):
+@pytest.mark.parametrize(
+    ("final_service_tier", "expected_actual_tier", "expected_billable_tier"),
+    [
+        pytest.param("priority", "priority", "priority", id="terminal-priority"),
+        pytest.param("default", "default", "default", id="terminal-default"),
+        pytest.param(None, None, "auto", id="terminal-omitted"),
+    ],
+)
+def test_backend_responses_websocket_folds_truncated_reasoning_continuation(
+    app_instance,
+    monkeypatch,
+    final_service_tier: str | None,
+    expected_actual_tier: str | None,
+    expected_billable_tier: str,
+):
     # A visible round that truncates on the 518*n-2 fingerprint is folded with a
     # hidden continuation round over the same upstream/account: the truncated
     # final output is suppressed, the final answer comes from the hidden round,
-    # and settlement bills the summed usage.
+    # and settlement bills the summed usage. Created and hidden-round tiers may
+    # inform billing, but only the final completion supplies the actual tier.
+    round_one_completion = _ws_completed("resp_ws_v", input_tokens=100, output_tokens=600, reasoning_tokens=516)
+    round_one_completion["response"]["service_tier"] = "default"
+    final_completion = _ws_completed("resp_ws_h", input_tokens=120, output_tokens=20, reasoning_tokens=10)
+    if final_service_tier is not None:
+        final_completion["response"]["service_tier"] = final_service_tier
     round_one = [
-        {"type": "response.created", "response": {"id": "resp_ws_v", "status": "in_progress", "output": []}},
+        {
+            "type": "response.created",
+            "response": {"id": "resp_ws_v", "status": "in_progress", "output": [], "service_tier": "auto"},
+        },
         *_ws_reasoning_events(output_index=0, item_id="rs_1", encrypted_content="enc1"),
         *_ws_message_events(output_index=1, item_id="msg_partial", text="partial answer"),
-        _ws_completed("resp_ws_v", input_tokens=100, output_tokens=600, reasoning_tokens=516),
+        round_one_completion,
     ]
     round_two = [
-        {"type": "response.created", "response": {"id": "resp_ws_h", "status": "in_progress", "output": []}},
+        {
+            "type": "response.created",
+            "response": {"id": "resp_ws_h", "status": "in_progress", "output": [], "service_tier": "auto"},
+        },
         *_ws_reasoning_events(output_index=0, item_id="rs_2", encrypted_content="enc2"),
         *_ws_message_events(output_index=1, item_id="msg_final", text="final answer"),
-        _ws_completed("resp_ws_h", input_tokens=120, output_tokens=20, reasoning_tokens=10),
+        final_completion,
     ]
     fake_upstream = _FakeUpstreamWebSocket([_ws_msg(e) for e in (*round_one, *round_two)])
     log_calls: list[dict[str, object]] = []
@@ -1739,6 +1765,7 @@ def test_backend_responses_websocket_folds_truncated_reasoning_continuation(app_
         "model": "gpt-5.5",
         "instructions": "",
         "reasoning": {"effort": "high"},
+        "service_tier": "priority",
         # Upstream-unsupported field: must be stripped from the hidden round too.
         "max_output_tokens": 6000,
         "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
@@ -1766,6 +1793,11 @@ def test_backend_responses_websocket_folds_truncated_reasoning_continuation(app_
     types = [event["type"] for event in received]
     assert types.count("response.created") == 1
     assert types.count("response.completed") == 1
+    terminal_response = next(event["response"] for event in received if event["type"] == "response.completed")
+    if expected_actual_tier is None:
+        assert "service_tier" not in terminal_response
+    else:
+        assert terminal_response["service_tier"] == expected_actual_tier
     deltas = "".join(
         str(event.get("delta", "")) for event in received if event.get("type") == "response.output_text.delta"
     )
@@ -1778,6 +1810,7 @@ def test_backend_responses_websocket_folds_truncated_reasoning_continuation(app_
     # Hidden round inherits the prepared/stripped request shape, not the raw
     # client payload, so upstream-unsupported fields must not reappear.
     assert "max_output_tokens" not in continuation
+    assert continuation["service_tier"] == "priority"
     replay_input = continuation["input"]
     assert {"id": "rs_1", "type": "reasoning", "encrypted_content": "enc1"} in replay_input
     assert any(isinstance(item, dict) and item.get("phase") == "commentary" for item in replay_input)
@@ -1785,9 +1818,13 @@ def test_backend_responses_websocket_folds_truncated_reasoning_continuation(app_
     assert len(log_calls) == 1
     assert log_calls[0]["input_tokens"] == 220
     assert log_calls[0]["output_tokens"] == 620
+    assert log_calls[0]["requested_service_tier"] == "priority"
+    assert log_calls[0]["service_tier"] == expected_billable_tier
+    assert log_calls[0]["actual_service_tier"] == expected_actual_tier
     assert len(settlements) == 1
     assert settlements[0].input_tokens == 220
     assert settlements[0].output_tokens == 620
+    assert settlements[0].service_tier == expected_billable_tier
 
 
 def test_backend_responses_websocket_non_truncated_reasoning_passes_through(app_instance, monkeypatch):
@@ -9592,7 +9629,7 @@ def test_backend_responses_websocket_emits_response_failed_before_close_on_upstr
     ) -> _FakeUpstreamWebSocket:
         created_payload: dict[str, object] = {
             "type": "response.created",
-            "response": {"id": response_id, "status": "in_progress"},
+            "response": {"id": response_id, "status": "in_progress", "service_tier": "auto"},
         }
         if sequence_number is not None:
             created_payload["sequence_number"] = sequence_number
@@ -9684,12 +9721,15 @@ def test_backend_responses_websocket_emits_response_failed_before_close_on_upstr
     assert created_event["type"] == "response.created"
     assert failed_event["type"] == "response.failed"
     assert failed_event["response"]["id"] == "resp_ws_eof"
+    assert "service_tier" not in failed_event["response"]
     assert failed_event["response"]["error"]["code"] == "stream_incomplete"
     assert "close_code=1011" in failed_event["response"]["error"]["message"]
     assert len(log_calls) == 1
     assert log_calls[0]["request_id"] == "resp_ws_eof_retry"
     assert log_calls[0]["status"] == "error"
     assert log_calls[0]["error_code"] == "stream_incomplete"
+    assert log_calls[0]["service_tier"] == "auto"
+    assert log_calls[0]["actual_service_tier"] is None
 
 
 def test_backend_responses_websocket_closes_before_replaying_exposed_sequence(

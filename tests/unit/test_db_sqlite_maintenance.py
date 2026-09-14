@@ -59,9 +59,7 @@ def _patch_path_mutation(
         assert connections, f"expected tracked sqlite connections before Path.{method_name}"
         states = tuple(connection.closed for connection in connections)
         snapshots.append((self, states))
-        assert all(states), (
-            f"sqlite connection still open at Path.{method_name} for {self}; closed={states}"
-        )
+        assert all(states), f"sqlite connection still open at Path.{method_name} for {self}; closed={states}"
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, method_name, tracked)

@@ -815,6 +815,7 @@ async def test_only_expired_pending_browser_flow_no_longer_keeps_callback_server
         assert oauth_module._OAUTH_STORE._flows == {}
         assert oauth_module._OAUTH_STORE.state.status == "idle"
 
+
 @pytest.mark.asyncio
 async def test_callback_access_log_omits_code_and_state(caplog, unused_tcp_port):
     code_secret = "CALLBACK_CODE_SECRET"
@@ -843,6 +844,8 @@ async def test_callback_access_log_omits_code_and_state(caplog, unused_tcp_port)
     assert body == "callback accepted"
     assert code_secret not in caplog.text
     assert state_secret not in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_callback_server_remains_reserved_until_stop_completes():
     await oauth_module._OAUTH_STORE.reset()
