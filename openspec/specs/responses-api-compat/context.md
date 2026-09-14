@@ -39,23 +39,34 @@ codex-lb accepts the OpenAI/Codex `service_tier` field on Responses and Chat
 Completions compatible routes. The legacy `fast` spelling is accepted as an
 alias and is forwarded upstream as the canonical `priority` tier.
 
-Fast Mode is request-level intent, not a local speed guarantee. The upstream
-Codex backend decides the actual tier for each completed response. codex-lb
-therefore records three separate values in request logs:
+Fast Mode is request-level intent, not a local speed guarantee. The terminal-tier
+provenance repair separates three request-log values:
 
-- `requestedServiceTier`: what the client or API key asked for, after alias
-  normalization.
-- `actualServiceTier`: what upstream reported in the completed response, when
-  upstream included it.
-- `serviceTier`: the effective billable tier. This uses `actualServiceTier`
-  when present and falls back to `requestedServiceTier` only when upstream omits
-  the actual tier.
+- `requestedServiceTier`: the client or API key's requested tier after policy
+  and alias normalization, not an independent capture of upstream egress.
+- `actualServiceTier`: for streams, only a nonblank tier explicitly present in
+  a successful `response.completed.response`. Successful non-streaming compact
+  responses may supply actual-tier evidence directly.
+- `serviceTier`: the effective billable tier. An explicit terminal tier takes
+  precedence; otherwise the existing observed-event/request fallback remains
+  available independently of actual-tier evidence.
 
-If a request is sent with `service_tier: "fast"` or `service_tier: "priority"`
-and the completed row shows `requestedServiceTier: "priority"` but
-`actualServiceTier: "default"`, codex-lb forwarded the priority request and
-upstream chose the default tier. That can happen even when websocket transport
-is active.
+A completion without a tier leaves `actualServiceTier` null even if a created
+or in-progress event supplied one. Missing successful terminal evidence, failed,
+incomplete, cancelled, and disconnected streams provide no actual-tier evidence.
+An accounting fallback must not be copied into `actualServiceTier`.
+
+Continuation reconstruction preserves the final upstream terminal response's
+`service_tier`, including its absence. It does not inherit the initial created
+tier when the final terminal omits it. Proxy-synthesized incomplete responses
+cannot claim a created tier as upstream terminal evidence.
+
+These fields describe request intent, reported response metadata, and accounting.
+They do not independently prove upstream scheduling or the exact egress payload.
+An explicit successful terminal `auto` remains observable but is inconclusive:
+it proves neither a downgrade nor priority delivery. A reported `default` is a
+metadata mismatch with requested `priority`, not independent scheduling proof.
+The repair leaves requested priority and transport behavior unchanged.
 
 For OpenCode or Codex-compatible clients, enable Fast Mode by sending a
 Responses request with:
@@ -73,17 +84,34 @@ API keys can also force the tier for traffic that uses that key. Set the key's
 enforced service tier to `priority` or `fast`; both values are stored and
 returned as `priority`.
 
-To verify a completed Fast Mode request:
+Interpret records produced by the repaired logic separately from older records.
+Old request logs and mismatch counters are not backfilled, corrected, or
+reinterpreted as successful terminal proof. An old `auto` value may reflect an
+earlier event or continuation folding; it cannot establish what the terminal
+reported. Do not assume an aggregate mixes only postrepair records.
 
-1. `Transport` should be `WS` if you are verifying the websocket Codex path.
-2. `requestedServiceTier` should be `priority` when the client requested Fast
-   Mode or the API key enforced it.
-3. `actualServiceTier` is the upstream result. `default` means upstream did not
-   grant priority for that response.
+The mismatch counter covers direct streaming and compact only, not all Responses
+traffic. Native WebSocket and persistent HTTP bridge request logs receive the
+actual-tier repair, but those paths remain outside the counter. A zero counter,
+equal tiers, or absent actual tier does not prove priority delivery.
 
-This distinction matters for quota and cost accounting: codex-lb prices the
-request from the effective billable `serviceTier`, not from the requested tier
-when upstream reports a different actual tier.
+Synthetic examples, not runtime observations, for requests asking for `priority`:
+
+| Created tier | Successful final response tier | Actual tier after repair | Billable tier | Interpretation |
+| --- | --- | --- | --- | --- |
+| `auto` | `priority` | `priority` | `priority` | Continuation preserves the final reported tier, not the created tier. |
+| `default` | Missing | null | `default` | Earlier tier remains an accounting fallback only; no mismatch is counted. |
+| Missing | Missing | null | `priority` | Requested-tier billing fallback is not actual-tier evidence. |
+| `priority` | `auto` | `auto` | `auto` | Reported metadata differs from the request; scheduling remains unknown. |
+
+If the second example instead fails, is incomplete, is cancelled, or disconnects,
+actual tier is still null and no mismatch is counted. In a pre-repair record,
+a created `auto` might have obscured a terminal `priority`; the new rules do not
+retroactively establish that any old record followed this synthetic sequence.
+
+codex-lb prices requests using the effective billable `serviceTier`. Keep this
+accounting choice separate from terminal evidence and from latency analysis;
+these examples do not call for changing requested priority or transport.
 
 ## Include Allowlist (Reference)
 

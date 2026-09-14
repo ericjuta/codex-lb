@@ -73,6 +73,7 @@ async def test_api_not_found_returns_dashboard_payload(async_client):
     assert payload["error"]["message"] == "Not Found"
     assert response.headers["X-App-Version"] == __version__
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "path",
@@ -96,6 +97,8 @@ async def test_exact_openai_root_error_envelope_matches_equivalent_paths(async_c
             "code": "not_found",
         }
     }
+
+
 @pytest.mark.asyncio
 async def test_spa_route_path_returns_index_html(async_client, tmp_path):
     index = _STATIC_DIR / "index.html"

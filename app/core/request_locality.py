@@ -36,6 +36,7 @@ def _combined_chain_header(headers: Mapping[str, str], header_name: str) -> str 
         return ",".join(values) if values else None
     return headers.get(header_name)
 
+
 def _has_non_empty_header_value(
     headers: Mapping[str, str],
     header_name: str,

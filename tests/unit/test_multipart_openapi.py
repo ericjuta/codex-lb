@@ -140,10 +140,11 @@ def test_multipart_request_body_schemas_remain_semantically_identical() -> None:
     }
 
 
-def test_non_multipart_codex_image_and_file_surfaces_are_unchanged() -> None:
+def test_codex_image_and_file_surfaces_do_not_advertise_multipart() -> None:
     openapi = create_app().openapi()
 
-    assert "/backend-api/codex/images/edits" not in openapi["paths"]
+    image_edit = openapi["paths"]["/backend-api/codex/images/edits"]["post"]
+    assert "multipart/form-data" not in image_edit.get("requestBody", {}).get("content", {})
     files_body = openapi["paths"]["/backend-api/files"]["post"]["requestBody"]
     assert files_body == {
         "required": True,

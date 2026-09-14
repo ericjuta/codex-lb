@@ -559,7 +559,12 @@ class _CreatedThenCloseUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
                 text=json.dumps(
                     {
                         "type": "response.created",
-                        "response": {"id": response_id, "object": "response", "status": "in_progress"},
+                        "response": {
+                            "id": response_id,
+                            "object": "response",
+                            "status": "in_progress",
+                            "service_tier": "auto",
+                        },
                     },
                     separators=(",", ":"),
                 ),
@@ -577,7 +582,12 @@ class _ReasoningThenAbruptCloseUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
             {
                 "type": "response.created",
                 "sequence_number": 0,
-                "response": {"id": response_id, "object": "response", "status": "in_progress"},
+                "response": {
+                    "id": response_id,
+                    "object": "response",
+                    "status": "in_progress",
+                    "service_tier": "auto",
+                },
             },
             {
                 "type": "response.output_item.added",
@@ -4129,15 +4139,67 @@ async def test_get_or_create_http_bridge_session_honors_passed_prompt_cache_idle
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first_tier", "final_tier", "observed_tier", "expected_second_billable"),
+    [
+        pytest.param("default", "priority", "auto", "priority", id="final-priority"),
+        pytest.param("priority", "default", "auto", "default", id="final-default"),
+        pytest.param("priority", None, "auto", "auto", id="missing-final-tier-observed"),
+        pytest.param("default", None, None, "priority", id="missing-final-tier-requested"),
+    ],
+)
 async def test_v1_responses_http_bridge_reuses_upstream_websocket_and_preserves_previous_response_id(
     async_client,
+    app_instance,
     monkeypatch,
+    first_tier,
+    final_tier,
+    observed_tier,
+    expected_second_billable,
 ):
     _install_bridge_settings(monkeypatch, enabled=True)
     account_id = await _import_account(async_client, "acc_http_bridge_reuse", "http-bridge-reuse@example.com")
     account = await _get_account(account_id)
     fake_upstream = _FakeBridgeUpstreamWebSocket()
     connect_calls: list[tuple[str | None, str | None]] = []
+
+    async def fake_send_text(text: str) -> None:
+        fake_upstream.sent_text.append(text)
+        response_id = f"resp_bridge_{len(fake_upstream.sent_text)}"
+        response = {"id": response_id, "object": "response", "status": "in_progress"}
+        if observed_tier is not None:
+            response["service_tier"] = observed_tier
+        for event_type in ("response.created", "response.in_progress"):
+            await fake_upstream._messages.put(
+                _FakeUpstreamMessage("text", text=json.dumps({"type": event_type, "response": response}))
+            )
+        completed = {
+            "id": response_id,
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "OK"}],
+                }
+            ],
+            "usage": {
+                "input_tokens": 24,
+                "output_tokens": 2,
+                "total_tokens": 26,
+                "input_tokens_details": {"cached_tokens": 20},
+                "output_tokens_details": {"reasoning_tokens": 0},
+            },
+        }
+        tier = first_tier if response_id == "resp_bridge_1" else final_tier
+        if tier is not None:
+            completed["service_tier"] = tier
+        await fake_upstream._messages.put(
+            _FakeUpstreamMessage("text", text=json.dumps({"type": "response.completed", "response": completed}))
+        )
+
+    monkeypatch.setattr(fake_upstream, "send_text", fake_send_text)
 
     async def fake_select_account_with_budget(
         self,
@@ -4206,6 +4268,7 @@ async def test_v1_responses_http_bridge_reuses_upstream_websocket_and_preserves_
         "instructions": "Return exactly OK.",
         "input": "hello",
         "prompt_cache_key": "http-bridge-thread-1",
+        "service_tier": "priority",
         "client_metadata": {
             "keep": "yes",
             "x-codex-installation-id": "client-spoofed-installation-id",
@@ -4232,7 +4295,15 @@ async def test_v1_responses_http_bridge_reuses_upstream_websocket_and_preserves_
     second_body = second.json()
 
     assert first_body["id"] == "resp_bridge_1"
+    assert first_body["service_tier"] == first_tier
     assert second_body["id"] == "resp_bridge_2"
+    if final_tier is None:
+        assert "service_tier" not in second_body
+    else:
+        assert second_body["service_tier"] == final_tier
+    assert first_body["status"] == second_body["status"] == "completed"
+    assert first_body["output"][0]["content"][0]["text"] == "OK"
+    assert second_body["output"][0]["content"][0]["text"] == "OK"
     assert connect_calls == [(account_id, account.chatgpt_account_id)]
     assert len(fake_upstream.sent_text) == 2
     first_upstream_payload = json.loads(fake_upstream.sent_text[0])
@@ -4248,6 +4319,38 @@ async def test_v1_responses_http_bridge_reuses_upstream_websocket_and_preserves_
     assert second_upstream_payload["client_metadata"]["x-openai-subagent"] == "collab_spawn"
     assert second_upstream_payload["client_metadata"]["x-codex-parent-thread-id"] == "parent-thread"
     assert second_upstream_payload["client_metadata"]["x-codex-window-id"] == "child-thread:0"
+    assert first_upstream_payload["service_tier"] == "priority"
+    assert second_upstream_payload["service_tier"] == "priority"
+
+    service = get_proxy_service_for_app(app_instance)
+    rows: list[RequestLog] = []
+    deadline = time.monotonic() + _TEST_SYNC_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        assert await service.drain_persistence_tasks(timeout_seconds=10)
+        async with SessionLocal() as session:
+            rows = list(
+                (await session.execute(select(RequestLog).where(RequestLog.account_id == account_id))).scalars()
+            )
+        if len(rows) == 2:
+            break
+        await asyncio.sleep(0.05)
+    assert len(rows) == 2
+    logs = {row.request_id: row for row in rows}
+    assert set(logs) == {first_body["id"], second_body["id"]}
+    first_log = logs[first_body["id"]]
+    assert first_log.actual_service_tier == first_tier
+    assert first_log.service_tier == first_tier
+    assert first_log.requested_service_tier == "priority"
+    second_log = logs[second_body["id"]]
+    assert second_log.actual_service_tier == final_tier
+    assert second_log.service_tier == expected_second_billable
+    assert second_log.requested_service_tier == "priority"
+    for row in rows:
+        assert row.status == "success"
+        assert row.transport == "http"
+        assert row.upstream_transport == "websocket"
+        assert row.input_tokens == 24
+        assert row.output_tokens == 2
 
 
 @pytest.mark.asyncio
@@ -9220,13 +9323,22 @@ async def test_v1_responses_http_bridge_prunes_idle_session_before_reuse(app_ins
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("upstream_type", "prime_reused_session", "expected_event_types", "expected_failure_sequence"),
+    (
+        "upstream_type",
+        "prime_reused_session",
+        "expected_event_types",
+        "expected_failure_sequence",
+        "expected_error_code",
+        "emit_failed_terminal",
+    ),
     [
         (
             _CreatedThenCloseUpstreamWebSocket,
             False,
             ["response.created", "response.failed"],
             0,
+            "stream_incomplete",
+            False,
         ),
         (
             _ReasoningThenAbruptCloseUpstreamWebSocket,
@@ -9239,6 +9351,8 @@ async def test_v1_responses_http_bridge_prunes_idle_session_before_reuse(app_ins
                 "response.failed",
             ],
             4,
+            "stream_incomplete",
+            False,
         ),
         (
             _CompleteThenReasoningAbruptCloseUpstreamWebSocket,
@@ -9251,17 +9365,35 @@ async def test_v1_responses_http_bridge_prunes_idle_session_before_reuse(app_ins
                 "response.failed",
             ],
             4,
+            "stream_incomplete",
+            False,
+        ),
+        (
+            _FakeBridgeUpstreamWebSocket,
+            False,
+            ["response.created", "response.failed"],
+            1,
+            "server_error",
+            True,
         ),
     ],
-    ids=["created-then-close", "reasoning-then-abrupt-close", "reused-reasoning-then-abrupt-close"],
+    ids=[
+        "created-then-close",
+        "reasoning-then-abrupt-close",
+        "reused-reasoning-then-abrupt-close",
+        "created-then-response-failed",
+    ],
 )
 async def test_v1_responses_http_bridge_stream_failure_remains_valid_sse(
     async_client,
+    app_instance,
     monkeypatch,
     upstream_type,
     prime_reused_session,
     expected_event_types,
     expected_failure_sequence,
+    expected_error_code,
+    emit_failed_terminal,
 ):
     _install_bridge_settings(monkeypatch, enabled=True)
     account_id = await _import_account(
@@ -9271,6 +9403,54 @@ async def test_v1_responses_http_bridge_stream_failure_remains_valid_sse(
     )
     account = await _get_account(account_id)
     upstream = upstream_type()
+
+    if emit_failed_terminal:
+
+        async def fake_send_text(text: str) -> None:
+            upstream.sent_text.append(text)
+            response_id = "resp_created_then_failed"
+            await upstream._messages.put(
+                _FakeUpstreamMessage(
+                    "text",
+                    text=json.dumps(
+                        {
+                            "type": "response.created",
+                            "sequence_number": 0,
+                            "response": {
+                                "id": response_id,
+                                "object": "response",
+                                "status": "in_progress",
+                                "service_tier": "auto",
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                )
+            )
+            await upstream._messages.put(
+                _FakeUpstreamMessage(
+                    "text",
+                    text=json.dumps(
+                        {
+                            "type": "response.failed",
+                            "sequence_number": 1,
+                            "response": {
+                                "id": response_id,
+                                "object": "response",
+                                "status": "failed",
+                                "error": {
+                                    "type": "server_error",
+                                    "code": "server_error",
+                                    "message": "Synthetic upstream failure",
+                                },
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                )
+            )
+
+        monkeypatch.setattr(upstream, "send_text", fake_send_text)
 
     async def fake_select_account_with_budget(
         self,
@@ -9325,9 +9505,13 @@ async def test_v1_responses_http_bridge_stream_failure_remains_valid_sse(
         del headers, access_token, account_id_header, base_url, session
         return upstream
 
+    async def fail_legacy_stream(*args, **kwargs):
+        raise AssertionError("legacy core_stream_responses path must not be used when HTTP bridge is enabled")
+
     monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget", fake_select_account_with_budget)
     monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh_with_budget)
     monkeypatch.setattr(proxy_module, "connect_responses_websocket", fake_connect_responses_websocket)
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fail_legacy_stream)
 
     headers = {"x-codex-turn-state": "turn-sse-failure"} if prime_reused_session else {}
     if prime_reused_session:
@@ -9339,6 +9523,7 @@ async def test_v1_responses_http_bridge_stream_failure_remains_valid_sse(
                 "instructions": "Return exactly OK.",
                 "input": "prime-sse-session",
                 "prompt_cache_key": "sse-failure-key",
+                "service_tier": "priority",
             },
         )
         assert prime.status_code == 200
@@ -9352,6 +9537,7 @@ async def test_v1_responses_http_bridge_stream_failure_remains_valid_sse(
             "instructions": "Return exactly OK.",
             "input": "trigger-sse-failure",
             "prompt_cache_key": "sse-failure-key",
+            "service_tier": "priority",
             "stream": True,
         },
     ) as response:
@@ -9361,8 +9547,38 @@ async def test_v1_responses_http_bridge_stream_failure_remains_valid_sse(
     events = [json.loads(line[6:]) for line in lines if line[6:] != "[DONE]"]
     assert [event["type"] for event in events] == expected_event_types
     assert events[0]["response"]["id"] == events[-1]["response"]["id"]
+    assert events[0]["response"]["service_tier"] == "auto"
     assert events[-1]["sequence_number"] == expected_failure_sequence
-    assert events[-1]["response"]["error"]["code"] == "stream_incomplete"
+    assert events[-1]["response"]["error"]["code"] == expected_error_code
+
+    service = get_proxy_service_for_app(app_instance)
+    rows: list[RequestLog] = []
+    deadline = time.monotonic() + _TEST_SYNC_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        assert await service.drain_persistence_tasks(timeout_seconds=10)
+        async with SessionLocal() as session:
+            rows = list(
+                (
+                    await session.execute(
+                        select(RequestLog).where(
+                            RequestLog.account_id == account_id,
+                            RequestLog.status == "error",
+                        )
+                    )
+                ).scalars()
+            )
+        if len(rows) == 1:
+            break
+        await asyncio.sleep(0.05)
+    assert len(rows) == 1
+    failure_log = rows[0]
+    assert failure_log.actual_service_tier is None
+    assert failure_log.service_tier == "auto"
+    assert failure_log.requested_service_tier == "priority"
+    assert failure_log.status == "error"
+    assert failure_log.error_code == expected_error_code
+    assert failure_log.transport == "http"
+    assert failure_log.upstream_transport == "websocket"
 
 
 @pytest.mark.asyncio

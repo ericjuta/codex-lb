@@ -598,8 +598,9 @@ class _StreamingMixin(_StreamingEntrypointMixin, _StreamingRetryMixin):
                 )
             event_service_tier = _facade()._service_tier_from_event_payload(first_payload)
             if event_service_tier is not None:
-                actual_service_tier = event_service_tier
                 service_tier = event_service_tier
+            if event_type == "response.completed":
+                actual_service_tier = event_service_tier
             if event and event.response and event.response.id:
                 response_id = event.response.id
                 settlement.response_id = response_id
@@ -765,8 +766,9 @@ class _StreamingMixin(_StreamingEntrypointMixin, _StreamingRetryMixin):
                     )
                 event_service_tier = _facade()._service_tier_from_event_payload(event_payload)
                 if event_service_tier is not None:
-                    actual_service_tier = event_service_tier
                     service_tier = event_service_tier
+                if event_type == "response.completed":
+                    actual_service_tier = event_service_tier
                 line, event_payload, event, event_type = rewrite_parallel_tool_call_sse_line(line, event_payload)
                 if event_type in _facade()._TEXT_DELTA_EVENT_TYPES:
                     saw_text_delta = True
@@ -986,6 +988,8 @@ class _StreamingMixin(_StreamingEntrypointMixin, _StreamingRetryMixin):
             output_tokens = usage_accounting.output_tokens
             cached_input_tokens = usage_accounting.cached_input_tokens
             reasoning_tokens = usage_accounting.reasoning_tokens
+            if status != "success":
+                actual_service_tier = None
             settlement.status = status
             settlement.model = model
             settlement.service_tier = service_tier

@@ -447,6 +447,87 @@ def test_ws_fold_continues_truncated_round_then_reconstructs_final(decision_coun
     ]
 
 
+@pytest.mark.parametrize("final_tier", ["priority", "default", None], ids=["priority", "default", "missing"])
+def test_ws_fold_completed_tier_comes_only_from_final_terminal(final_tier: str | None) -> None:
+    fold = _WebSocketContinuationFold(
+        CodexContinuationConfig(max_continue=2, rechunk_size=64),
+        {
+            "model": "gpt-5.5",
+            "input": [{"role": "user", "content": "question"}],
+            "service_tier": "priority",
+            "stream": True,
+        },
+    )
+    downstream: list[dict[str, Any]] = []
+    # Both truncated terminals are suppressed, including one from a hidden round.
+    for round_number, response_id, input_tokens in [(1, "resp_visible", 100), (2, "resp_hidden", 120)]:
+        completed = _completed(response_id, input_tokens=input_tokens, output_tokens=600, reasoning_tokens=516)
+        completed["response"]["service_tier"] = "priority"
+        events = [
+            {
+                "type": "response.created",
+                "response": {"id": response_id, "status": "in_progress", "output": [], "service_tier": "auto"},
+            },
+            *_reasoning_events(output_index=0, item_id=f"rs_{round_number}", encrypted_content=f"enc{round_number}"),
+            *_message_events(output_index=1, item_id=f"msg_partial_{round_number}", text="partial answer"),
+            completed,
+        ]
+        emitted, continuation, terminal = _drive(fold, events)
+        assert continuation is not None
+        assert terminal is None
+        assert all(event["type"] != "response.completed" for event in emitted)
+        downstream.extend(emitted)
+
+    completed = _completed("resp_final", input_tokens=140, output_tokens=20, reasoning_tokens=10)
+    if final_tier is not None:
+        completed["response"]["service_tier"] = final_tier
+    emitted, continuation, terminal = _drive(
+        fold,
+        [
+            {"type": "response.created", "response": {"id": "resp_final", "status": "in_progress", "output": []}},
+            *_reasoning_events(output_index=0, item_id="rs_3", encrypted_content="enc3"),
+            *_message_events(output_index=1, item_id="msg_final", text="final answer"),
+            completed,
+        ],
+    )
+    downstream.extend(emitted)
+    assert continuation is None
+    downstream_completed = [event for event in downstream if event["type"] == "response.completed"]
+    assert downstream_completed == [terminal]
+    response = downstream_completed[0]["response"]
+    if final_tier is None:
+        assert "service_tier" not in response
+    else:
+        assert response["service_tier"] == final_tier
+    assert response["id"] == "resp_visible"
+    assert response["status"] == "completed"
+    assert response["output"] == [
+        {"id": "rs_1", "type": "reasoning", "encrypted_content": "enc1"},
+        {"id": "rs_2", "type": "reasoning", "encrypted_content": "enc2"},
+        {"id": "rs_3", "type": "reasoning", "encrypted_content": "enc3"},
+        {
+            "id": "msg_final",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "final answer"}],
+        },
+    ]
+    assert response["usage"] == {
+        "input_tokens": 100,
+        "output_tokens": 1052,
+        "total_tokens": 1152,
+        "input_tokens_details": {"cached_tokens": 0},
+        "output_tokens_details": {"reasoning_tokens": 1042},
+    }
+    assert response["metadata"]["proxy_billed_usage"] == {
+        "input_tokens": 360,
+        "output_tokens": 1220,
+        "total_tokens": 1580,
+        "input_tokens_details": {"cached_tokens": 0},
+        "output_tokens_details": {"reasoning_tokens": 1042},
+    }
+
+
 def test_folded_terminal_function_call_ids_prune_only_delivered_calls() -> None:
     # Defense-in-depth invariant: the relay prunes pending-call tracking to
     # calls present in the folded terminal's delivered output. No fold mode

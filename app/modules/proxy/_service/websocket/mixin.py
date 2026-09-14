@@ -3784,10 +3784,11 @@ class _WebSocketMixin:
                     )
                 if event_type not in {"response.completed", "response.failed", "response.incomplete", "error"}:
                     _record_response_event(request_state, event_type)
-                actual_service_tier = _facade()._service_tier_from_event_payload(payload)
-                if actual_service_tier is not None:
-                    request_state.actual_service_tier = actual_service_tier
-                    request_state.service_tier = actual_service_tier
+                # Any upstream event may refine billing, but only the final
+                # response.completed event supplies actual-tier evidence.
+                observed_service_tier = _facade()._service_tier_from_event_payload(payload)
+                if observed_service_tier is not None:
+                    request_state.service_tier = observed_service_tier
                 completed_tool_call = _facade()._response_output_item_done_tool_call(payload)
                 if completed_tool_call is not None:
                     completed_call_id, completed_call_type = completed_tool_call
@@ -4007,6 +4008,8 @@ class _WebSocketMixin:
                 # to this pending request (and is then folded/suppressed).
                 fold_request_state.awaiting_response_created = True
                 fold_request_state.response_id = None
+                # A swallowed round cannot provide final actual-tier evidence.
+                fold_request_state.actual_service_tier = None
                 upstream_control.continuation_resend_body = fold_outcome.continuation_request
                 upstream_control.suppress_downstream_event = True
                 return text
@@ -4580,6 +4583,8 @@ class _WebSocketMixin:
         error_payload: UpstreamError | None = None
         response_id = request_state.response_id or request_state.request_id
         response_service_tier = request_state.service_tier
+        # Clear earlier attempts and in-flight events before every terminal path.
+        request_state.actual_service_tier = None
 
         if request_state.draining_until_terminal:
             await _release_websocket_response_create_gate(request_state, response_create_gate)
@@ -4622,10 +4627,11 @@ class _WebSocketMixin:
         billed_usage_payload = _proxy_billed_usage_from_event_payload(payload)
         usage_accounting = _stream_usage_accounting(usage, billed_usage_payload)
 
-        actual_service_tier = _facade()._service_tier_from_event_payload(payload)
-        if actual_service_tier is not None:
-            request_state.actual_service_tier = actual_service_tier
-            response_service_tier = actual_service_tier
+        observed_service_tier = _facade()._service_tier_from_event_payload(payload)
+        if observed_service_tier is not None:
+            response_service_tier = observed_service_tier
+        if event_type == "response.completed":
+            request_state.actual_service_tier = observed_service_tier
 
         settlement = _StreamSettlement(
             status=status,
@@ -4765,6 +4771,7 @@ class _WebSocketMixin:
     ) -> None:
         proxy = cast(_WebSocketServiceProtocol, self)
         _ = proxy
+        request_state.actual_service_tier = None
         if request_state.skip_request_log:
             return
         await proxy._write_request_log(
@@ -4950,6 +4957,7 @@ class _WebSocketMixin:
 
         last_index = len(remaining) - 1
         for index, request_state in enumerate(remaining):
+            request_state.actual_service_tier = None
             proxy._cancel_request_state_api_key_reservation_heartbeat(request_state)
             request_error_code = request_state.error_code_override or error_code
             request_error_message = request_state.error_message_override or error_message

@@ -1337,7 +1337,9 @@ async def test_stream_usage_logs_actual_service_tier(async_client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_stream_usage_logs_actual_service_tier_when_response_created_echoes_default(async_client, monkeypatch):
+async def test_stream_usage_preserves_created_service_tier_for_billing_without_actual_evidence(
+    async_client, monkeypatch
+):
     enable = await async_client.put(
         "/api/settings",
         json={
@@ -1416,8 +1418,9 @@ async def test_stream_usage_logs_actual_service_tier_when_response_created_echoe
         latest_log = result.scalars().first()
         assert latest_log is not None
         assert latest_log.api_key_id == key_id
+        assert latest_log.status == "success"
         assert latest_log.requested_service_tier == "priority"
-        assert latest_log.actual_service_tier == "default"
+        assert latest_log.actual_service_tier is None
         assert latest_log.service_tier == "default"
 
 
@@ -2720,6 +2723,7 @@ async def test_allowed_but_unsupported_model_is_not_exposed(async_client):
 # ---------------------------------------------------------------------------
 # Reservation lifecycle regression tests (fix-api-key-reservation-leak)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("surface", ["stream", "collect", "compact", "transcribe"])

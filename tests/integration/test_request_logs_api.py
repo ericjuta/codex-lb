@@ -265,9 +265,7 @@ async def test_request_logs_api_excludes_client_ip_from_guest_search_and_preserv
 
     admin_response = await async_client.get("/api/request-logs?search=198.51.100.222")
     assert admin_response.status_code == 200
-    assert [entry["requestId"] for entry in admin_response.json()["requests"]] == [
-        "req_ip_search_target"
-    ]
+    assert [entry["requestId"] for entry in admin_response.json()["requests"]] == ["req_ip_search_target"]
     assert admin_response.json()["total"] == 1
 
 
