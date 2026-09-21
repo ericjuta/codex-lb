@@ -86,8 +86,12 @@ class ModelRefreshScheduler:
 
     async def _refresh_once(self) -> None:
         is_leader = await _get_leader_election().try_acquire()
-        if not is_leader:
-            return
+        # Every uvicorn worker owns an in-memory ModelRegistry, so a replica
+        # that never holds the lease would otherwise serve a stale (or
+        # permanently bootstrap) catalog. Non-leaders refresh read-only: they
+        # fetch catalogs with the stored access token but never refresh OAuth
+        # tokens or write account state, keeping token rotation leader-only.
+        read_only = not is_leader
         try:
             async with get_background_session() as session:
                 accounts_repo = AccountsRepository(session)
@@ -112,6 +116,7 @@ class ModelRefreshScheduler:
                 result = await _fetch_with_failover(
                     candidates,
                     encryptor,
+                    read_only=read_only,
                 )
                 if result.models is not None:
                     per_plan_results[plan_type] = result.models
@@ -180,6 +185,8 @@ async def _fetch_with_failover(
     candidates: list[Account],
     encryptor: TokenEncryptor,
     accounts_repo: AccountsRepository | None = None,
+    *,
+    read_only: bool = False,
 ) -> _ModelFetchPlanResult:
     transport_recovery = _TransportRecoveryState()
     successful_results: list[list[UpstreamModel]] = []
@@ -202,11 +209,12 @@ async def _fetch_with_failover(
         auth_manager = AuthManager(auth_accounts_repo)
         try:
             attempted = True
-            account = await _ensure_fresh_with_transport_recovery(
-                auth_manager,
-                account,
-                transport_recovery=transport_recovery,
-            )
+            if not read_only:
+                account = await _ensure_fresh_with_transport_recovery(
+                    auth_manager,
+                    account,
+                    transport_recovery=transport_recovery,
+                )
             models = await _fetch_models_with_transport_recovery(
                 account,
                 encryptor,
@@ -216,7 +224,7 @@ async def _fetch_with_failover(
             successful_results.append(models)
             account_models[account.id] = (account.plan_type, models)
         except ModelFetchError as exc:
-            if exc.status_code == 401:
+            if exc.status_code == 401 and not read_only:
                 try:
                     account = await _ensure_fresh_with_transport_recovery(
                         auth_manager,
