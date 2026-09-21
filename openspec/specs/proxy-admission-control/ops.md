@@ -185,3 +185,116 @@ this fetch:
 - Full builds, full test suites, and coverage were left to CI. Change artifacts
   remain active for publication/CI closeout. No deployment or production smoke
   was performed.
+
+## 2026-09-21 upstream image host pick (`#2320`): scope and skips
+
+A single narrow port from upstream PR
+[`#2320`](https://github.com/Soju06/codex-lb/pull/2320), commit
+`92c7f6201a8fd31d6160570f60ee59db5686dd67`, archived change
+`2026-09-21-use-luna-image-host`. Only the internal host-model choice for
+`/v1/images/generations` and `/v1/images/edits` is adopted. Its normative
+requirement is now carried by the canonical `images-api-compat` spec.
+
+### Adopted
+
+- `app/core/openai/host_models.py`: `resolve_default_host_model() -> str`. It
+  reads the in-memory model registry and walks the candidate order
+  `gpt-5.6-luna`, then `gpt-5.5`, selecting the first slug whose
+  `plan_types_for_model(slug)` is non-empty and whose `is_suppressed_model(slug)`
+  is false. If neither qualifies it returns Luna.
+- Both image handlers in `app/modules/proxy/api.py` call the resolver instead of
+  reading a configured host.
+
+Registry visibility includes bootstrap fallback, but is not account entitlement.
+A selected host can still be rejected by normal account
+routing, authentication, and suppression behavior downstream; the resolver
+performs no discovery, network request, account probe, or retry.
+
+### Operator-visible change
+
+The `images_host_model` setting is removed and the host becomes code-owned.
+There is no alias or migration shim. Any surviving `images_host_model`
+override in a deployed environment is obsolete and should be dropped during a
+separately authorized configuration change. No LB envfile or credentials
+changed during this local deployment; the effective environment was unchanged.
+
+Unchanged: the public `gpt-image-*` contract and the `gpt-image-2` default via
+`images_default_model`, API-key model policy, usage accounting, request-log
+model identity, translation signatures, and the remaining image setting
+`images_max_partial_images`. There is still no `images_max_n` setting; the
+existing single-image limit is unchanged.
+
+For example, if Luna has no plan visibility but `gpt-5.5` is visible and
+unsuppressed, a public `gpt-image-2` request uses `gpt-5.5` internally. Its
+public response and accounting still use the image model.
+
+### Explicit skips
+
+This port retains the fork exclusions recorded above. It does not change:
+
+- Account probes and catalog discovery changes.
+- Upstream model-source routes (see the `1c54f9ae` skip above).
+- The `_load_balancer/` decomposition (see the `4d6fada9` skip above).
+- Retry-policy and authentication changes.
+
+### Focused verification and local runtime proof
+
+Completed on 2026-09-21:
+
+```sh
+uv run pytest tests/integration/test_proxy_images.py tests/unit/test_images_schemas.py tests/unit/test_images_translation.py tests/e2e/test_openai_sdk_compat.py::TestImages
+# 184 passed, 0 failed
+bunx --package @fission-ai/openspec@1.3.0 openspec validate use-luna-image-host --strict
+# Change 'use-luna-image-host' is valid
+```
+
+Both public-route regressions failed under fault injection of the prior
+`gpt-5.5` host behavior. Ruff check and format checks passed on
+`app/core/openai/host_models.py`, `app/core/config/settings.py`,
+`app/modules/proxy/api.py`, `tests/integration/test_proxy_images.py`, and
+`tests/e2e/test_openai_sdk_compat.py`; all five were already formatted. Targeted
+ty checks with `--output-format concise` passed on those three application
+files. Full repository suites were not run.
+
+`bash ./update.sh` replaced only the local `codex-lb-direct` application with
+image `codex-lb-server:local-image-role-8b26bca18b5f`. Startup and health checks
+passed, and the three deployed application files matched the checkout by hash.
+The deployment included uncommitted changes; its revision label is not proof
+of a clean committed source tree. Nothing was pushed or merged, and no remote
+deployment was performed.
+
+Runtime settings stayed unchanged: `codex-lb-data` volume, `codex-lb-net`
+network, eight workers, metrics enabled on 9090, 6 GiB memory, six CPUs, and
+8,192 PIDs. Ports 1455, 2455, and 9090 remained bound to loopback. The LB
+envfile, effective environment, and credentials were unchanged.
+
+A real OMP SDK session-wrapped `generate_image` smoke from the verified source
+tree used `codex-lb/gpt-image-2` with provider fallbacks disabled. One generation
+and one edit returned PNGs. Visual inspection confirmed a red circle on white,
+then a blue circle with composition retained. Both images were 1254x1254
+despite a 1024x1024 size request, so this is not an exact-size promise. The
+smoke proves local generation and editing, not observation of the actual
+upstream host slug.
+
+The patched OMP 18.2.7 binary was built with standalone Bun 1.4.2 and installed
+locally. A fresh process recognized `codex-lb/gpt-image-2` as an image model and
+resolved the image role to it. Four focused OMP test files passed 167 tests,
+and the nonincremental TypeScript check passed. Existing OMP sessions need to
+restart to load the patch. The original Homebrew binary, provider credential,
+chat routing, and fallback configuration were preserved.
+
+### Spec sync and archive
+
+After that verification, the change's single normative requirement, "Image
+routes select a code-owned Responses host model", was applied to the canonical
+`openspec/specs/images-api-compat/spec.md` alongside the existing image
+requirements, which were left unchanged. The completed change directory was
+then moved verbatim, including `.openspec.yaml`, to
+`openspec/changes/archive/2026-09-21-use-luna-image-host/`, leaving no active
+duplicate.
+
+The strict validation transcript above was produced while the change was still
+active under its unprefixed name; it was not re-run for the archive move, and
+no tests, builds, formatting, or deployment accompanied the sync and archive.
+The local deployment described above reflects the tree before these commits.
+Publishing the commits does not perform another deployment.
