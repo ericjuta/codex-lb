@@ -19,7 +19,7 @@
 ## 3. Service Adapter
 
 - [x] 3.1 `_proxy_images_generation_request` and `_proxy_images_edit_request` in `app/modules/proxy/api.py` construct a `ResponsesRequest` with `tools: [{"type": "image_generation", ...}]` and route through `ProxyService.stream_responses`. Translation helpers live in `app/modules/proxy/images_service.py` (kept separate to avoid further bloating `service.py`).
-- [x] 3.2 `settings.images_host_model` (default `gpt-5.5`) selects the host model. The host model is hidden from clients (only the requested `gpt-image-*` value appears in the public response).
+- [x] 3.2 The original adapter used a configurable `gpt-5.5` host, hidden from clients. Superseded by `use-luna-image-host`, which removes the host override and selects visible, non-suppressed Luna, then `gpt-5.5`, otherwise Luna. Public responses still use the requested image model. Registry visibility is not account entitlement.
 - [x] 3.3 Compact instructions + a single user `message` with `input_text` (and `input_image` data URLs for edits) deterministically force one `image_generation` tool call.
 - [x] 3.4 Non-streaming responses: drain the upstream stream via `collect_responses_stream_for_images`, then `images_response_from_responses` extracts `image_generation_call` items and `tool_usage.image_gen`.
 - [x] 3.5 Streaming responses: `translate_responses_stream_to_images_stream` maps upstream events per §6.
@@ -34,7 +34,7 @@
 
 ## 5. Configuration and Observability
 
-- [x] 5.1 Settings added in `app/core/config/settings.py`: `images_host_model`, `images_default_model`, `images_max_partial_images`, `images_max_n`.
+- [x] 5.1 The original change added image configuration in `app/core/config/settings.py`. `use-luna-image-host` removes the internal host override while preserving `images_default_model`, its `gpt-image-2` default, and `images_max_partial_images`. There is no current `images_max_n` setting; the existing single-image cap is unchanged. This checkbox records the original configuration work.
 - [ ] 5.2 Structured logs / Prometheus metrics for image routes — deferred. Existing per-route logging (`proxy_error_response`, request log row) covers basic observability.
 - [ ] 5.3 OpenAPI doc updates — not done explicitly; FastAPI generates the route docs automatically because both endpoints use typed Pydantic models (and the multipart Form parameters).
 
@@ -59,3 +59,15 @@
 - [x] 8.2 `ruff check app tests` — clean.
 - [ ] 8.3 `openspec validate --strict --specs` — CLI not available in the workspace; deferred.
 - [ ] 8.4 Empirical dev-container hit — pending (the dev container requires an API key the worker did not have access to). The mocked integration stream matches the empirical event sequence the parent agent verified.
+
+## Later supersession note (2026-09-21)
+
+The supersession annotations above refer to the narrow source port in archived
+change `2026-09-21-use-luna-image-host`, from Soju06/codex-lb PR
+[`#2320`](https://github.com/Soju06/codex-lb/pull/2320), commit
+`92c7f6201a8fd31d6160570f60ee59db5686dd67`. That port preserves public-image
+policy, accounting, and defaults. It skips account probes, model-source
+routes, load-balancer decomposition, retry, and authentication work. Its
+verification is recorded in `openspec/specs/proxy-admission-control/ops.md`.
+The original checkbox states above remain historical and do not cover the
+later port.

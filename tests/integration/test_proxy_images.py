@@ -14,7 +14,7 @@ import base64
 import json
 import logging
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 from httpx import AsyncByteStream
@@ -28,6 +28,8 @@ import app.modules.proxy.service as proxy_module
 from app.core.config.settings import Settings
 from app.core.exceptions import ProxyModelNotAllowed, ProxyRateLimitError
 from app.core.multipart import MultipartPolicy
+from app.core.openai.host_models import resolve_default_host_model
+from app.core.openai.model_registry import get_model_registry
 from app.db.models import ApiKeyUsageReservation, DashboardSettings
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -79,6 +81,105 @@ async def _enable_api_key_auth(async_client) -> None:
 
 def _sse(payload: dict[str, object]) -> str:
     return f"data: {json.dumps(payload)}\n\n"
+
+
+_LUNA_HOST_MODEL = "gpt-5.6-luna"
+_LEGACY_HOST_MODEL = "gpt-5.5"
+_PNG_1X1_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNgAAIAAAUAAen63NgAAAAASUVORK5CYII="
+
+_HostCatalogState = Literal["both_visible", "luna_unadvertised", "luna_suppressed", "neither_qualified"]
+
+
+async def _install_host_catalog_state(monkeypatch: pytest.MonkeyPatch, state: _HostCatalogState) -> None:
+    registry = get_model_registry()
+    monkeypatch.setattr(registry, "_snapshot", None)
+    bootstrap = registry.get_models_with_fallback()
+    visible_hosts = {
+        "both_visible": (_LUNA_HOST_MODEL, _LEGACY_HOST_MODEL),
+        "luna_unadvertised": (_LEGACY_HOST_MODEL,),
+        "luna_suppressed": (_LUNA_HOST_MODEL, _LEGACY_HOST_MODEL),
+        "neither_qualified": (),
+    }[state]
+    await registry.update({"plus": [bootstrap[slug] for slug in visible_hosts]})
+    if state == "luna_suppressed":
+        snapshot = registry.get_snapshot()
+        assert snapshot is not None
+        # update() clears suppression for advertised slugs. Keep both signals
+        # independent here so checking plan visibility alone cannot pass.
+        monkeypatch.setattr(snapshot, "suppressed_model_slugs", frozenset({_LUNA_HOST_MODEL}))
+        assert registry.plan_types_for_model(_LUNA_HOST_MODEL) == frozenset({"plus"})
+        assert registry.is_suppressed_model(_LUNA_HOST_MODEL) is True
+
+
+def _install_host_gated_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    accepted_host_model: str,
+    captured: dict[str, Any],
+) -> None:
+    """Reject a wrong host with a public upstream error, never an assertion."""
+    from app.core.clients.proxy import ProxyResponseError
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **kwargs):
+        del headers, access_token, account_id, base_url, raise_for_status, kwargs
+        captured["tools"] = list(payload.tools)
+        if payload.model != accepted_host_model:
+            raise ProxyResponseError(
+                status_code=503,
+                payload={
+                    "error": {
+                        "message": f"upstream refused host model {payload.model}",
+                        "type": "server_error",
+                        "code": "upstream_error",
+                    },
+                },
+            )
+        yield _sse(
+            {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "type": "image_generation_call",
+                    "id": "ig_host",
+                    "status": "completed",
+                    "result": _PNG_1X1_B64,
+                    "revised_prompt": "hosted",
+                    "size": "1024x1024",
+                    "quality": "low",
+                    "background": "auto",
+                    "output_format": "png",
+                },
+            }
+        )
+        yield _sse(
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_images_host",
+                    "object": "response",
+                    "status": "completed",
+                    "tool_usage": {"image_gen": {"input_tokens": 3, "output_tokens": 5}},
+                },
+            }
+        )
+
+    async def fake_ensure_fresh(self, account, **kwargs):
+        del self, kwargs
+        return account
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh)
+
+
+async def _post_public_image_request(async_client, route: Literal["generations", "edits"]):
+    fields = {"model": "gpt-image-2", "prompt": "a red circle", "size": "1024x1024", "quality": "low"}
+    if route == "generations":
+        return await async_client.post("/v1/images/generations", json=fields)
+    return await async_client.post(
+        "/v1/images/edits",
+        data=fields,
+        files={"image": ("source.png", base64.b64decode(_PNG_1X1_B64), "image/png")},
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -261,6 +362,51 @@ async def test_images_generations_no_accounts_returns_5xx(async_client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["generations", "edits"])
+@pytest.mark.parametrize(
+    ("catalog_state", "accepted_host_model"),
+    [
+        pytest.param("both_visible", _LUNA_HOST_MODEL, id="both-visible-reject-old-host"),
+        pytest.param("luna_unadvertised", _LEGACY_HOST_MODEL, id="luna-no-plan-visibility"),
+        pytest.param("luna_suppressed", _LEGACY_HOST_MODEL, id="luna-suppressed-but-visible"),
+    ],
+)
+async def test_image_routes_select_usable_host_from_registry(
+    async_client,
+    monkeypatch,
+    route: Literal["generations", "edits"],
+    catalog_state: _HostCatalogState,
+    accepted_host_model: str,
+):
+    await _import_account(async_client, "acc_images_host", "img-host@example.com")
+    await _install_host_catalog_state(monkeypatch, catalog_state)
+    captured: dict[str, Any] = {}
+    _install_host_gated_upstream(monkeypatch, accepted_host_model=accepted_host_model, captured=captured)
+
+    response = await _post_public_image_request(async_client, route)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["data"] == [{"b64_json": _PNG_1X1_B64, "revised_prompt": "hosted"}]
+    assert body["usage"] == {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8}
+    assert _LUNA_HOST_MODEL not in response.text
+    assert _LEGACY_HOST_MODEL not in response.text
+    assert captured["tools"][0]["type"] == "image_generation"
+    assert captured["tools"][0]["model"] == "gpt-image-2"
+
+
+@pytest.mark.asyncio
+async def test_image_host_defaults_to_luna_when_neither_candidate_qualifies(monkeypatch):
+    # Selection fallback is not entitlement. An empty catalog cannot justify
+    # a successful routed request, so test only the resolver.
+    await _install_host_catalog_state(monkeypatch, "neither_qualified")
+    registry = get_model_registry()
+    assert registry.plan_types_for_model(_LUNA_HOST_MODEL) == frozenset()
+    assert registry.plan_types_for_model(_LEGACY_HOST_MODEL) == frozenset()
+    assert resolve_default_host_model() == _LUNA_HOST_MODEL
+
+
+@pytest.mark.asyncio
 async def test_images_generations_returns_envelope_on_success(async_client, monkeypatch, caplog):
     await _import_account(async_client, "acc_images_basic", "img-basic@example.com")
 
@@ -268,7 +414,6 @@ async def test_images_generations_returns_envelope_on_success(async_client, monk
 
     async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **kwargs):
         del headers, access_token, base_url, raise_for_status, kwargs
-        captured["model"] = payload.model
         captured["tools"] = list(payload.tools)
         captured["instructions"] = payload.instructions
         captured["input"] = payload.input
@@ -327,8 +472,6 @@ async def test_images_generations_returns_envelope_on_success(async_client, monk
     assert body["data"] == [{"b64_json": "b64-image-bytes", "revised_prompt": "a clean red circle"}]
     assert body["usage"] == {"input_tokens": 7, "output_tokens": 13, "total_tokens": 20}
 
-    # The host model is hidden from clients but appears in the upstream call.
-    assert captured["model"] == "gpt-5.5"
     tools = cast(list[Any], captured["tools"])
     image_tool = cast(dict[str, Any], tools[0])
     assert image_tool["type"] == "image_generation"
