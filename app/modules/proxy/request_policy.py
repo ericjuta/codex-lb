@@ -48,6 +48,8 @@ _DEFAULT_REASONING_EFFORT_FALLBACK = "low"
 # GPT base model slugs, and leave every other model untouched.
 _GPT5_ALIAS_BASE_MODELS: tuple[str, ...] = (
     "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-5.4-mini",
     "gpt-5.3-codex",
     "gpt-5.2-codex",

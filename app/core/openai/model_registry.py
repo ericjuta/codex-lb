@@ -117,13 +117,14 @@ _BOOTSTRAP_CORE_AVAILABLE_IN_PLANS = frozenset(
     plan for plan in _BOOTSTRAP_AVAILABLE_IN_PLANS if plan not in {"free", "free_workspace", "k12"}
 )
 
-_BOOTSTRAP_GPT6_ASTRA_AVAILABLE_IN_PLANS = frozenset(
+_BOOTSTRAP_GPT6_AVAILABLE_IN_PLANS = frozenset(
     {
         "business",
         "edu",
         "edu_plus",
         "edu_pro",
         "education",
+        "ent26",
         "enterprise",
         "enterprise_cbp_automation",
         "enterprise_cbp_trial",
@@ -137,6 +138,7 @@ _BOOTSTRAP_GPT6_ASTRA_AVAILABLE_IN_PLANS = frozenset(
         "plus",
         "pro",
         "prolite",
+        "promax",
         "quorum",
         "sci",
         "self_serve_business_prolite",
@@ -196,11 +198,19 @@ def _bootstrap_model(
     )
 
 
-def _gpt6_astra_raw() -> dict[str, JsonValue]:
-    """Raw catalog fields captured from the upstream live proxy on 2026-09-05.
+def _gpt6_raw(
+    *,
+    default_service_tier: str | None,
+    service_tier_description: str,
+    multi_agent_reasoning_effort: str | None,
+    node_repl_auto_review_required: bool,
+) -> dict[str, JsonValue]:
+    """Raw GPT-6 catalog fields captured from the upstream live proxy.
 
-    The large instruction payload is intentionally not bundled; live upstream
-    registry refresh remains authoritative when available.
+    gpt-6-astra was captured on 2026-09-05; gpt-6-sol and gpt-6-luna were
+    captured on 2026-09-23. Only the fields that differ between the models are
+    parameters. The large instruction payload is intentionally not bundled;
+    live upstream registry refresh remains authoritative when available.
     """
     return {
         "apply_patch_tool_type": "freeform",
@@ -210,12 +220,12 @@ def _gpt6_astra_raw() -> dict[str, JsonValue]:
         "experimental_supported_tools": ["send_user_message_async", "clock"],
         "tool_mode": "code_mode_only",
         "multi_agent_version": "v2",
-        "multi_agent_reasoning_effort": "xhigh",
+        "multi_agent_reasoning_effort": multi_agent_reasoning_effort,
         "use_responses_lite": True,
         "include_skills_usage_instructions": False,
         "include_apps_usage_instructions": False,
         "include_plugin_usage_instructions": False,
-        "node_repl_auto_review_required": True,
+        "node_repl_auto_review_required": node_repl_auto_review_required,
         "node_repl_disabled": False,
         "requires_sandboxed_review": False,
         "auto_review_model_override": None,
@@ -227,12 +237,12 @@ def _gpt6_astra_raw() -> dict[str, JsonValue]:
         "availability_nux": None,
         "upgrade": None,
         "supports_search_tool": True,
-        "default_service_tier": "priority",
+        "default_service_tier": default_service_tier,
         "service_tiers": [
             {
                 "id": "priority",
                 "name": "Fast",
-                "description": "2x speed, increased usage",
+                "description": service_tier_description,
             }
         ],
         "additional_speed_tiers": ["fast"],
@@ -257,8 +267,49 @@ _BOOTSTRAP_STATIC_MODELS: tuple[UpstreamModel, ...] = (
         context_window=272_000,
         default_reasoning_level="medium",
         priority=1,
-        available_in_plans=_BOOTSTRAP_GPT6_ASTRA_AVAILABLE_IN_PLANS,
-        raw=_gpt6_astra_raw(),
+        available_in_plans=_BOOTSTRAP_GPT6_AVAILABLE_IN_PLANS,
+        raw=_gpt6_raw(
+            default_service_tier="priority",
+            service_tier_description="2x speed, increased usage",
+            multi_agent_reasoning_effort="xhigh",
+            node_repl_auto_review_required=True,
+        ),
+    ),
+    _bootstrap_model(
+        "gpt-6-sol",
+        "GPT-6-Sol",
+        description="Workhorse model for coding and everyday work.",
+        prefer_websockets=True,
+        minimal_client_version="0.155.0",
+        reasoning_levels=_REASONING_LEVELS_ULTRA,
+        context_window=272_000,
+        default_reasoning_level="medium",
+        priority=2,
+        available_in_plans=_BOOTSTRAP_GPT6_AVAILABLE_IN_PLANS,
+        raw=_gpt6_raw(
+            default_service_tier=None,
+            service_tier_description="1.5x speed",
+            multi_agent_reasoning_effort=None,
+            node_repl_auto_review_required=True,
+        ),
+    ),
+    _bootstrap_model(
+        "gpt-6-luna",
+        "GPT-6-Luna",
+        description="Fast and affordable model for easier tasks.",
+        prefer_websockets=True,
+        minimal_client_version="0.155.0",
+        reasoning_levels=_REASONING_LEVELS_MAX,
+        context_window=272_000,
+        default_reasoning_level="medium",
+        priority=3,
+        available_in_plans=_BOOTSTRAP_GPT6_AVAILABLE_IN_PLANS,
+        raw=_gpt6_raw(
+            default_service_tier=None,
+            service_tier_description="1.5x speed",
+            multi_agent_reasoning_effort=None,
+            node_repl_auto_review_required=False,
+        ),
     ),
     _bootstrap_model(
         "gpt-5.6-sol",

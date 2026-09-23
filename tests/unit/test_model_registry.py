@@ -26,12 +26,13 @@ EXPECTED_CORE_MODEL_PLANS = {
     "enterprise_cbp_usage_based",
 }
 
-EXPECTED_GPT6_ASTRA_MODEL_PLANS = {
+EXPECTED_GPT6_MODEL_PLANS = {
     "business",
     "edu",
     "edu_plus",
     "edu_pro",
     "education",
+    "ent26",
     "enterprise",
     "enterprise_cbp_automation",
     "enterprise_cbp_trial",
@@ -45,6 +46,7 @@ EXPECTED_GPT6_ASTRA_MODEL_PLANS = {
     "plus",
     "pro",
     "prolite",
+    "promax",
     "quorum",
     "sci",
     "self_serve_business_prolite",
@@ -54,6 +56,8 @@ EXPECTED_GPT6_ASTRA_MODEL_PLANS = {
 
 EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS = {
     "gpt-6-astra": "0.153.0",
+    "gpt-6-sol": "0.155.0",
+    "gpt-6-luna": "0.155.0",
     "gpt-5.6-sol": "0.144.0",
     "gpt-5.6-terra": "0.144.0",
     "gpt-5.6-luna": "0.144.0",
@@ -172,6 +176,8 @@ def test_prefers_websockets_uses_bootstrap_fallback_when_uninitialized():
     assert registry.prefers_websockets("gpt-5.6-terra") is True
     assert registry.prefers_websockets("gpt-5.6-luna") is True
     assert registry.prefers_websockets("gpt-6-astra") is True
+    assert registry.prefers_websockets("gpt-6-sol") is True
+    assert registry.prefers_websockets("gpt-6-luna") is True
     assert registry.prefers_websockets("gpt-6-future") is True
     assert registry.prefers_websockets("gpt-5.4") is True
     assert registry.prefers_websockets("gpt-5.4-2026") is True
@@ -236,7 +242,41 @@ def test_bootstrap_models_include_representative_upstream_metadata():
     ]
     assert astra.raw["additional_speed_tiers"] == ["fast"]
     assert astra.raw["supports_reasoning_summary_parameter"] is True
-    assert astra.available_in_plans == EXPECTED_GPT6_ASTRA_MODEL_PLANS
+    assert astra.available_in_plans == EXPECTED_GPT6_MODEL_PLANS
+
+    sol = models["gpt-6-sol"]
+    luna = models["gpt-6-luna"]
+    assert sol.display_name == "GPT-6-Sol"
+    assert sol.description == "Workhorse model for coding and everyday work."
+    assert sol.priority == 2
+    assert luna.display_name == "GPT-6-Luna"
+    assert luna.description == "Fast and affordable model for easier tasks."
+    assert luna.priority == 3
+    assert [level.effort for level in sol.supported_reasoning_levels] == [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    ]
+    assert [level.effort for level in luna.supported_reasoning_levels] == ["low", "medium", "high", "xhigh", "max"]
+    assert sol.raw["node_repl_auto_review_required"] is True
+    assert luna.raw["node_repl_auto_review_required"] is False
+    for model in (sol, luna):
+        assert model.context_window == 272_000
+        assert model.raw["max_context_window"] == 872_000
+        assert model.prefer_websockets is True
+        assert model.default_reasoning_level == "medium"
+        assert model.raw["tool_mode"] == "code_mode_only"
+        assert model.raw["multi_agent_version"] == "v2"
+        assert model.raw["multi_agent_reasoning_effort"] is None
+        assert model.raw["use_responses_lite"] is True
+        assert model.raw["experimental_supported_tools"] == ["send_user_message_async", "clock"]
+        assert model.raw["default_service_tier"] is None
+        assert model.raw["service_tiers"] == [{"id": "priority", "name": "Fast", "description": "1.5x speed"}]
+        assert model.raw["additional_speed_tiers"] == ["fast"]
+        assert model.available_in_plans == EXPECTED_GPT6_MODEL_PLANS
 
     for slug in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
         model = models[slug]

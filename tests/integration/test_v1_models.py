@@ -10,6 +10,8 @@ pytestmark = pytest.mark.integration
 
 BOOTSTRAP_MODEL_SLUGS = {
     "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -41,6 +43,8 @@ EXPECTED_CORE_MODEL_PLANS = {
 
 EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS = {
     "gpt-6-astra": "0.153.0",
+    "gpt-6-sol": "0.155.0",
+    "gpt-6-luna": "0.155.0",
     "gpt-5.6-sol": "0.144.0",
     "gpt-5.6-terra": "0.144.0",
     "gpt-5.6-luna": "0.144.0",
@@ -186,16 +190,17 @@ async def test_v1_models_uses_bootstrap_models_when_registry_not_populated(async
     assert "gpt-5.5-pro" not in ids
 
     entries = {item["id"]: item for item in payload["data"]}
-    astra = entries["gpt-6-astra"]
-    assert astra["metadata"]["context_window"] == 272_000
-    assert astra["metadata"]["input_context_window"] == 272_000
-    assert astra["metadata"]["max_output_tokens"] == 128_000
-    assert astra["capabilities"]["context_length"] == 272_000
-    assert astra["capabilities"]["max_output_tokens"] == 128_000
-    assert astra["context_length"] == 272_000
-    assert astra["contextLength"] == 272_000
-    assert astra["max_output_tokens"] == 128_000
-    assert astra["maxOutputTokens"] == 128_000
+    for slug in ("gpt-6-astra", "gpt-6-sol", "gpt-6-luna"):
+        entry = entries[slug]
+        assert entry["metadata"]["context_window"] == 272_000
+        assert entry["metadata"]["input_context_window"] == 272_000
+        assert entry["metadata"]["max_output_tokens"] == 128_000
+        assert entry["capabilities"]["context_length"] == 272_000
+        assert entry["capabilities"]["max_output_tokens"] == 128_000
+        assert entry["context_length"] == 272_000
+        assert entry["contextLength"] == 272_000
+        assert entry["max_output_tokens"] == 128_000
+        assert entry["maxOutputTokens"] == 128_000
 
 
 @pytest.mark.asyncio
@@ -235,6 +240,33 @@ async def test_backend_codex_models_uses_bootstrap_upstream_metadata(async_clien
     assert astra["default_service_tier"] == "priority"
     assert astra["service_tiers"] == [{"id": "priority", "name": "Fast", "description": "2x speed, increased usage"}]
     assert astra["additional_speed_tiers"] == ["fast"]
+
+    expected_gpt6_display = {"gpt-6-sol": "GPT-6-Sol", "gpt-6-luna": "GPT-6-Luna"}
+    for slug, display_name in expected_gpt6_display.items():
+        entry = entries[slug]
+        assert entry["display_name"] == display_name
+        assert entry["context_window"] == 272_000
+        assert entry["max_context_window"] == 872_000
+        assert entry["prefer_websockets"] is True
+        assert entry["tool_mode"] == "code_mode_only"
+        assert entry["default_service_tier"] is None
+        assert entry["service_tiers"] == [{"id": "priority", "name": "Fast", "description": "1.5x speed"}]
+        assert entry["additional_speed_tiers"] == ["fast"]
+    assert {level["effort"] for level in entries["gpt-6-sol"]["supported_reasoning_levels"]} == {
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    }
+    assert {level["effort"] for level in entries["gpt-6-luna"]["supported_reasoning_levels"]} == {
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    }
 
     for slug, multi_agent_version in EXPECTED_BOOTSTRAP_GPT_5_6_CAPABILITIES.items():
         entry = entries[slug]

@@ -17,6 +17,8 @@ from app.modules.proxy.request_policy import apply_api_key_enforcement, validate
     [
         ("gpt-6-astra-extra-high-fast", "gpt-6-astra", "high", "priority"),
         ("gpt-6-astra-medium", "gpt-6-astra", "medium", None),
+        ("gpt-6-sol-extra-high-fast", "gpt-6-sol", "high", "priority"),
+        ("gpt-6-luna-medium-fast", "gpt-6-luna", "medium", "priority"),
         ("gpt-5-extra", "gpt-5", "high", None),
         ("gpt-5.1-low", "gpt-5.1", "low", None),
         ("gpt-5.2-medium-fast", "gpt-5.2", "medium", "priority"),
