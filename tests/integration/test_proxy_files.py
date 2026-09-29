@@ -3,23 +3,41 @@
 These tests stub the upstream client functions
 (``proxy_module.core_create_file`` / ``core_finalize_file``) so we
 exercise the full FastAPI route -> service -> account-selection ->
-upstream-client chain without hitting the real ChatGPT backend. The
-``async_client`` fixture lives in ``tests/conftest.py`` and gives us a
-fully-wired httpx client against the FastAPI app.
+upstream-client chain without hitting the real ChatGPT backend.
+Transport failover tests stub one layer lower (the routed Codex session
+or the direct aiohttp session) so the real file client classifies each
+failure. The ``async_client`` fixture lives in ``tests/conftest.py`` and
+gives us a fully-wired httpx client against the FastAPI app.
 """
 
 from __future__ import annotations
 
 import base64
+import errno
 import json
-from typing import cast
+import ssl
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from typing import Any, cast
 
+import aiohttp
 import pytest
+from aiohttp.client_reqrep import ConnectionKey
 
+import app.core.clients.files as files_module
 import app.modules.proxy.service as proxy_module
 from app.core.clients.files import FileProxyError
+from app.core.upstream_proxy import ResolvedProxyEndpoint, ResolvedUpstreamRoute
 
 pytestmark = pytest.mark.integration
+
+_PROXY_CONNECTION_KEY = ConnectionKey("proxy.invalid", 8080, False, False, None, None, None)
+_DIRECT_CONNECTION_KEY = ConnectionKey("chatgpt.invalid", 443, True, True, None, None, None)
+
+# ``handle(chatgpt_account_id, url)`` returns a JSON body (or a routed response
+# object) for one upstream file call, or raises the transport failure.
+_FileTransportHandler = Callable[[str, str], Any]
 
 
 def _encode_jwt(payload: dict) -> str:
@@ -49,6 +67,62 @@ async def _import_account(async_client, account_id: str, email: str) -> None:
     files = {"auth_json": ("auth.json", json.dumps(auth_json), "application/json")}
     response = await async_client.post("/api/accounts/import", files=files)
     assert response.status_code == 200
+
+
+def _route_files_through_proxy(monkeypatch: pytest.MonkeyPatch, handle: _FileTransportHandler) -> None:
+    """Send file calls through a stub proxy route whose session dispatches to ``handle``."""
+
+    class _Session:
+        async def request(self, method: str, url: str, **kwargs: Any) -> Any:
+            result = handle(kwargs["headers"]["chatgpt-account-id"], url)
+            return SimpleNamespace(status=200, text=result) if isinstance(result, str) else result
+
+        async def close(self) -> None:
+            return None
+
+    async def route(self, account, **kwargs):
+        # ``timeout`` in the endpoint id makes sanitized transport messages look transient.
+        return ResolvedUpstreamRoute(
+            "pool", "files-pool", ResolvedProxyEndpoint(f"timeout-{account.id}", "http", "proxy.invalid", 8080)
+        )
+
+    monkeypatch.setattr(files_module, "create_codex_session", _Session)
+    monkeypatch.setattr(files_module, "_FILE_FINALIZE_POLL_DELAY_SECONDS", 0)
+    monkeypatch.setattr(proxy_module.ProxyService, "_resolve_upstream_route_for_account", route)
+
+
+def _send_files_direct(monkeypatch: pytest.MonkeyPatch, handle: _FileTransportHandler) -> None:
+    """Send file calls over direct egress through a stub aiohttp session dispatching to ``handle``."""
+
+    class _Response:
+        status = 200
+
+        def __init__(self, body: str) -> None:
+            self._body = body
+
+        async def __aenter__(self) -> "_Response":
+            return self
+
+        async def __aexit__(self, *exc_info: object) -> bool:
+            return False
+
+        async def text(self) -> str:
+            return self._body
+
+    class _Session:
+        def post(self, url: str, *, data: bytes, headers: dict[str, str], timeout: object) -> _Response:
+            return _Response(handle(headers["chatgpt-account-id"], url))
+
+    @asynccontextmanager
+    async def lease(session: object) -> AsyncIterator[_Session]:
+        yield _Session()
+
+    async def no_route(self, account, **kwargs):
+        return None
+
+    monkeypatch.setattr(files_module, "lease_http_session", lease)
+    monkeypatch.setattr(files_module, "_FILE_FINALIZE_POLL_DELAY_SECONDS", 0)
+    monkeypatch.setattr(proxy_module.ProxyService, "_resolve_upstream_route_for_account", no_route)
 
 
 @pytest.mark.asyncio
@@ -680,3 +754,124 @@ async def test_session_header_aliases_override_file_id_pin(async_client):
     ):
         resolved = await service._resolve_file_account_for_responses(payload, headers)
         assert resolved is None
+
+
+def _proxy_connection_refused() -> aiohttp.ClientProxyConnectionError:
+    return aiohttp.ClientProxyConnectionError(
+        _PROXY_CONNECTION_KEY, ConnectionRefusedError(errno.ECONNREFUSED, "refused")
+    )
+
+
+def _direct_connection_refused() -> aiohttp.ClientConnectorError:
+    return aiohttp.ClientConnectorError(_DIRECT_CONNECTION_KEY, ConnectionRefusedError(errno.ECONNREFUSED, "refused"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["create", "finalize", "pinned_finalize"])
+@pytest.mark.parametrize("failure", ["connect", "tls", "body_read", "request", "process_network"])
+async def test_backend_files_routed_transport_failover(async_client, monkeypatch, failure, operation):
+    await _import_account(async_client, "routed_files_a", "routed-files-a@example.com")
+    await _import_account(async_client, "routed_files_b", "routed-files-b@example.com")
+    calls: list[str] = []
+    failed_account: str | None = None
+
+    def handle(account_id: str, url: str) -> Any:
+        nonlocal failed_account
+        calls.append(account_id)
+        failed_account = failed_account or account_id
+        if account_id != failed_account or (operation == "pinned_finalize" and url.endswith("/files")):
+            return '{"file_id":"file_routed","upload_url":"https://blob.invalid","status":"success"}'
+        if failure == "connect":
+            raise _proxy_connection_refused()
+        if failure == "tls":
+            raise aiohttp.ClientConnectorCertificateError(
+                _PROXY_CONNECTION_KEY, ssl.SSLCertVerificationError("invalid cert")
+            )
+        if failure == "process_network":
+            raise aiohttp.ClientProxyConnectionError(
+                _PROXY_CONNECTION_KEY, OSError(errno.ENETUNREACH, "network unreachable")
+            )
+        if failure == "request":
+            raise aiohttp.ClientConnectionError("connection reset after sending request")
+
+        async def read() -> bytes:
+            raise aiohttp.ClientPayloadError("connection reset during body read")
+
+        return SimpleNamespace(status=200, headers={}, read=read)
+
+    _route_files_through_proxy(monkeypatch, handle)
+    if operation in {"create", "pinned_finalize"}:
+        response = await async_client.post(
+            "/backend-api/files", json={"file_name": "page.pdf", "file_size": 1024, "use_case": "codex"}
+        )
+        if operation == "pinned_finalize":
+            assert response.status_code == 200, response.text
+            calls.clear()
+    if operation != "create":
+        response = await async_client.post("/backend-api/files/file_routed/uploaded")
+    if failure == "connect" and operation != "pinned_finalize":
+        assert response.status_code == 200, response.text
+        assert len(calls) == 2
+        assert calls[0] != calls[1]
+        if operation == "create":
+            # The created file is owned by the fallback account, so finalize must stay there.
+            fallback_account = calls[1]
+            calls.clear()
+            finalize = await async_client.post("/backend-api/files/file_routed/uploaded")
+            assert finalize.status_code == 200, finalize.text
+            assert calls == [fallback_account]
+    else:
+        assert response.status_code == 502, response.text
+        assert len(calls) == 1
+        expected_code = "proxy_network_unavailable" if failure == "process_network" else "upstream_unavailable"
+        assert response.json()["error"]["code"] == expected_code
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["routed", "direct"])
+async def test_backend_files_finalize_never_replays_after_poll_response(async_client, monkeypatch, transport):
+    await _import_account(async_client, "late_poll_a", "late-poll-a@example.com")
+    await _import_account(async_client, "late_poll_b", "late-poll-b@example.com")
+    calls: list[str] = []
+
+    def handle(account_id: str, url: str) -> str:
+        calls.append(account_id)
+        if account_id != calls[0]:
+            return '{"status":"success"}'
+        if len(calls) == 1:
+            return '{"status":"retry"}'
+        raise _proxy_connection_refused() if transport == "routed" else _direct_connection_refused()
+
+    if transport == "routed":
+        _route_files_through_proxy(monkeypatch, handle)
+    else:
+        _send_files_direct(monkeypatch, handle)
+
+    response = await async_client.post("/backend-api/files/file_late_poll/uploaded")
+
+    assert response.status_code == 502, response.text
+    assert response.json()["error"]["code"] == "upstream_unavailable"
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+
+
+@pytest.mark.asyncio
+async def test_backend_files_direct_first_finalize_poll_failure_uses_another_account(async_client, monkeypatch):
+    await _import_account(async_client, "direct_first_poll_a", "direct-first-poll-a@example.com")
+    await _import_account(async_client, "direct_first_poll_b", "direct-first-poll-b@example.com")
+    calls: list[str] = []
+
+    def handle(account_id: str, url: str) -> str:
+        calls.append(account_id)
+        if len(calls) == 1:
+            raise _direct_connection_refused()
+        return '{"status":"success"}'
+
+    _send_files_direct(monkeypatch, handle)
+
+    response = await async_client.post("/backend-api/files/file_direct_first_poll/uploaded")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"status": "success"}
+    assert len(calls) == 2
+    assert calls[0] != calls[1]

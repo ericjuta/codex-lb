@@ -1,3 +1,11 @@
+> **Superseded (historical record, 2026-09-29).** The `max_output_tokens=16`
+> requirement and scenario clauses below are superseded by
+> `omit-unsupported-probe-token-limit` (upstream `f8ffbac20`, #2496). The Force
+> Probe body now omits `max_output_tokens` entirely. This change was archived on
+> 2026-09-29 without spec sync. Do not sync or re-apply its delta. Its task and
+> verification checkmarks record work completed when it landed, not current
+> behavior.
+
 # Why
 
 Dashboard Force Probe sends `max_output_tokens=1` on the pinned

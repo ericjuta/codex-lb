@@ -137,3 +137,33 @@ The routes use dashboard session authentication and write settings changes to th
 Decision responses include `details` parsed from the planner audit JSON when available. Current scheduler details
 include `target_peak_at`, `expected_gain`, `scenario_gain`, `expected_cost`, `net_score`, `warmup_cycle`,
 `scheduled_at`, `skip_reason`, `noop_reason`, and `unmet_demand`. Older rows may have `details = null`.
+
+## Timezone Validation And Legacy Fallback
+
+Normative rules: "Quota planner timezone settings are validated before persistence" and "Legacy invalid planner
+timezones fall back to UTC" in `spec.md`. Adopted on 2026-09-29 as a narrow port of the timezone part of upstream
+`a3aa8caa0a18129e28b28944b389ab4dbd314b1c` (#2468).
+
+- **Why:** the dashboard timezone field is free text. Before this change, malformed keys such as `Europe/Stockholm/`
+  were saved. In `shadow` mode, `build_routing_costs` then called `ZoneInfo(...)`, raised `ValueError`, and interrupted
+  proxy account selection. Unknown names already fell back to UTC; malformed keys did not.
+- **Validation lives in the settings API**, beside working-day validation. It uses the existing HTTP 400
+  `invalid_quota_planner` envelope and runs before `upsert_settings`, selection-cache invalidation, and audit logging.
+  A Pydantic validator was rejected because it would return 422 and cannot see the stored value needed for
+  blank retention.
+- **`ZoneInfo` against the installed timezone database** is the validator. It is not a custom allowlist and does not
+  repair slashes. Both `ZoneInfoNotFoundError` and `ValueError` are rejected on input.
+- **Blank input retains the stored value without revalidating it**, so operators can edit other settings on a legacy
+  row.
+- **Legacy rows are not migrated.** `_to_planner_tz` treats malformed and unknown stored names as UTC for routing costs
+  and forecasts, and leaves the stored value unchanged. Correct the value through the validated API.
+- **Not changed:** routing policy, cooldowns, scheduler gates, schema, and migrations. Upstream `_load_balancer/`
+  decomposition, model sources, fast-mode policy, and native egress remain excluded.
+
+```text
+PUT /api/quota-planner/settings {"timezone": "/Europe/Stockholm", "maxWarmupsPerDay": 99}
+-> 400 {"error": {"code": "invalid_quota_planner", ...}}; stored settings unchanged
+
+PUT /api/quota-planner/settings {"timezone": "  "}
+-> 200; stored timezone unchanged
+```

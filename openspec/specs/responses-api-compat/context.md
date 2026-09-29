@@ -134,6 +134,19 @@ these examples do not call for changing requested priority or transport.
 - **Codex websocket stale previous-response anchors:** Direct backend Codex websocket stale-anchor failures are surfaced as `response.failed` / `codex_previous_response_stale` without the raw upstream code or missing `resp_...` id; OpenAI-compatible `/v1/responses` websocket clients continue to receive generic `stream_incomplete` masking.
 - **Websocket handshake forbidden/not-found:** Auto transport now fails loud on `403` / `404` instead of silently hiding the websocket regression behind HTTP fallback.
 - **Invalid request payloads:** Return 4xx with `invalid_request_error`.
+- **File create/finalize transport failures:** Account failover follows typed transport provenance, not error text. See "File Operation Failover Provenance" below.
+
+## File Operation Failover Provenance
+
+Normative rules: "File operation failover honors typed transport provenance" and "File finalization transport failures do not fail over after a poll response" in `spec.md`. Adopted on 2026-09-29 as a narrow port of upstream `6b10052ecb18aa0daf2a19e2244aacbae22d1e47` (#2469), with one deliberate addition for the direct transport.
+
+- **Problem:** routed `POST /backend-api/files` and `/files/{file_id}/uploaded` calls wrapped `CodexTransportError` as an untyped `upstream_unavailable` error. They lost the failure phase, the `proxy_network_unavailable` code, and replay eligibility, so a proxy refusal proven to occur before dispatch could not fail over. Transport-failure failover could also restart finalize on another account after an earlier poll had already received an upstream response.
+- **Tri-state provenance:** `FileProxyError.retryable_same_contract` is `None` for legacy/untyped errors, `True` for typed replay-safe failures, and `False` for typed failures that are not replay-safe. `_proxy_files_call` sets `failure_detail="transport_error"` only for typed errors. The shared unary predicate lets the typed flag decide only for that detail, so thread-goal, Codex control, and transcription callers keep their legacy message-based classification.
+- **TLS verification failures are never replay-eligible.** aiohttp certificate errors subclass connector errors and would otherwise look like failures before dispatch.
+- **Finalize poll progress closes transport-failure failover** on both transports. Upstream guarded only routed polling. This fork also guards direct aiohttp polling: after a poll returns, a later connection failure is typed `False`. A direct first-poll failure keeps legacy `None` classification, so safe first-poll failover still works. The existing unpinned `401` forced-refresh and account-reselection path is unchanged and may still select another account; pinned finalize ownership remains enforced.
+- **Unchanged constraints:** `proxy_network_unavailable` stays account-neutral and is not replayed. Pinned finalize fails closed on the owner. Status and parse errors are not stamped as transport errors. File ownership remains the in-memory TTL pin table (`_pin_file_account`, `_resolve_file_account`). Not adopted from upstream: `FileAccountPinRepository`, native egress discovery, `with_dashboard_overrides`, the `_load_balancer/` decomposition, model sources, and fast-mode policy.
+
+Example: an unpinned finalize on account A through proxy endpoint `timeout-a`. The first poll returns `{"status":"retry"}`, then the second poll's CONNECT is refused with the message `... via proxy endpoint timeout-a: ClientProxyConnectionError`. Despite the transient-looking text, typed provenance is `False`, so the client receives 502 `upstream_unavailable` and both polls used A. If instead the first poll's CONNECT is refused before any poll returns, the flag is `True` and finalization completes on eligible account B.
 
 ## Error Envelope Mapping (Reference)
 

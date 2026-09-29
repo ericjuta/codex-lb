@@ -1,3 +1,12 @@
+> **Superseded in part (historical record, 2026-09-29).** The
+> `max_output_tokens=1` clause below was superseded first by
+> `probe-valid-token-floor` (`16`), then by `omit-unsupported-probe-token-limit`
+> (upstream `f8ffbac20`, #2496), which omits the field entirely. This change was
+> archived on 2026-09-29 without spec sync. Do not sync or re-apply its delta.
+> Its endpoint, eligibility, and dashboard clauses were never promoted to the
+> canonical spec. Its task checkmarks record work completed when it landed, not
+> current behavior.
+
 ## Why
 
 After OpenAI-side "team reset events" the upstream rate-limiter at `/wham/usage` can keep returning the pre-reset `used_percent` for an account even though the Settings UI and the actual usage have reset (see https://github.com/Soju06/codex-lb/issues/676 and https://github.com/Soju06/codex-lb/issues/677). codex-lb faithfully mirrors `/wham/usage`, so the affected account stays in `rate_limited` / `quota_exceeded` until upstream re-evaluates. A real `responses.create` request against the affected account wakes the upstream limiter and the next refresh tick auto-recovers the account, but the balancer excludes the affected account from selection so it cannot probe itself organically. The operator currently has no first-class action besides waiting for the natural window roll or editing the DB directly.

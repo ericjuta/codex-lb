@@ -35,7 +35,12 @@ from typing import Any
 
 import aiohttp
 
-from app.core.clients.codex import CodexClient, create_codex_session, require_route_or_direct_egress_opt_in
+from app.core.clients.codex import (
+    CodexClient,
+    CodexTransportError,
+    create_codex_session,
+    require_route_or_direct_egress_opt_in,
+)
 from app.core.clients.http import lease_http_session
 from app.core.config.settings import get_settings
 from app.core.errors import openai_error
@@ -123,11 +128,20 @@ class FileProxyError(Exception):
     non-JSON.
     """
 
-    def __init__(self, status_code: int, payload: Any, *, failure_phase: str | None = None) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        payload: Any,
+        *,
+        failure_phase: str | None = None,
+        retryable_same_contract: bool | None = None,
+    ) -> None:
         super().__init__(f"upstream file request failed: status={status_code}")
         self.status_code = status_code
         self.payload = payload
         self.failure_phase = failure_phase
+        # None denotes legacy transport errors without typed dispatch provenance.
+        self.retryable_same_contract = retryable_same_contract
 
 
 def _build_files_headers(
@@ -317,6 +331,7 @@ async def finalize_file(
     if route is not None:
         owns_codex_client = codex_client is None
         active_codex_client = codex_client or CodexClient(create_codex_session())
+        poll_returned = False
         try:
             finalize_budget = min(_DEFAULT_FILE_FINALIZE_BUDGET_SECONDS, effective_per_poll_total)
             deadline = time.monotonic() + finalize_budget
@@ -335,6 +350,7 @@ async def finalize_file(
                     headers=upstream_headers,
                     timeout=min(effective_per_poll_total, remaining),
                 )
+                poll_returned = True
                 parsed = await _parse_file_response(response, f"/files/{file_id}/uploaded")
                 status = parsed.get("status")
                 if status != "retry":
@@ -346,6 +362,9 @@ async def finalize_file(
                     return parsed
         except Exception as exc:
             if isinstance(exc, FileProxyError):
+                # A returned poll proves upstream progress on this account.
+                if poll_returned and exc.retryable_same_contract:
+                    exc.retryable_same_contract = False
                 raise
             message = str(exc) or "Request to upstream timed out"
             raise FileProxyError(
@@ -361,6 +380,7 @@ async def finalize_file(
         finalize_budget = min(_DEFAULT_FILE_FINALIZE_BUDGET_SECONDS, effective_per_poll_total)
         deadline = time.monotonic() + finalize_budget
         parsed: dict[str, JsonValue] = {"status": "retry"}
+        poll_returned = False
         while True:
             # Recompute the per-poll timeout each iteration from the time
             # left until ``deadline``. A late retry must not start with the
@@ -385,6 +405,7 @@ async def finalize_file(
                     headers=upstream_headers,
                     timeout=timeout,
                 ) as response:
+                    poll_returned = True
                     try:
                         text = await response.text()
                     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
@@ -422,6 +443,8 @@ async def finalize_file(
                     502,
                     openai_error("upstream_unavailable", message),
                     failure_phase="connect",
+                    # A returned poll proves upstream progress on this account.
+                    retryable_same_contract=False if poll_returned else None,
                 ) from exc
 
             status = parsed.get("status")
@@ -463,6 +486,13 @@ async def _codex_request(
         if route_trace is not None:
             route_trace.record(route=route, fallback_used=False)
         return response
+    except CodexTransportError as exc:
+        raise FileProxyError(
+            502,
+            openai_error(exc.error_code or "upstream_unavailable", str(exc)),
+            failure_phase=exc.failure_phase,
+            retryable_same_contract=exc.retryable_same_contract and not exc.is_tls_verification_failure,
+        ) from exc
     except Exception as exc:
         message = str(exc) or "Request to upstream timed out"
         raise FileProxyError(

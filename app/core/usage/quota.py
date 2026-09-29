@@ -119,8 +119,6 @@ def _has_usable_credits(
 ) -> bool:
     if credits_unlimited is True:
         return True
-    if credits_has is True:
-        return True
     if credits_balance is None:
         return False
     try:

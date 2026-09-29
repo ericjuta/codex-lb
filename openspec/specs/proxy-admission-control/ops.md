@@ -298,3 +298,206 @@ active under its unprefixed name; it was not re-run for the archive move, and
 no tests, builds, formatting, or deployment accompanied the sync and archive.
 The local deployment described above reflects the tree before these commits.
 Publishing the commits does not perform another deployment.
+
+## 2026-09-29 fetched upstream batch: four narrow ports
+
+Local source baseline: `4d8ece60e59d3720aaeaeb336f0c0245be2f504d`. This review
+covers **28 commits introduced or changed by this fetch only**: 20 main-branch
+entries as `origin/main` advanced from `3d23d53f8` to `f8ffbac20`, plus eight
+non-main entries. It does not establish an upstream reviewed-through cutoff or
+claim that older upstream history was evaluated. The 2026-09-05 `3aabf89f`
+marker above is a fork-local baseline, not an upstream audit cutoff.
+
+All 28 were classified; final disposition is four PORT / 24 SKIP. Sixteen
+flagged entries received source review (`source_verified=true`); the twelve
+maintenance/release/dependency entries were classified SKIP without a separate
+source review (`source_verified=false`). Duplicate main/branch patches still
+count as separate fetched entries, not separate adopted fixes.
+
+### Adopted SHAs and fork-specific contracts
+
+- `a3aa8caa0a18129e28b28944b389ab4dbd314b1c` (#2468),
+  `validate-quota-planner-timezones`: trim and validate nonblank timezone input
+  with `ZoneInfo` before settings persistence, HTTP 400
+  `invalid_quota_planner` on invalid input, blank retention, and UTC fallback
+  for malformed legacy keys without rewriting rows. Canonical capability:
+  `quota-phase-planner`.
+- `6b10052ecb18aa0daf2a19e2244aacbae22d1e47` (#2469),
+  `preserve-file-failover-provenance`: retain typed routed-transport phase,
+  error code, and replay eligibility through file operation failover. A
+  returned finalize poll closes transport-failure failover eligibility on both
+  routed and direct transports; the existing `401` forced-refresh/reselection
+  path is unchanged, and pinned finalize ownership remains enforced.
+  **Deliberate addition beyond upstream:** guard direct aiohttp polling too;
+  upstream guarded only routed polling. Status/parse errors stay untyped,
+  legacy first-poll classification is retained, and in-memory TTL file pins
+  stay unchanged. Canonical capability: `responses-api-compat`.
+- `f8ffbac2099a113fba54dfd8d77774f5bca80ffa` (#2496),
+  `omit-unsupported-probe-token-limit`: omit `max_output_tokens` outright from
+  the fixed direct Force Probe body. No replacement cap, setting, retry, or
+  sanitizer. Other probe contracts are unchanged. This supersedes the older
+  `1` and `16` output-token clauses. Canonical capability:
+  `usage-refresh-policy`.
+- `da70ac5d573314abc1237cdea170f599734908d1` (#2119),
+  `require-spendable-credit-override`: usable secondary-window credit override
+  requires unlimited credits or positive balance, not a bare has-credits flag.
+  Proxy selection remains advisory; persisted future-reset blocks are respected
+  and normal active-seed/cooldown behavior is unchanged. No #2078 cooldown/status
+  semantics or upstream second credit requirement was imported. Canonical
+  capability: `usage-refresh-policy`.
+
+Not imported by any port: `_load_balancer/` decomposition, model sources,
+`prohibit_fast_mode`/fast-mode policy, native Rust egress, persistent
+`FileAccountPinRepository`, `with_dashboard_overrides`, or upstream probe-health
+settlement (`record_account_probe_result`, `force_refresh_result`, and probing
+recovery streaks). No new migrations, schemas, settings, or dependencies.
+
+### Explicit skips (24 fetched entries)
+
+Source-reviewed, not applicable to this fork (12 entries):
+
+- `73f5f034a` (#2513): duplicate Content-Type is collapsed by the fork's aiohttp
+  transports before the wire; upstream's replacement helper is absent.
+- `3b75bb2d0` (#2255): upstream WebSocket drain tracking/pre-handshake close
+  (#1520) is absent. The fork skips WebSockets in its in-flight middleware, so
+  the rejection being fixed does not occur here.
+- `70effa3a6` (#2484): SQLite bulk-history capping depends on upstream per-account
+  cap/cutoff/floor infrastructure absent from the fork. The deployed database
+  inventory was PostgreSQL, not SQLite.
+- `ec9945999` (#2489): false-zero/dropped samples are unreachable from the fork's
+  dense shared timestamp grid; upstream smoothing/remount state is absent.
+  Cosmetic legend/tooltip differences are not adopted.
+- `4725a105f` (#2460): dashboard-user ownership/cascade model and owner columns
+  are absent, so the owner-row lock race has no fork counterpart.
+- `09a140fa9` (#2461): SCIM/overflow merge parents are absent; importing them
+  would break the fork's Alembic graph, which has no matching split head.
+- `cd9b4084a` (#2329): opt-in migration benchmark depends on upstream-only
+  revisions/tooling, not fork runtime behavior.
+- `bd65477a6` (#2476): upstream's uv `0.12.13 → 0.12.19` patch does not match
+  the fork's `0.11.25` pin. A deliberate minor-line bump needs its own container
+  and frozen-lock proof; this patch is not adopted.
+- `c6c16887d` / `14e959b26`: patch-equivalent viewport/drain test fix; upstream
+  browser-smoke and graceful WebSocket process-shutdown test paths are absent.
+- `4183216c9` / `bf386475f`: patch-equivalent native-packaging CI fix; the fork
+  lacks `detect_changed_areas`/native backend area machinery, rejects Rust
+  egress, and its CI has no such path-filter skip.
+
+Maintenance/release/dependency churn classified SKIP without separate source
+review (12 entries):
+
+- `4dcf8f751`: metadata/pricing/Codex-version refresh; not imported into this
+  fork-specific runtime batch.
+- `3c4906eae`, `52b9a0d13`, `2913f4d57`, `e8cdb34f5`, `bcf0a969d`: CI action
+  bumps.
+- `18fc8955a`, `1493c17b1`, `2f61bc661`: dependency updates (frontend, Rust,
+  Python).
+- `74df98657`, `89e4def39`, `f986f7be5`: release/version metadata.
+
+These skips are scoped to this fetched batch, not blanket findings on older
+upstream history. They do not reverse the existing architectural exclusions.
+
+### Local verification and evidence boundaries
+
+Parent verification on the settled final application/test tree:
+
+- `uv run --frozen pytest` on nine focused modules with `-q -p no:cacheprovider`
+  and warnings-as-errors for `PytestUnraisableExceptionWarning` and
+  `RuntimeWarning`: **377 passed**.
+- `test_proxy_utils.py` and `test_codex_upstream_paths.py` with
+  `-k 'files or file_ or transcribe or goal or codex_control or previsible or unary or failover'`
+  under the same warning policy: **65 passed, 871 deselected**. Total:
+  **442 passed**. This is focused verification, not the full repository suite.
+- Ruff check and format check on seven changed application and eight changed
+  test files: passed; all fifteen files already formatted.
+- Repository-wide `uv run --frozen ruff check` and
+  `uv run --frozen ruff format --check`: passed; **840 files** already formatted.
+- A separate full-repository pytest run under the same warning policy timed out
+  after **1200 seconds**. Its captured progress was not retained after the
+  subprocess timeout; no failing or stalled test node was established. A later
+  collection-only command succeeded with **6374 tests / 287 modules**. This is
+  an inconclusive full-suite gate, not an additional passing-test claim or proof
+  that the timeout predates these ports. No exact-command orphan remained.
+- The CI-style four-worker runner with the Makefile's per-test watchdogs and
+  the extra warning policy completed: **6317 passed, 56 skipped, 1 failed,
+  15 warnings in 555.28 seconds**. The sole failure was
+  `test_db_migrate.py::test_raw_usage_window_latest_index_migration_is_idempotent`:
+  the extra `error::RuntimeWarning` rule promotes SQLAlchemy's existing
+  expression-index reflection `SAWarning` to an error. The same node failed
+  with the same warning in an isolated `HEAD` source snapshot, and passed
+  (**1 passed, 2 warnings**) under the configured project warning policy on the
+  current tree. No migration/source fix or warning suppression was added.
+  This is not a claim that the extra-strict full-suite run was green.
+- Parent LSP diagnostics returned only `OK` without diagnostic data. The tool
+  limitation was reported; it is not a successful LSP diagnostics gate.
+
+Standalone local smoke used disposable SQLite and loopback stubs only:
+
+- Settings PUT with malformed/unknown timezone returned 400 without saving;
+  valid trimmed and blank-retention updates worked. The full planner modules
+  above cover malformed legacy stored values in forecasts and routing costs.
+- Pure credit-service calls showed missing/zero/negative balances with the bare
+  flag blocked in dashboard inference and persisted-future-block proxy modes;
+  positive/unlimited credits retained the override. Advisory active-seed and
+  cooldown behavior was not changed.
+- The prior HEAD probe method fault-injected **in memory** returned
+  `probeStatusCode: 400` against the rejecting loopback stub. The new method
+  returned `200`, made exactly one upstream request, and sent only
+  `input`, `instructions`, `model`, `store`, and `stream` body keys. No
+  application/test files were rolled back for that fault injection.
+- Real-socket file smoke: direct first refusal retained legacy `None` provenance
+  and eligible failover; direct retry-response then refusal became typed `False`
+  and non-replayable; routed first refusal was typed `True` and replayable;
+  routed retry-response then refusal was typed `False` and non-replayable.
+
+Probe rejection evidence from live Codex belongs to upstream #2496; it was not
+reproduced against live upstream here. No production traffic, commit, push,
+merge, deployment, or CI proof accompanied this closeout.
+
+### Canonical sync and historical supersession
+
+The four current deltas were intelligently synchronized: two ADDED timezone
+requirements, two ADDED file requirements, one ADDED no-output-token probe
+requirement, and the MODIFIED credit requirement. All unrelated canonical
+requirements/scenarios were retained; the credit requirement's three original
+scenarios were retained verbatim and one bounded bare-flag scenario was added.
+Stable context is promoted to each capability's `context.md`.
+
+`add-account-probe-endpoint` and `probe-valid-token-floor` were archived without
+spec sync to `openspec/changes/archive/2026-09-29-<name>/`. Their existing tasks
+and verification checkmarks were all complete; no fresh historical proof was
+invented. `.openspec.yaml` was preserved for `probe-valid-token-floor`;
+`add-account-probe-endpoint` had no such file. Their original deltas remain
+verbatim history, headed by supersession notices in their proposals. **Do not
+sync either historical delta:** neither the `1` nor `16` token clause is active.
+Their old non-token endpoint/dashboard clauses were never synced and remain a
+known canonical coverage gap, not a claim added by this batch.
+
+Closeout validation used `npx --yes @fission-ai/openspec` because the installed
+`openspec` launcher was a broken symlink. All four active changes passed
+`validate <change> --strict`; `status --change <change> --json` reported all
+planning artifacts done (`spec-driven`). Full canonical `validate --specs
+--strict` returned **25 passed / 14 failed (39 items)**, matching the inherited
+count recorded in the September 5 batch above. These are not a green
+repository-wide strict gate: existing placeholder Purpose sections and
+duplicate Responses requirement names remain. Validation specifically warns
+that the file delta cannot be CLI-synced into the structurally duplicated
+Responses spec. The agent-driven merge therefore added only its two distinct
+requirements and retained all unrelated blocks; no unrelated spec repairs
+were folded into this port. Archive moves must skip CLI spec synchronization
+because current deltas have already been intelligently applied, and historical
+deltas must never be applied.
+
+An isolated `HEAD` OpenSpec snapshot was also strictly validated with the same
+CLI: **25 passed / 14 failed**. Comparing blocking diagnostics by capability,
+severity, and message while ignoring shifted line locations found **zero
+introduced diagnostics**. Parent validation of the four archived deltas in an
+isolated active layout, including the existing MODIFIED credit target, passed
+**4/4 with no issues**.
+
+Final review found no runtime blockers. It narrowed one documentation overclaim:
+after a finalize poll response, only transport-failure failover is closed. The
+existing unpinned `401` forced-refresh/reselection path is unchanged. The file
+delta and canonical requirement were renamed and rescoped before archive, then
+all four deltas passed strict validation again. With parent review clearance,
+the four completed changes were moved verbatim, including `.openspec.yaml`, to
+`openspec/changes/archive/2026-09-29-<change>/` without CLI spec resync.

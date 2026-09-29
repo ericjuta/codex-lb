@@ -38,6 +38,40 @@ status from `primary_window.used_percent`:
 There is no manual reset step inside codex-lb. Recovery is driven by the next
 refresh tick that observes a sub-100 value from `/wham/usage`.
 
+### Credit-Backed Override Requires Spendable Credits
+
+Normative rule: "Credit-backed secondary quota remains usable" in `spec.md`.
+Since the 2026-09-29 narrow port of upstream
+`da70ac5d573314abc1237cdea170f599734908d1` (#2119), credit metadata overrides
+an exhausted secondary window only when it shows spendable capacity:
+`credits_unlimited = true` or a positive `credits_balance`. A bare
+`credits_has = true` with a missing, zero, or negative balance is metadata, not
+spendable capacity.
+
+- Only the shared `_has_usable_credits` predicate changed. Summary mapping and
+  proxy account-state derivation both use it through `apply_usage_quota`.
+- Proxy selection stays advisory (`infer_status_from_usage=False`). Usage alone
+  never tightens an `ACTIVE` seed into `quota_exceeded`. For a persisted
+  `quota_exceeded` seed, the existing runtime-reset branch still decides: a
+  future reset keeps the block, and an elapsed or absent reset recovers the
+  account as before. This narrows the summary/proxy gap without closing it.
+- Not changed: primary `rate_limited` precedence, `paused`/`deactivated`/
+  `reauth_required` pass-through, cooldown handling, and
+  `mappers._has_credit_override` (the rate-limited recovery trust gate, which
+  upstream also leaves alone). Upstream's second credit requirement ("Credit-backed
+  usage remains selectable after quota windows fill") and #2078 status semantics
+  were not imported.
+- Failure mode: an account with spendable credits that omits its balance is
+  treated as exhausted until a snapshot reports unlimited credits or a positive
+  balance.
+
+Example: secondary `100`, primary `40`, `credits_has = true`,
+`credits_balance = null`, `credits_unlimited = false`. The summary shows
+`quota_exceeded` (previously `active`). A persisted `quota_exceeded` account whose
+runtime reset is an hour away stays unselected. An `ACTIVE` seed stays `active`.
+With `credits_balance = 5` or `credits_unlimited = true`, all three cases are
+`active`.
+
 ## Why Codex Settings Can Disagree
 
 Codex Desktop's Settings -> Account view and `/wham/usage` are fed by different
@@ -72,21 +106,60 @@ behavior can set the threshold to `100.0`.
 - Wait first. The next request through that account usually wakes the upstream
   rate limiter; codex-lb auto-recovers on the next refresh tick after the
   upstream payload changes.
-- The dashboard Force Probe action fires one minimal `responses.create` against
-  the selected account and immediately refreshes its usage. The probe body uses
-  `max_output_tokens=16` (the current Codex token floor); `1` is rejected
-  upstream with HTTP 400 and never wakes the limiter. An accepted 2xx probe
-  also contributes to that replica's probing-health recovery streak; non-2xx
-  results do not restore routing health. Settlement reloads and normalizes
-  weekly/monthly and zero-primary-capacity usage like ordinary routing and is
-  discarded when newer replica-local runtime activity arrives during that
-  snapshot load. This floor is the probe half of
-  [#1895](https://github.com/Soju06/codex-lb/issues/1895); warmup/compact-404
-  is a separate path.
+- The dashboard Force Probe action (`POST /api/accounts/{account_id}/probe`)
+  sends one fixed `responses.create` directly to the selected account,
+  bypassing load-balancer scoring. It then force-refreshes that account's
+  usage, invalidates the account selection cache, and returns before/after
+  usage and status. The probe does not feed any replica probing-health
+  recovery streak or probe-result settlement; those upstream helpers are not
+  part of this fork. See "Force Probe Request Body" below.
 - Do not manually flip the codex-lb account state to `ACTIVE` while
   `/wham/usage` still reports the account as fully used. That only masks the
   upstream state and can route traffic back to an account that the upstream
   limiter will reject.
+
+## Force Probe Request Body
+
+Normative rule: "Force Probe upstream request omits unsupported output-token
+limit" in `spec.md`. Since the 2026-09-29 narrow port of upstream
+`f8ffbac2099a113fba54dfd8d77774f5bca80ffa` (#2496), the probe body contains no
+`max_output_tokens` key at any value. There is no replacement cap, setting,
+sanitizer, or retry. Ordinary Responses forwarding already strips the field
+(`_UNSUPPORTED_UPSTREAM_FIELDS` in `app/core/openai/requests.py`); the fixed
+probe body was the only path that still sent it. Limit warm-up's separate
+`max_output_tokens=4` goes through `ResponsesRequest` and is stripped there.
+
+- Evidence boundary: upstream #2496 reports HTTP 400 `Unsupported parameter:
+  max_output_tokens` for a body with `16` and HTTP 200 without the field. This
+  fork has not reproduced that against live upstream. Local evidence is a
+  loopback stub that rejects the field. It proves that the fork no longer sends
+  the field and that the upstream status reaches the operator. It does not
+  prove current live upstream behavior.
+- Supersession history: `add-account-probe-endpoint` sent
+  `max_output_tokens=1`. `probe-valid-token-floor` raised it to `16` after
+  [#1895](https://github.com/Soju06/codex-lb/issues/1895) reported
+  `1 → 400, 16 → 200`, and forbade lower values. Those two changes were
+  archived on 2026-09-29 without spec sync. Their output-token clauses are
+  superseded and must not be reintroduced into this spec. Their endpoint,
+  eligibility, snapshot, and dashboard clauses were never synced either. They
+  remain historical records, not canonical requirements. The canonical spec
+  covers only the Force Probe request-body contract. For example, the code also
+  refuses `reauth_required` accounts, which the historical `409` scenario did
+  not list.
+- Failure mode: if the field returns, an upstream that rejects it answers 400.
+  The probe reports `probeStatusCode: 400` for a usable account and the limiter
+  is not woken. Because nothing retries, the single request's status stays
+  visible.
+
+```json
+{
+  "model": "gpt-5.5",
+  "instructions": "Respond with a single dot.",
+  "input": [{"role": "user", "content": [{"type": "input_text", "text": "."}]}],
+  "stream": true,
+  "store": false
+}
+```
 
 ## Verification Example
 

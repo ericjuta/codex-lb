@@ -2562,7 +2562,24 @@ def test_state_from_account_recovers_quota_exceeded_on_restart_without_blocked_a
     assert state.status == AccountStatus.ACTIVE
 
 
-def test_state_from_account_uses_secondary_credits_when_primary_lacks_credit_fields(monkeypatch):
+@pytest.mark.parametrize(
+    ("credits_has", "credits_unlimited", "credits_balance", "spendable"),
+    [
+        (None, None, 25.0, True),
+        (True, False, 1.0, True),
+        (True, True, None, True),
+        (True, False, None, False),
+        (True, False, 0.0, False),
+        (True, False, -1.0, False),
+    ],
+)
+def test_state_from_account_secondary_credits_clear_persisted_quota_block_only_when_spendable(
+    monkeypatch,
+    credits_has,
+    credits_unlimited,
+    credits_balance,
+    spendable,
+):
     now = 1_700_000_000.0
     future_reset = int(now + 3600)
     monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
@@ -2580,7 +2597,9 @@ def test_state_from_account_uses_secondary_credits_when_primary_lacks_credit_fie
         used_percent=100.0,
         reset_at=future_reset,
         recorded_at=_epoch_to_naive_utc(now - 30),
-        credits_balance=25.0,
+        credits_has=credits_has,
+        credits_unlimited=credits_unlimited,
+        credits_balance=credits_balance,
     )
 
     state = _state_from_account(
@@ -2589,9 +2608,18 @@ def test_state_from_account_uses_secondary_credits_when_primary_lacks_credit_fie
         secondary_entry=secondary,
         runtime=RuntimeState(),
     )
-    assert state.status == AccountStatus.ACTIVE
-    assert state.used_percent == 40.0
-    assert state.reset_at is None
+    selection = select_account([state], routing_strategy="single_account")
+    if spendable:
+        assert state.status == AccountStatus.ACTIVE
+        assert state.used_percent == 40.0
+        assert state.reset_at is None
+        assert selection.account is not None
+        assert selection.account.account_id == state.account_id
+    else:
+        assert state.status == AccountStatus.QUOTA_EXCEEDED
+        assert state.used_percent == 100.0
+        assert state.reset_at == future_reset
+        assert selection.account is None
     assert state.blocked_at is None
 
 

@@ -4,10 +4,13 @@ import base64
 import json
 
 import pytest
+from aiohttp import web
 
 from app.core.auth import generate_unique_account_id
 from app.core.auth.refresh import RefreshError
+from app.core.config.settings import get_settings
 from app.modules.accounts.service import AccountsService
+from app.modules.usage.updater import UsageUpdater
 
 pytestmark = pytest.mark.integration
 
@@ -144,3 +147,56 @@ async def test_probe_uses_default_model_when_body_omitted(async_client, monkeypa
     # *some* model string rather than coupling the test to the constant.
     assert isinstance(captured["model"], str)
     assert captured["model"]
+
+
+@pytest.mark.asyncio
+async def test_force_probe_omits_unsupported_max_output_tokens_upstream_accepts(async_client, monkeypatch):
+    upstream_requests: list[dict] = []
+
+    async def _codex_responses(request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        upstream_requests.append(body)
+        if "max_output_tokens" in body:
+            return web.json_response(
+                {"error": {"code": "unsupported_parameter", "param": "max_output_tokens"}},
+                status=400,
+            )
+        response = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        await response.write(b'data: {"type":"response.created"}\n\n')
+        return response
+
+    async def _skip_usage_refresh(self, account, **kwargs) -> bool:  # noqa: ARG001
+        # Keep the loopback upstream limited to the probe request itself.
+        return False
+
+    monkeypatch.setattr(UsageUpdater, "force_refresh", _skip_usage_refresh)
+
+    account_id = await _import_test_account(
+        async_client,
+        email="probe-token-limit@example.com",
+        account_id="acc_probe_token_limit",
+    )
+
+    upstream = web.Application()
+    upstream.router.add_post("/backend-api/codex/responses", _codex_responses)
+    runner = web.AppRunner(upstream, shutdown_timeout=0.1)
+    await runner.setup()
+    try:
+        await web.TCPSite(runner, "127.0.0.1", 0).start()
+        address = runner.addresses[0]
+        assert isinstance(address, tuple)
+        with monkeypatch.context() as scoped:
+            scoped.setenv("CODEX_LB_UPSTREAM_BASE_URL", f"http://127.0.0.1:{address[1]}/backend-api")
+            # The shared HTTP session trusts proxy env vars; keep the loopback stub direct.
+            scoped.setenv("NO_PROXY", "127.0.0.1")
+            scoped.setenv("no_proxy", "127.0.0.1")
+            get_settings.cache_clear()
+            response = await async_client.post(f"/api/accounts/{account_id}/probe")
+    finally:
+        await runner.cleanup()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200, response.text
+    assert len(upstream_requests) == 1
+    assert response.json()["probeStatusCode"] == 200

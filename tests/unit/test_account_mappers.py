@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from app.db.models import Account, AccountStatus, UsageHistory
 from app.modules.accounts import mappers
 from app.modules.accounts.mappers import _effective_status_from_usage, _normalize_account_routing_policy
@@ -76,13 +78,29 @@ def _secondary_usage(**overrides) -> UsageHistory:
     return UsageHistory(**values)
 
 
-def test_effective_status_uses_secondary_credits_to_reactivate_quota_exceeded_account() -> None:
+@pytest.mark.parametrize(
+    ("credits_has", "credits_unlimited", "credits_balance", "expected"),
+    [
+        (False, False, 25.0, AccountStatus.ACTIVE),
+        (True, False, 1.0, AccountStatus.ACTIVE),
+        (True, True, None, AccountStatus.ACTIVE),
+        (True, False, None, AccountStatus.QUOTA_EXCEEDED),
+        (True, False, 0.0, AccountStatus.QUOTA_EXCEEDED),
+        (True, False, -1.0, AccountStatus.QUOTA_EXCEEDED),
+    ],
+)
+def test_effective_status_reactivates_exhausted_secondary_only_with_spendable_credits(
+    credits_has: bool,
+    credits_unlimited: bool,
+    credits_balance: float | None,
+    expected: AccountStatus,
+) -> None:
     account = _account()
     primary = _primary_usage()
     secondary = _secondary_usage(
-        credits_has=False,
-        credits_unlimited=False,
-        credits_balance=25.0,
+        credits_has=credits_has,
+        credits_unlimited=credits_unlimited,
+        credits_balance=credits_balance,
     )
 
     assert (
@@ -97,7 +115,7 @@ def test_effective_status_uses_secondary_credits_to_reactivate_quota_exceeded_ac
             monthly_used_percent=None,
             runtime_reset=float(account.reset_at) if account.reset_at else None,
         )
-        == AccountStatus.ACTIVE
+        == expected
     )
 
 

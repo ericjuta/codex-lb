@@ -68,6 +68,70 @@ async def test_quota_planner_settings_api_get_and_update(monkeypatch, async_clie
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "timezone_name",
+    ["/Europe/Stockholm", "Europe/Stockholm/", "Europe/../Stockholm", "Unknown/Timezone"],
+)
+async def test_quota_planner_rejects_invalid_timezone_without_saving(
+    monkeypatch, async_client, db_setup, timezone_name
+):
+    del db_setup
+    monkeypatch.setattr("app.modules.quota_planner.api.AuditService.log_async", lambda *args, **kwargs: None)
+    before = (await async_client.get("/api/quota-planner/settings")).json()
+
+    response = await async_client.put(
+        "/api/quota-planner/settings",
+        json={"timezone": timezone_name, "maxWarmupsPerDay": 99, "workingDays": [5, 6], "mode": "suggest"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_quota_planner"
+    assert (await async_client.get("/api/quota-planner/settings")).json() == before
+
+
+@pytest.mark.asyncio
+async def test_quota_planner_timezone_update_trims_and_blank_retains(monkeypatch, async_client, db_setup):
+    del db_setup
+    monkeypatch.setattr("app.modules.quota_planner.api.AuditService.log_async", lambda *args, **kwargs: None)
+
+    response = await async_client.put("/api/quota-planner/settings", json={"timezone": " Europe/Stockholm "})
+    assert response.status_code == 200
+    assert response.json()["timezone"] == "Europe/Stockholm"
+
+    for warmups, payload in enumerate(
+        ({}, {"timezone": None}, {"timezone": ""}, {"timezone": "  "}),
+        start=4,
+    ):
+        response = await async_client.put("/api/quota-planner/settings", json={**payload, "maxWarmupsPerDay": warmups})
+        assert response.status_code == 200
+        stored = (await async_client.get("/api/quota-planner/settings")).json()
+        assert stored["timezone"] == "Europe/Stockholm"
+        assert stored["maxWarmupsPerDay"] == warmups
+
+
+@pytest.mark.asyncio
+async def test_quota_planner_legacy_malformed_timezone_is_retained_and_forecastable(
+    monkeypatch, async_client, db_setup
+):
+    del db_setup
+    monkeypatch.setattr("app.modules.quota_planner.api.AuditService.log_async", lambda *args, **kwargs: None)
+    async with SessionLocal() as session:
+        await QuotaPlannerRepository(session).upsert_settings(PlannerSettings(timezone="Europe/Stockholm/"))
+
+    response = await async_client.put("/api/quota-planner/settings", json={"timezone": " ", "maxWarmupsPerDay": 5})
+    assert response.status_code == 200
+    assert response.json()["timezone"] == "Europe/Stockholm/"
+    assert response.json()["maxWarmupsPerDay"] == 5
+
+    response = await async_client.get("/api/quota-planner/forecast?horizonHours=6")
+    assert response.status_code == 200
+    forecast = response.json()
+    assert forecast["slots"]
+    assert forecast["simulation"]["forecastUnits"] == forecast["totalDemandUnits"]
+    assert (await async_client.get("/api/quota-planner/settings")).json()["timezone"] == "Europe/Stockholm/"
+
+
+@pytest.mark.asyncio
 async def test_quota_planner_decisions_api_returns_recent_decisions(async_client, db_setup):
     del db_setup
     async with SessionLocal() as session:

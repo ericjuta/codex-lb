@@ -1,5 +1,10 @@
 # Probe valid token floor
 
+> **Superseded (historical record, 2026-09-29).** The `16` floor below is no
+> longer current policy. See `omit-unsupported-probe-token-limit` and canonical
+> `openspec/specs/usage-refresh-policy/context.md` ("Force Probe Request Body").
+> The body below is kept unchanged as history.
+
 ## Purpose
 
 Force Probe is the operator action that wakes a lazy `/wham/usage` window
