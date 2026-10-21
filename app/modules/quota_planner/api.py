@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Body, Depends, Query, Request
@@ -30,6 +31,8 @@ from app.modules.quota_planner.schemas import (
 from app.modules.usage.repository import UsageRepository
 
 from .warmup import QuotaWarmupService
+
+_CLOCK_TIME_RE = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
 
 router = APIRouter(
     prefix="/api/quota-planner",
@@ -135,6 +138,14 @@ def _validate_working_days(days: list[int] | None, current: tuple[int, ...]) -> 
     return normalized
 
 
+def _validate_clock_time(value: str | None, current: str, *, field: str) -> str:
+    if value is None:
+        return current
+    if _CLOCK_TIME_RE.fullmatch(value) is None:
+        raise DashboardBadRequestError(f"{field} must be a 24-hour HH:MM time", code="invalid_quota_planner")
+    return value
+
+
 def _validate_timezone(value: str | None, current: str) -> str:
     normalized = (value or "").strip()
     if not normalized:
@@ -165,8 +176,12 @@ async def update_quota_planner_settings(
         mode=payload.mode or current.mode,
         timezone=_validate_timezone(payload.timezone, current.timezone),
         working_days=_validate_working_days(payload.working_days, current.working_days),
-        working_hours_start=payload.working_hours_start or current.working_hours_start,
-        working_hours_end=payload.working_hours_end or current.working_hours_end,
+        working_hours_start=_validate_clock_time(
+            payload.working_hours_start, current.working_hours_start, field="workingHoursStart"
+        ),
+        working_hours_end=_validate_clock_time(
+            payload.working_hours_end, current.working_hours_end, field="workingHoursEnd"
+        ),
         prewarm_enabled=payload.prewarm_enabled if payload.prewarm_enabled is not None else current.prewarm_enabled,
         prewarm_lead_minutes=(
             payload.prewarm_lead_minutes if payload.prewarm_lead_minutes is not None else current.prewarm_lead_minutes

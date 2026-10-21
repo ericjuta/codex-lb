@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from app.core import usage as usage_core
 from app.core.balancer.types import ClassifiedFailure, FailureClass, FailurePhase, UpstreamError
-from app.core.errors import OpenAIErrorDetail, OpenAIErrorEnvelope
+from app.core.errors import OpenAIErrorDetail, OpenAIErrorEnvelope, is_upstream_usage_limit_message
 from app.core.openai.models import OpenAIError
 from app.core.plan_types import normalize_rate_limit_plan_type
 from app.core.types import JsonValue
@@ -34,13 +34,28 @@ PLAN_TYPE_PRIORITY = (
     "k12",
 )
 
-_RATE_LIMIT_CODES = frozenset({"rate_limit_exceeded", "usage_limit_reached"})
+_DEACTIVATED_WORKSPACE_CODE = "deactivated_workspace"
+_USAGE_LIMIT_CODE = "usage_limit_reached"
+_RATE_LIMIT_CODES = frozenset({"rate_limit_exceeded", _USAGE_LIMIT_CODE})
 _QUOTA_CODES = frozenset({"insufficient_quota", "usage_not_included", "quota_exceeded"})
+# The one normalized code that carries no classification decision of its own:
+# ``upstream_error`` is what a *missing* code normalizes to, which is exactly
+# the shape a message has to speak for. Every other code already decided what
+# the failure is, and a sentence must not reverse that decision.
+#
+# ``invalid_request_error`` is deliberately excluded even though upstream reuses
+# it for rejections it has no code for: it is also upstream's catch-all for
+# request-shaped 400s, whose message can quote request content back, so reading
+# it off a message would let an echoed sentence bench a serving account.
+_MESSAGE_CLASSIFIED_CODES = frozenset({"upstream_error"})
 _TRANSIENT_CODES = frozenset(
     {"server_error", "upstream_error", "stream_incomplete", "overloaded_error", "server_is_overloaded"}
 )
 _CONNECT_PHASE_TRANSIENT_403_CODES = frozenset({"forbidden", "insufficient_permissions", "permission_error"})
 _MODEL_CAPACITY_MESSAGE_MARKERS = ("selected model is at capacity",)
+
+
+_MODEL_NOT_FOUND_CODE = "model_not_found"
 
 
 def _is_account_model_unsupported_error(
@@ -57,11 +72,65 @@ def _is_account_model_unsupported_error(
     return normalized_message == expected_message
 
 
+def is_model_scoped_upstream_rejection(*, code: str | None) -> bool:
+    """True when upstream rejected the requested model rather than the account.
+
+    The exact ``model_not_found`` code is authoritative: it reproduces for that
+    model whatever the serving account's health, so it is health-neutral. Model
+    entitlement can still differ between subscription accounts, so before any
+    output is visible a different account may answer it.
+    """
+    return code == _MODEL_NOT_FOUND_CODE
+
+
+def is_pre_acceptance_model_rejection(*, code: str | None, message: str | None, model: str | None) -> bool:
+    """The rejections that may move once to a replacement account before acceptance."""
+    return is_model_scoped_upstream_rejection(code=code) or _is_account_model_unsupported_error(
+        code=code,
+        message=message,
+        model=model,
+    )
+
+
 def is_upstream_model_capacity_error(message: str | None) -> bool:
     if message is None:
         return False
     normalized_message = " ".join(message.lower().split())
     return any(marker in normalized_message for marker in _MODEL_CAPACITY_MESSAGE_MARKERS)
+
+
+def is_upstream_usage_limit_rejection(*, error_code: str, message: str | None) -> bool:
+    """True when upstream says this account's usage limit is spent.
+
+    Either the code names the limit or the message does. The message-only form
+    is how the serialized ``response.failed`` frame arrives -- no status and no
+    error code -- and it is the same rejection the coded form carries, so a
+    caller keyed on the literal code alone answers "this account is fine" for a
+    form upstream chooses freely. Deliberately status-free, and the message may
+    decide only where the code decided nothing. Plain ``rate_limit_exceeded``
+    throttling is not included: it says the request arrived too fast, not that
+    the subscription window is exhausted.
+    """
+    return error_code == _USAGE_LIMIT_CODE or (
+        error_code in _MESSAGE_CLASSIFIED_CODES and is_upstream_usage_limit_message(message)
+    )
+
+
+def keeps_account_in_the_walk(classified: ClassifiedFailure) -> bool:
+    """True when this failure describes the requested model, so the account stays selectable.
+
+    Selected-model capacity is a property of the model, not of the account: excluding
+    each account in turn would rotate the whole pool over a condition no account can
+    serve. Only the ``retryable_transient`` class qualifies, because it is the one whose
+    health write leaves the account usable; ``rate_limit``/``quota`` bench the account,
+    and an account-scoped usage-limit sentence outranks a capacity match.
+    """
+    message = classified["error"].get("message")
+    return (
+        classified["failure_class"] == "retryable_transient"
+        and is_upstream_model_capacity_error(message)
+        and not is_upstream_usage_limit_message(message)
+    )
 
 
 def classify_upstream_failure(
@@ -72,10 +141,19 @@ def classify_upstream_failure(
     phase: FailurePhase,
 ) -> ClassifiedFailure:
     failure_class: FailureClass
-    if error_code in _RATE_LIMIT_CODES:
+    if error_code == _DEACTIVATED_WORKSPACE_CODE:
+        # Only the exact structured code proves the workspace is gone; a bare
+        # HTTP 402 may describe a payment incident and proves nothing terminal.
+        failure_class = "account_unavailable"
+    elif error_code in _RATE_LIMIT_CODES:
         failure_class = "rate_limit"
     elif error_code in _QUOTA_CODES:
         failure_class = "quota"
+    elif is_upstream_usage_limit_rejection(error_code=error_code, message=error.get("message")):
+        # The same rejection in the delivery form that carries no code: a spent
+        # account cannot be waited out on itself, so it must not reach the
+        # transient branch below.
+        failure_class = "rate_limit"
     elif phase == "connect" and http_status == 403 and error_code in _CONNECT_PHASE_TRANSIENT_403_CODES:
         failure_class = "retryable_transient"
     elif (

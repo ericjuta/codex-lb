@@ -387,7 +387,9 @@ from app.modules.proxy.durable_bridge_coordinator import (
 )
 from app.modules.proxy.helpers import (
     _normalize_error_code,
+    is_model_scoped_upstream_rejection,
     is_upstream_model_capacity_error,
+    is_upstream_usage_limit_rejection,
 )
 from app.modules.proxy.http_bridge_forwarding import (
     HTTPBridgeForwardContext as HTTPBridgeForwardContext,
@@ -425,10 +427,22 @@ def _resolve_upstream_stream_transport(upstream_stream_transport: str) -> str | 
     return upstream_stream_transport
 
 
-def _should_penalize_stream_error(code: str | None) -> bool:
+def _should_penalize_stream_error(code: str | None, message: str | None = None) -> bool:
+    """Whether this stream failure owes the account a health write.
+
+    ``message`` is the sentence an upstream-authored failure carried: the code
+    table cannot answer for the serialized usage-limit rejection, which upstream
+    sends with no error code at all and which therefore normalizes to
+    ``upstream_error``. Callers whose message is proxy-authored pass none and
+    keep the pure code answer.
+    """
     if code is None:
         return False
-    return code in _facade()._ACCOUNT_RECOVERY_RETRY_CODES or code in _facade()._TRANSIENT_RETRY_CODES
+    return (
+        code in _facade()._ACCOUNT_RECOVERY_RETRY_CODES
+        or code in _facade()._TRANSIENT_RETRY_CODES
+        or is_upstream_usage_limit_rejection(error_code=code, message=message)
+    )
 
 
 _MODEL_CAPACITY_LIMIT_CODES = {
@@ -532,6 +546,12 @@ def _rewrite_previous_response_stream_error(
             None,
         )
     normalized_code = _normalize_error_code(error_code, error_type)
+    if normalized_code not in _facade()._ACCOUNT_RECOVERY_RETRY_CODES and is_upstream_usage_limit_rejection(
+        error_code=normalized_code, message=error_message
+    ):
+        # Code-less usage-limit frame: same owner-recovery path (and deferred
+        # owner health write) as the coded form.
+        normalized_code = "usage_limit_reached"
     if preferred_account_id is not None and normalized_code in _facade()._ACCOUNT_RECOVERY_RETRY_CODES:
         _record_continuity_fail_closed(
             surface="http_stream",
@@ -809,7 +829,8 @@ async def _handle_stream_error(
         http_status=http_status,
         phase=phase,
     )
-    if _facade()._is_account_neutral_error_code(code):
+    if _facade()._is_account_neutral_error_code(code) or is_model_scoped_upstream_rejection(code=code):
+        # A rejection of the requested model says nothing about this account's health.
         return classified
     if classified["failure_class"] == "rate_limit":
         await proxy._load_balancer.mark_rate_limit(account, error)
@@ -851,8 +872,15 @@ def _push_stream_attempt_timeout_overrides(
     )
 
 
-def _should_retry_stream_error(code: str) -> bool:
-    return code in _facade()._ACCOUNT_RECOVERY_RETRY_CODES
+def _should_retry_stream_error(code: str, message: str | None = None) -> bool:
+    """Whether a pre-visible terminal frame may be retried on a sibling account.
+
+    The serialized usage-limit rejection carries no error code, so the frame's
+    sentence is put through the same predicate the health write uses.
+    """
+    return code in _facade()._ACCOUNT_RECOVERY_RETRY_CODES or is_upstream_usage_limit_rejection(
+        error_code=code, message=message
+    )
 
 
 def _upstream_turn_state_from_socket(upstream: UpstreamWebSocket | None) -> str | None:

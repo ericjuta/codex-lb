@@ -123,7 +123,6 @@ export function AccountsPage() {
     accountBindingMutation.isPending;
 
   const mutationError =
-    getErrorMessageOrNull(importMutation.error) ||
     getErrorMessageOrNull(pauseMutation.error) ||
     getErrorMessageOrNull(resumeMutation.error) ||
     getErrorMessageOrNull(setAliasMutation.error) ||
@@ -230,11 +229,8 @@ export function AccountsPage() {
       <ImportDialog
         open={importDialog.open}
         busy={importMutation.isPending}
-        error={getErrorMessageOrNull(importMutation.error)}
         onOpenChange={importDialog.onOpenChange}
-        onImport={async (file) => {
-          await importMutation.mutateAsync(file);
-        }}
+        onImport={(files) => importMutation.mutateAsync(files)}
       />
 
       <Suspense fallback={null}>

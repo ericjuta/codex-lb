@@ -1,8 +1,11 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AccountList } from "@/features/accounts/components/account-list";
+import { DEFAULT_ACCOUNT_SORT_MODE, type AccountSortMode } from "@/features/accounts/sorting";
+import { createAccountSummary } from "@/test/mocks/factories";
 import { useAccountQuotaDisplayStore } from "@/hooks/use-account-quota-display";
 
 describe("AccountList", () => {
@@ -564,5 +567,72 @@ describe("AccountList", () => {
           !!el.textContent?.match(/unique@example\.com \| ID/),
       ),
     ).not.toBeInTheDocument();
+  });
+
+  it("applies status and quota sort choices from the selector and keeps them while filtering", async () => {
+    const user = userEvent.setup();
+    const accounts = [
+      createAccountSummary({
+        accountId: "unknown",
+        displayName: "Unknown monthly",
+        status: "paused",
+        availableResetCredits: 9,
+        usage: { primaryRemainingPercent: 10, secondaryRemainingPercent: 10, monthlyRemainingPercent: null },
+      }),
+      createAccountSummary({
+        accountId: "zero",
+        displayName: "Empty monthly",
+        status: "active",
+        availableResetCredits: 1,
+        usage: { primaryRemainingPercent: 10, secondaryRemainingPercent: 10, monthlyRemainingPercent: 0 },
+      }),
+      createAccountSummary({
+        accountId: "high",
+        displayName: "High monthly",
+        status: "rate_limited",
+        availableResetCredits: 2,
+        usage: { primaryRemainingPercent: 10, secondaryRemainingPercent: 10, monthlyRemainingPercent: 80 },
+      }),
+    ];
+
+    function Harness() {
+      const [sortMode, setSortMode] = useState<AccountSortMode>(DEFAULT_ACCOUNT_SORT_MODE);
+      return (
+        <AccountList
+          accounts={accounts}
+          selectedAccountId={null}
+          onSelect={() => {}}
+          onOpenImport={() => {}}
+          onOpenOauth={() => {}}
+          sortMode={sortMode}
+          onSortModeChange={setSortMode}
+        />
+      );
+    }
+
+    const visibleOrder = () =>
+      within(screen.getByTestId("account-list-scroll-region"))
+        .getAllByRole("button")
+        .map((button) => accounts.find((account) => within(button).queryByText(account.displayName))?.accountId);
+    const choose = async (name: string) => {
+      await user.click(screen.getByRole("combobox", { name: "Sort accounts" }));
+      await user.click(await screen.findByRole("option", { name }));
+    };
+
+    render(<Harness />);
+    expect(visibleOrder()).toEqual(["unknown", "high", "zero"]);
+
+    await choose("Monthly quota (lowest remaining)");
+    expect(visibleOrder()).toEqual(["zero", "high", "unknown"]);
+
+    await user.type(screen.getByPlaceholderText("Search accounts..."), "monthly");
+    expect(screen.getByRole("combobox", { name: "Sort accounts" })).toHaveTextContent("Monthly quota (lowest remaining)");
+    expect(visibleOrder()).toEqual(["zero", "high", "unknown"]);
+
+    await choose("Monthly quota (highest remaining)");
+    expect(visibleOrder()).toEqual(["high", "zero", "unknown"]);
+
+    await choose("Status (active first)");
+    expect(visibleOrder()).toEqual(["zero", "unknown", "high"]);
   });
 });

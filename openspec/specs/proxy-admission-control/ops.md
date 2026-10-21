@@ -501,3 +501,127 @@ delta and canonical requirement were renamed and rescoped before archive, then
 all four deltas passed strict validation again. With parent review clearance,
 the four completed changes were moved verbatim, including `.openspec.yaml`, to
 `openspec/changes/archive/2026-09-29-<change>/` without CLI spec resync.
+
+## 2026-10-21 fetched upstream batch: nine hand ports
+
+Local source baseline: `0751d6141`. This review covers only what this fetch
+introduced: `origin/main` advancing `f8ffbac20` → `72630bbfe` (29 commits) plus
+19 updated non-main branches. It does not establish an upstream reviewed-through
+cutoff. Fourteen chore deps/ci/docker commits and eleven dependabot,
+release-please, and release branches were prefiltered SKIP without source
+review. A jevify judge pass sent the remaining 25 units to five read-only
+scouts. None of the nine candidates tested applied cleanly
+(`git apply --check`), so every adoption below is a fork-native hand port.
+
+### Adopted SHAs and fork-specific contracts
+
+- `3d8fa7ba6b8ab63cb7622a0f76c31a40147d8850` (#2573),
+  `fail-over-deactivated-workspace`: `deactivated_workspace` becomes a
+  permanent failure code with a new `account_unavailable` failure class, an
+  exact-code classifier branch, and a failover entry. Keyed stream and compact
+  requests defer the permanent write until the reservation settles. Not
+  imported: the `retry.py` keyed-health hunk and `owner_bound`.
+- `143e07d06bdf49019f5d1af42559f48049487d1f` (#2449, older than this fetch),
+  `classify-codeless-usage-limit-frames`: a code-less `upstream_error` frame
+  whose message states the usage limit is classified `rate_limit` and benches
+  the account. The message decides only where the code decided nothing.
+  **Fork addition:** the HTTP-stream previous-response owner rewrite also maps
+  this form to `usage_limit_reached`, so owner-pinned streams fail closed and
+  defer owner health like the coded form. Without this, the code-less form
+  wrote owner health before the reservation settled (review finding). Not
+  imported: Retry-After stamping for the message-derived 429.
+- `origin/feat/classify-account-exhaustion` @ `6bcf2cdb8` (unmerged upstream),
+  `keep-account-selectable-on-model-capacity`: only the carve-out. A
+  selected-model capacity failure is still health-written but no longer excludes
+  the account from the stream or compact walk. Walks stay bounded by the existing
+  attempt caps. Not imported: the `excludes_account` field and the branch's
+  exhaustion and Retry-After work.
+- `origin/fix/model-not-found-failover` @ `e0b33e9ea` (upstream PR #2332, open),
+  `fail-over-model-not-found-rejection`: `model_not_found` is health-neutral.
+  HTTP stream and native WebSocket reuse the single-use
+  `retry-stale-account-model-rejection` replay, which never crosses file- or
+  owner-pinned accounts. Compact surfaces the 404 health-neutrally with no
+  replay. The HTTP bridge shares the predicate without a dedicated test. Not
+  imported: `model_rejection_replay_count`,
+  `completed_forced_refresh_account_id`, and the owner_bound bookkeeping.
+- `6ed4c44fdeb7dc5e1ec1637feb9f5b2a73fdc851` (#2540),
+  `validate-quota-planner-clock-times`: working-hours times must be ASCII
+  `00:00`-`23:59`. Invalid times are rejected before persistence with the fork's
+  HTTP 400 `invalid_quota_planner` (upstream: 422 from the schema). Legacy
+  stored values still read.
+- `13ddf396272650e099576ac84304bf0902145b8d` (#2528),
+  `prefer-upstream-model-max-output-tokens`: `/v1/models` prefers a positive
+  non-bool upstream `max_output_tokens` and falls back to the fork table. The
+  GPT-6 128k entries were already present.
+- `fbb97519a22c307c91196a08d4c9260dfd6cdd0b` (#2545),
+  `retain-failed-cache-invalidation-bumps`: the behavior only. A failed or
+  cancelled bump keeps its namespace in memory and is re-published on each poll
+  tick. Not imported: `request_bump`, coalescing, and SQLite-lock backoff.
+  Pending bumps do not survive a restart; peers then rely on cache TTL.
+- `72630bbfeee9e3b0d9acfb95e2b1e706b8b0188e` (#2578),
+  `extend-account-list-sorting`: status and 5h/weekly/monthly remaining-quota
+  sort modes. Unknown values sort last in both directions. The default mode is
+  unchanged. Not imported: the locale keys, because the fork's accounts UI uses
+  literal strings.
+- `a6ebfa6aeb06f64b9a301cc6d0562229351cba8d` (#2564),
+  `import-multiple-auth-files`: the import dialog accepts several files and
+  imports them one at a time through the unchanged endpoint, continuing past
+  per-file failures. Accounts refresh once, then one success toast and one
+  failure toast; the dialog keeps only failed files. Not imported: upstream's
+  stop-at-first-failure behavior.
+- `a563790abe7b30612b53dbacc9d6341e04c5293e` /
+  `0b294950e77c266b5e49c0663c8c15295f6492a6`, dependency half only: urllib3 floor
+  `>=2.8.0` (two High and one Medium advisories on 2.7.0). `uv.lock` moved only
+  urllib3. This change needed no OpenSpec change.
+
+No new migrations or settings. The urllib3 floor is the only dependency change.
+
+### Explicit skips
+
+- `e4bc88ffa`: no Force Probe load-balancer settlement in the fork.
+- `0a6d185a1`: no SCIM module.
+- `402c2f519`, `feature/telemetry-v2-observability`, `calm-telemetry-consent`:
+  no telemetry module.
+- `d617212a2`, `compact-source-model-20260918`: model sources (rejected lane).
+- `ed4875583`: rustls bump; no Cargo files (Rust egress rejected).
+- `replay-relocation-module`: needs `replay_safety.py` (rejected).
+- `fix/dead-anchor-not-found` (`fb78dbb`, `fbeba5b`): depends on the unported
+  beta.8 owner-retirement chain and its schema change.
+- `feat/add-safe-sqlite-compaction`: SQLite-only. The deployment runs
+  PostgreSQL.
+- `fix/compact-tool-search-pairs-20260829` (`6d100b7`, `5e84b4a`, `8b1cf36`):
+  pure rebase. The WS half is already in the fork; the HTTP half was skipped
+  deliberately.
+- `f4055d2c5`, `c1a26b712`, `b0072974f`: docs/test-only.
+
+### Local verification and evidence boundaries
+
+- Focused backend pytest with `-W error::RuntimeWarning` and
+  `-W error::pytest.PytestUnraisableExceptionWarning` across 13 modules (proxy
+  retry/websocket/bridge/failover/errors/utils, quota planner, `/v1/models`,
+  cache poller/bus, oauth flow): **1580 passed, 1 failed**. The failure was
+  `test_oauth_flow.py::test_starting_new_device_flow_cancels_previous_pending_poll`,
+  a 1 s `wait_for` timeout on an untouched module. It then passed 3/3 alone,
+  32/32 with its module, and 3×39 alongside the new cache tests. It is
+  classified as a load-timing flake, not proven pre-existing.
+- After the owner-rewrite fix, the seven proxy modules on the final tree:
+  **1436 passed**. The new code-less owner-rewrite cases failed (2) with the
+  fix stashed and passed with it.
+- Repository-wide `ruff check` and `ruff format --check`: clean.
+- Frontend: `vitest` on `src/features/accounts`, `src/test/mocks`, and
+  `src/__integration__` (171 passed), `tsc -b`, and eslint on the touched
+  feature: clean.
+- Disposable SQLite backend plus Vite dev in headless Chromium, from a scratch
+  cwd so the live `.env.local` was not loaded: importing alpha/bad/bravo/charlie
+  made four sequential POSTs (200/400/200/200) and one accounts refresh, and
+  the dialog stayed open listing only `bad.json`. The sort selector exposed all
+  13 modes, and status sort ordered active, paused, re-auth.
+- All nine changes pass `openspec validate <change> --strict` (bunx
+  `@fission-ai/openspec`). The four `responses-api-compat` deltas carry the
+  inherited INFO that archive would refuse: the canonical spec still has four
+  duplicate requirement headers (456/1567, 493/1604, 810/1619, 818/1627),
+  unchanged from `HEAD`. No canonical specs were edited; the changes are
+  unarchived.
+- Not done: full CI-style suite, commit, push, deploy, or live-upstream
+  reproduction. Independent review lanes (proxy invariants, classification,
+  frontend, async/small backend) produced one P2 finding, fixed above.

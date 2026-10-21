@@ -76,10 +76,11 @@ describe("useAccounts", () => {
     });
     expect(routingPolicyResult.routingPolicy).toBe("preserve");
 
-    const imported = await result.current.importMutation.mutateAsync(
+    const imported = await result.current.importMutation.mutateAsync([
       new File(["{}"], "auth.json", { type: "application/json" }),
-    );
-    await result.current.deleteMutation.mutateAsync({ accountId: imported.accountId, deleteHistory: false });
+    ]);
+    expect(imported.map((entry) => entry.error)).toEqual([null]);
+    await result.current.deleteMutation.mutateAsync({ accountId: firstAccountId as string, deleteHistory: false });
 
     await waitFor(() => {
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["accounts", "list"] });

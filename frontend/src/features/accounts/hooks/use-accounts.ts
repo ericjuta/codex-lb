@@ -25,6 +25,26 @@ import type {
   AccountUsageResetConsumeResponse,
 } from "@/features/accounts/schemas";
 
+export type AccountImportFileResult = {
+  file: File;
+  /** `null` when the file imported; otherwise the failure message shown to the operator. */
+  error: string | null;
+};
+
+/** Imports files one at a time through the single-file endpoint; a failed file never stops the batch. */
+async function importAccountFiles(files: File[]): Promise<AccountImportFileResult[]> {
+  const results: AccountImportFileResult[] = [];
+  for (const file of files) {
+    try {
+      await importAccount(file);
+      results.push({ file, error: null });
+    } catch (error) {
+      results.push({ file, error: error instanceof Error && error.message ? error.message : "Import failed" });
+    }
+  }
+  return results;
+}
+
 async function invalidateAccountRelatedQueries(queryClient: ReturnType<typeof useQueryClient>, accountId?: string) {
   const invalidations = [
     queryClient.invalidateQueries({ queryKey: ["accounts", "list"] }),
@@ -78,13 +98,19 @@ export function useAccountMutations() {
   } | null>(null);
 
   const importMutation = useMutation({
-    mutationFn: importAccount,
-    onSuccess: () => {
-      toast.success("Account imported");
-      void invalidateAccountRelatedQueries(queryClient);
-    },
-    onError: (error: Error) => {
-      toast.error(error.message || "Import failed");
+    mutationFn: importAccountFiles,
+    onSuccess: (results) => {
+      const failures = results.flatMap((result) => (result.error === null ? [] : [result.error]));
+      const imported = results.length - failures.length;
+      if (imported > 0) {
+        toast.success(imported === 1 ? "Account imported" : `${imported} accounts imported`);
+        void invalidateAccountRelatedQueries(queryClient);
+      }
+      if (failures.length === 1) {
+        toast.error(failures[0]);
+      } else if (failures.length > 1) {
+        toast.error(`${failures.length} files failed to import`);
+      }
     },
   });
 

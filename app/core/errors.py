@@ -45,6 +45,20 @@ class ResponseFailedEvent(TypedDict):
 PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE = "Upstream websocket closed before response.completed"
 PREVIOUS_RESPONSE_STALE_CODE = "codex_previous_response_stale"
 PREVIOUS_RESPONSE_STALE_MESSAGE = "Upstream previous response anchor expired; retry without previous_response_id."
+# Every sentence upstream uses to say the account's subscription window is
+# spent, written in the form ``is_upstream_usage_limit_message`` normalizes to:
+# lowercase alphanumeric words joined by single spaces. The passive "The usage
+# limit has been reached" is what the HTTP bridge, the Codex WebSocket and the
+# SDK error body carry; the second-person forms come from the native client
+# rendering and from the promo text appended to a decline.
+_USAGE_LIMIT_MESSAGE_MARKERS = (
+    "usage limit has been reached",
+    "usage limit reached",
+    "hit your usage limit",
+    "reached your usage limit",
+    "exceeded your usage limit",
+)
+_MESSAGE_WORD_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
 
 
 def openai_error(code: str, message: str, error_type: str = "server_error") -> OpenAIErrorEnvelope:
@@ -61,6 +75,22 @@ def previous_response_stream_incomplete_error() -> OpenAIErrorEnvelope:
         PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
         error_type="server_error",
     )
+
+
+def is_upstream_usage_limit_message(message: str | None) -> bool:
+    """True when the message asserts the account's usage limit is spent.
+
+    Upstream delivers this rejection as an HTTP body and as a serialized
+    ``response.failed`` frame that carries no status and often no error code, so
+    neither can be the gate. Words are matched after folding each run of
+    non-alphanumeric characters to a single space, because the same sentence
+    arrives with a straight or curly apostrophe, a hyphen joining "usage" and
+    "limit", or wrapped across a line break.
+    """
+    if message is None:
+        return False
+    normalized = _MESSAGE_WORD_SEPARATOR_RE.sub(" ", message.lower()).strip()
+    return any(marker in normalized for marker in _USAGE_LIMIT_MESSAGE_MARKERS)
 
 
 def is_previous_response_not_found_message(message: str | None) -> bool:

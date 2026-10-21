@@ -26825,10 +26825,21 @@ async def test_stream_unkeyed_owner_rewrite_records_health_before_terminal_deliv
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("upstream_path", ["first_event", "later_event", "proxy_response_error"])
+@pytest.mark.parametrize(
+    ("upstream_path", "frame_error"),
+    [
+        ("first_event", '{"code":"usage_limit_reached","message":"owner quota exhausted"}'),
+        ("later_event", '{"code":"usage_limit_reached","message":"owner quota exhausted"}'),
+        ("proxy_response_error", None),
+        # Code-less delivery form of the same rejection (upstream #2449).
+        ("first_event", '{"message":"The usage limit has been reached"}'),
+        ("later_event", '{"message":"The usage limit has been reached"}'),
+    ],
+)
 async def test_stream_responses_route_keyed_owner_rewrite_settles_before_original_health(
     monkeypatch,
     upstream_path: str,
+    frame_error: str | None,
 ):
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
@@ -26876,7 +26887,7 @@ async def test_stream_responses_route_keyed_owner_rewrite_settles_before_origina
             yield 'data: {"type":"response.created","response":{"id":"resp_owner_rewrite"}}\n\n'
         yield (
             'data: {"type":"response.failed","response":{"id":"resp_owner_rewrite","status":"failed",'
-            '"error":{"code":"usage_limit_reached","message":"owner quota exhausted"}}}\n\n'
+            f'"error":{frame_error}}}}}\n\n'
         )
 
     monkeypatch.setattr(proxy_service, "core_stream_responses", core_stream)

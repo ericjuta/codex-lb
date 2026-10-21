@@ -35,6 +35,9 @@ class CacheInvalidationPoller:
         self._known_versions: dict[str, int] = {}
         self._callbacks: dict[str, list[InvalidationCallback]] = {}
         self._poll_initialized = False
+        # Namespaces whose immediate publish failed or was interrupted; bounded
+        # by the fixed namespace set and re-published by the poll loop.
+        self._pending_bumps: set[str] = set()
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
 
@@ -59,6 +62,32 @@ class CacheInvalidationPoller:
         self._task = None
 
     async def bump(self, namespace: str) -> None:
+        """Publish now; retain the namespace for the next poll if the write does not complete.
+
+        The pending marker is consumed before the write so a bump requested while
+        this write is in flight re-queues instead of coalescing into it. An
+        interrupted write may already have committed; a redundant version bump
+        only re-runs peers' idempotent callbacks, while losing one leaves peers stale.
+        """
+        already_pending = namespace in self._pending_bumps
+        self._pending_bumps.discard(namespace)
+        published = False
+        try:
+            await self._write_bump(namespace)
+            published = True
+        except Exception:
+            logger.log(
+                logging.DEBUG if already_pending else logging.WARNING,
+                "cache_invalidation bump failed for namespace %s; retrying on next poll",
+                namespace,
+                exc_info=True,
+            )
+        finally:
+            # Also covers cancellation, which still propagates to the caller.
+            if not published:
+                self._pending_bumps.add(namespace)
+
+    async def _write_bump(self, namespace: str) -> None:
         session = self._session_factory()
         try:
             dialect = session.get_bind().dialect.name
@@ -95,14 +124,18 @@ class CacheInvalidationPoller:
                         .values(version=CacheInvalidation.version + 1)
                     )
             await session.commit()
-        except Exception:
-            logger.warning("cache_invalidation bump failed", exc_info=True)
         finally:
             await close_session(session)
+
+    async def _flush_pending_bumps(self) -> None:
+        # bump() never raises Exception and re-queues on cancellation itself.
+        for namespace in sorted(self._pending_bumps):
+            await self.bump(namespace)
 
     async def _run(self) -> None:
         while not self._stop.is_set():
             try:
+                await self._flush_pending_bumps()
                 await self._poll_once()
             except Exception:
                 logger.debug("cache_invalidation poll failed", exc_info=True)

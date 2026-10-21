@@ -3289,6 +3289,9 @@ def _v1_input_context_window(model: UpstreamModel) -> int:
 
 
 def _v1_max_output_tokens(model: UpstreamModel) -> int | None:
+    raw_value = model.raw.get("max_output_tokens")
+    if isinstance(raw_value, int) and not isinstance(raw_value, bool) and raw_value > 0:
+        return raw_value
     return _V1_MAX_OUTPUT_TOKEN_OVERRIDES.get(model.slug)
 
 

@@ -1144,6 +1144,39 @@ async def test_v1_models_reports_backend_context_window(async_client, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_v1_models_prefers_raw_max_output_tokens_over_slug_fallback(async_client):
+    registry = get_model_registry()
+    raw = _raw_with_max_context_window(872_000)
+    raw["max_output_tokens"] = 96_000
+    await registry.update({"pro": [_make_upstream_model("gpt-6-sol", raw=raw)]})
+
+    resp = await async_client.get("/v1/models")
+
+    assert resp.status_code == 200
+    entry = next(item for item in resp.json()["data"] if item["id"] == "gpt-6-sol")
+    assert entry["metadata"]["max_output_tokens"] == 96_000
+    assert entry["capabilities"]["max_output_tokens"] == 96_000
+    assert entry["maxOutputTokens"] == 96_000
+    assert entry["max_output_tokens"] == 96_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", [0, -1, True, "96000", None])
+async def test_v1_models_ignores_invalid_raw_max_output_tokens(async_client, invalid):
+    registry = get_model_registry()
+    raw = _raw_with_max_context_window(872_000)
+    raw["max_output_tokens"] = invalid
+    await registry.update({"pro": [_make_upstream_model("gpt-6-sol", raw=raw)]})
+
+    resp = await async_client.get("/v1/models")
+
+    assert resp.status_code == 200
+    entry = next(item for item in resp.json()["data"] if item["id"] == "gpt-6-sol")
+    assert entry["metadata"]["max_output_tokens"] == 128_000
+    assert entry["max_output_tokens"] == 128_000
+
+
+@pytest.mark.asyncio
 async def test_v1_models_exposes_speed_tier_metadata(async_client):
     registry = get_model_registry()
     models = [

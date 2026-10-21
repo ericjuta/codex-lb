@@ -15,6 +15,7 @@ import json
 
 import aiohttp
 import pytest
+from sqlalchemy import select
 
 import app.modules.proxy.service as proxy_module
 from app.core.auth import generate_unique_account_id
@@ -22,8 +23,9 @@ from app.core.clients.proxy import ProxyResponseError
 from app.core.errors import openai_error
 from app.core.openai.models import CompactResponsePayload
 from app.core.utils.request_id import get_request_id
-from app.db.models import Account, AccountStatus
+from app.db.models import Account, AccountStatus, ApiKeyUsageReservation
 from app.db.session import SessionLocal
+from app.modules.proxy.load_balancer import LoadBalancer
 
 pytestmark = pytest.mark.integration
 
@@ -1228,3 +1230,506 @@ async def test_compact_sticky_503_unknown_code_excludes_failing_account_on_failo
     assert response.status_code == 200
     assert response.json()["object"] == "response.compaction"
     assert seen_account_ids[:2] == ["acc_sticky_503_a", "acc_sticky_503_b"]
+
+
+# ===========================================================================
+# Failure classification: workspace deactivation, code-less usage limits,
+# model capacity, and model-scoped rejections
+# ===========================================================================
+
+
+async def _import_accounts(async_client, *slugs: str) -> dict[str | None, str]:
+    """Import accounts and map each upstream ``chatgpt_account_id`` to its internal id."""
+    return {slug: await _import_account(async_client, slug, f"{slug}@example.test") for slug in slugs}
+
+
+async def _account_status(account_id: str) -> tuple[AccountStatus, str | None]:
+    async with SessionLocal() as session:
+        account = await session.get(Account, account_id)
+        assert account is not None
+        return account.status, account.deactivation_reason
+
+
+def _pin_file_owner(monkeypatch, owner_account_id: str) -> None:
+    async def resolve_file_owner(self, payload, headers):
+        del self, payload, headers
+        return owner_account_id
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_resolve_file_account_for_responses", resolve_file_owner)
+
+
+def _count_record_errors(monkeypatch) -> list[str]:
+    recorded: list[str] = []
+    original_record_errors = LoadBalancer.record_errors
+
+    async def record_errors(self, account, count):
+        recorded.extend([account.id] * count)
+        return await original_record_errors(self, account, count)
+
+    monkeypatch.setattr(LoadBalancer, "record_errors", record_errors)
+    return recorded
+
+
+_DEACTIVATED_WORKSPACE_ERROR = openai_error("deactivated_workspace", "Workspace has been deactivated")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/responses", "/backend-api/codex/responses"])
+async def test_stream_deactivated_workspace_fails_over_and_excludes_only_that_workspace(
+    async_client, monkeypatch, path: str
+):
+    accounts = await _import_accounts(async_client, "acc_workspace_a", "acc_workspace_b")
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        if account_id == seen_account_ids[0]:
+            raise ProxyResponseError(402, _DEACTIVATED_WORKSPACE_ERROR, failure_phase="status")
+        yield _success_sse_event("resp_workspace_ok")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+    payload = {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+
+    response = await async_client.post(path, json=payload)
+
+    assert response.status_code == 200
+    events = _extract_events(response.text.splitlines())
+    assert [e["response"]["id"] for e in events if e.get("type") == "response.completed"] == ["resp_workspace_ok"]
+    assert [e for e in events if e.get("type") == "response.failed"] == []
+    unavailable, healthy = seen_account_ids
+    assert unavailable != healthy
+
+    second = await async_client.post(path, json=payload)
+    assert second.status_code == 200
+    assert seen_account_ids == [unavailable, healthy, healthy]
+    assert await _account_status(accounts[unavailable]) == (AccountStatus.DEACTIVATED, "Workspace has been deactivated")
+    assert await _account_status(accounts[healthy]) == (AccountStatus.ACTIVE, None)
+
+
+async def _create_metered_proxy_key(async_client) -> tuple[str, str]:
+    """A reserving key: its usage reservation is open until the request settles."""
+    settings_response = await async_client.put("/api/settings", json={"apiKeyAuthEnabled": True})
+    assert settings_response.status_code == 200
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "workspace-failover",
+            "limits": [{"limitType": "total_tokens", "limitWindow": "weekly", "maxValue": 1_000_000}],
+        },
+    )
+    assert created.status_code == 200
+    return created.json()["id"], created.json()["key"]
+
+
+def _assert_reservation_settled_before_permanent_failure(monkeypatch, key_id: str) -> list[str]:
+    marked: list[str] = []
+    original_mark = LoadBalancer.mark_permanent_failure
+
+    async def mark_after_settlement(self, account, code):
+        async with SessionLocal() as session:
+            pending = await session.scalar(
+                select(ApiKeyUsageReservation.id).where(
+                    ApiKeyUsageReservation.api_key_id == key_id,
+                    ApiKeyUsageReservation.status == "reserved",
+                )
+            )
+        assert pending is None, "permanent health written while the API-key reservation was still open"
+        marked.append(code)
+        return await original_mark(self, account, code)
+
+    monkeypatch.setattr(LoadBalancer, "mark_permanent_failure", mark_after_settlement)
+    return marked
+
+
+@pytest.mark.asyncio
+async def test_stream_deactivated_workspace_settles_api_key_reservation_before_health_write(async_client, monkeypatch):
+    accounts = await _import_accounts(async_client, "acc_workspace_keyed_a", "acc_workspace_keyed_b")
+    key_id, key = await _create_metered_proxy_key(async_client)
+    marked = _assert_reservation_settled_before_permanent_failure(monkeypatch, key_id)
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        if account_id == seen_account_ids[0]:
+            raise ProxyResponseError(402, _DEACTIVATED_WORKSPACE_ERROR, failure_phase="status")
+        yield _success_sse_event("resp_workspace_keyed_ok")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    response = await async_client.post(
+        "/v1/responses",
+        json={"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True},
+        headers={"authorization": f"Bearer {key}"},
+    )
+
+    assert response.status_code == 200
+    unavailable, healthy = seen_account_ids
+    assert marked == ["deactivated_workspace"]
+    assert (await _account_status(accounts[unavailable]))[0] == AccountStatus.DEACTIVATED
+    assert (await _account_status(accounts[healthy]))[0] == AccountStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_compact_deactivated_workspace_settles_api_key_reservation_before_health_write(async_client, monkeypatch):
+    accounts = await _import_accounts(async_client, "acc_workspace_ckeyed_a", "acc_workspace_ckeyed_b")
+    key_id, key = await _create_metered_proxy_key(async_client)
+    marked = _assert_reservation_settled_before_permanent_failure(monkeypatch, key_id)
+    seen_account_ids: list[str | None] = []
+
+    async def fake_compact(payload, headers, access_token, account_id):
+        seen_account_ids.append(account_id)
+        if account_id == seen_account_ids[0]:
+            raise ProxyResponseError(402, _DEACTIVATED_WORKSPACE_ERROR, failure_phase="status")
+        return CompactResponsePayload.model_validate({"object": "response.compaction", "output": []})
+
+    monkeypatch.setattr(proxy_module, "core_compact_responses", fake_compact)
+
+    response = await async_client.post(
+        "/backend-api/codex/responses/compact",
+        json={"model": "gpt-5.1", "instructions": "hi", "input": []},
+        headers={"authorization": f"Bearer {key}"},
+    )
+
+    assert response.status_code == 200
+    unavailable, healthy = seen_account_ids
+    assert marked == ["deactivated_workspace"]
+    assert (await _account_status(accounts[unavailable]))[0] == AccountStatus.DEACTIVATED
+    assert (await _account_status(accounts[healthy]))[0] == AccountStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_stream_deactivated_workspace_does_not_move_a_file_pinned_request(async_client, monkeypatch):
+    accounts = await _import_accounts(async_client, "acc_workspace_pin_a", "acc_workspace_pin_b")
+    _pin_file_owner(monkeypatch, accounts["acc_workspace_pin_a"])
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        if account_id == "acc_workspace_pin_a":
+            raise ProxyResponseError(402, _DEACTIVATED_WORKSPACE_ERROR, failure_phase="status")
+        yield _success_sse_event("resp_workspace_pin_wrong_owner")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+    payload = {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+
+    response = await async_client.post("/backend-api/codex/responses", json=payload)
+
+    assert seen_account_ids == ["acc_workspace_pin_a"]
+    events = _extract_events(response.text.splitlines()) if response.status_code == 200 else []
+    assert [e for e in events if e.get("type") == "response.completed"] == []
+    assert (await _account_status(accounts["acc_workspace_pin_a"]))[0] == AccountStatus.DEACTIVATED
+    assert await _account_status(accounts["acc_workspace_pin_b"]) == (AccountStatus.ACTIVE, None)
+
+
+@pytest.mark.asyncio
+async def test_stream_bare_402_does_not_deactivate_account(async_client, monkeypatch):
+    accounts = await _import_accounts(async_client, "acc_payment")
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        raise ProxyResponseError(402, openai_error("payment_required", "Payment Required"), failure_phase="status")
+        yield ""  # pragma: no cover
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    response = await async_client.post("/v1/responses", json={"model": "gpt-5.1", "input": "hi", "stream": True})
+
+    assert response.status_code == 402
+    assert response.json()["error"]["code"] == "payment_required"
+    assert await _account_status(accounts["acc_payment"]) == (AccountStatus.ACTIVE, None)
+
+
+@pytest.mark.asyncio
+async def test_compact_deactivated_workspace_fails_over_once(async_client, monkeypatch):
+    accounts = await _import_accounts(async_client, "acc_workspace_compact_a", "acc_workspace_compact_b")
+    seen_account_ids: list[str | None] = []
+
+    async def fake_compact(payload, headers, access_token, account_id):
+        seen_account_ids.append(account_id)
+        if account_id == seen_account_ids[0]:
+            raise ProxyResponseError(402, _DEACTIVATED_WORKSPACE_ERROR, failure_phase="status")
+        return CompactResponsePayload.model_validate({"object": "response.compaction", "output": []})
+
+    monkeypatch.setattr(proxy_module, "core_compact_responses", fake_compact)
+
+    response = await async_client.post(
+        "/backend-api/codex/responses/compact",
+        json={"model": "gpt-5.1", "instructions": "hi", "input": []},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["object"] == "response.compaction"
+    unavailable, healthy = seen_account_ids
+    assert unavailable != healthy
+    assert await _account_status(accounts[unavailable]) == (AccountStatus.DEACTIVATED, "Workspace has been deactivated")
+    assert await _account_status(accounts[healthy]) == (AccountStatus.ACTIVE, None)
+
+
+_CODELESS_USAGE_LIMIT_FRAME_ERRORS = (
+    {"message": "The usage limit has been reached"},
+    {"message": "You've hit your usage limit."},
+)
+_USAGE_LIMIT_FRAME_ERRORS = (
+    *_CODELESS_USAGE_LIMIT_FRAME_ERRORS,
+    {"code": "usage_limit_reached", "message": "The usage limit has been reached"},
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frame_error", _CODELESS_USAGE_LIMIT_FRAME_ERRORS)
+async def test_stream_codeless_usage_limit_frame_walks_the_pool_and_benches_the_account(
+    async_client, monkeypatch, frame_error
+):
+    accounts = await _import_accounts(async_client, "acc_frame_limit_a", "acc_frame_limit_b")
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        if account_id == seen_account_ids[0]:
+            yield _sse_event({"type": "response.failed", "response": {"error": frame_error}})
+            return
+        yield _success_sse_event("resp_frame_limit_ok")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=payload) as resp:
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    events = _extract_events(lines)
+    assert [e for e in events if e.get("type") == "response.failed"] == []
+    assert len([e for e in events if e.get("type") == "response.completed"]) == 1
+    exhausted, serving = seen_account_ids[:2]
+    assert exhausted != serving
+    assert (await _account_status(accounts[exhausted]))[0] == AccountStatus.RATE_LIMITED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frame_error", _USAGE_LIMIT_FRAME_ERRORS)
+async def test_stream_usage_limit_frame_on_the_last_account_still_benches_it(async_client, monkeypatch, frame_error):
+    accounts = await _import_accounts(async_client, "acc_last_limit_a", "acc_last_limit_b", "acc_last_limit_c")
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        yield _sse_event({"type": "response.failed", "response": {"error": frame_error}})
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=payload) as resp:
+        assert resp.status_code == 200
+        [line async for line in resp.aiter_lines() if line]
+
+    for account_id in accounts.values():
+        assert (await _account_status(account_id))[0] == AccountStatus.RATE_LIMITED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frame_error", _USAGE_LIMIT_FRAME_ERRORS)
+async def test_stream_usage_limit_frame_after_a_visible_event_still_benches_the_account(
+    async_client, monkeypatch, frame_error
+):
+    accounts = await _import_accounts(async_client, "acc_visible_limit")
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        yield _sse_event({"type": "response.created", "response": {"id": "resp_visible_limit"}})
+        yield _sse_event({"type": "response.failed", "response": {"error": frame_error}})
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=payload) as resp:
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    assert len([e for e in _extract_events(lines) if e.get("type") == "response.failed"]) == 1
+    assert (await _account_status(accounts["acc_visible_limit"]))[0] == AccountStatus.RATE_LIMITED
+
+
+@pytest.mark.asyncio
+async def test_stream_codeless_rejection_echoing_usage_limit_with_request_code_is_not_benched(
+    async_client, monkeypatch
+):
+    """Only the code-less form may be read off its message: a request-shaped 400 can echo the sentence."""
+    accounts = await _import_accounts(async_client, "acc_echo_limit")
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        yield _sse_event(
+            {
+                "type": "response.failed",
+                "response": {
+                    "error": {"code": "invalid_request_error", "message": "Input mentions: usage limit reached"}
+                },
+            }
+        )
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=payload) as resp:
+        [line async for line in resp.aiter_lines() if line]
+
+    assert (await _account_status(accounts["acc_echo_limit"]))[0] == AccountStatus.ACTIVE
+
+
+_MODEL_CAPACITY_ERROR = openai_error(
+    "invalid_request_error",
+    "Selected model is at capacity. Please try a different model.",
+)
+
+
+@pytest.mark.asyncio
+async def test_stream_model_capacity_rejection_keeps_the_account_selectable(async_client, monkeypatch):
+    """Capacity describes the requested model, so it must not spend the only account in the walk."""
+    await _import_accounts(async_client, "acc_capacity_only")
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        if len(seen_account_ids) == 1:
+            raise ProxyResponseError(400, _MODEL_CAPACITY_ERROR, failure_phase="status")
+        yield _success_sse_event("resp_capacity_cleared")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=payload) as resp:
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    events = _extract_events(lines)
+    assert [e["response"]["id"] for e in events if e.get("type") == "response.completed"] == ["resp_capacity_cleared"]
+    assert seen_account_ids == ["acc_capacity_only", "acc_capacity_only"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "expected_dispatches", "completed"),
+    [
+        (_MODEL_CAPACITY_ERROR, 7, True),
+        (openai_error("server_error", "An error occurred while processing your request."), 6, False),
+    ],
+    ids=["capacity", "ordinary"],
+)
+async def test_stream_500_walk_returns_to_an_account_only_for_model_capacity(
+    async_client, monkeypatch, body, expected_dispatches: int, completed: bool
+):
+    await _import_accounts(async_client, "acc_capacity_walk_a", "acc_capacity_walk_b")
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        if len(seen_account_ids) <= 6:
+            raise ProxyResponseError(500, body, failure_phase="status")
+        yield _success_sse_event("resp_capacity_walk_ok")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=payload) as resp:
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    events = _extract_events(lines)
+    assert len(seen_account_ids) == expected_dispatches
+    assert set(seen_account_ids) == {"acc_capacity_walk_a", "acc_capacity_walk_b"}
+    assert bool([e for e in events if e.get("type") == "response.completed"]) is completed
+
+
+@pytest.mark.asyncio
+async def test_compact_model_capacity_rejection_keeps_the_only_account_in_the_walk(async_client, monkeypatch):
+    await _import_accounts(async_client, "acc_compact_capacity_only")
+    seen_account_ids: list[str | None] = []
+
+    async def fake_compact(payload, headers, access_token, account_id):
+        seen_account_ids.append(account_id)
+        if len(seen_account_ids) == 1:
+            raise ProxyResponseError(400, _MODEL_CAPACITY_ERROR, failure_phase="status")
+        return CompactResponsePayload.model_validate({"object": "response.compaction", "output": []})
+
+    monkeypatch.setattr(proxy_module, "core_compact_responses", fake_compact)
+
+    response = await async_client.post(
+        "/backend-api/codex/responses/compact",
+        json={"model": "gpt-5.1", "instructions": "hi", "input": []},
+    )
+
+    assert response.status_code == 200
+    assert seen_account_ids == ["acc_compact_capacity_only", "acc_compact_capacity_only"]
+
+
+_MODEL_NOT_FOUND_ERROR = openai_error(
+    "model_not_found",
+    "The model `gpt-5.1` does not exist or you do not have access to it.",
+)
+
+
+@pytest.mark.asyncio
+async def test_stream_model_not_found_fails_over_without_account_health_penalty(async_client, monkeypatch):
+    accounts = await _import_accounts(async_client, "acc_model_missing_a", "acc_model_missing_b")
+    recorded_errors = _count_record_errors(monkeypatch)
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        if account_id == seen_account_ids[0]:
+            raise ProxyResponseError(404, _MODEL_NOT_FOUND_ERROR, failure_phase="status")
+        yield _success_sse_event("resp_model_found")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=payload) as resp:
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    events = _extract_events(lines)
+    assert [e["response"]["id"] for e in events if e.get("type") == "response.completed"] == ["resp_model_found"]
+    rejected, serving = seen_account_ids
+    assert rejected != serving
+    assert recorded_errors == []
+    assert await _account_status(accounts[rejected]) == (AccountStatus.ACTIVE, None)
+
+
+@pytest.mark.asyncio
+async def test_stream_model_not_found_keeps_a_file_pinned_request_on_its_owner(async_client, monkeypatch):
+    accounts = await _import_accounts(async_client, "acc_model_missing_pin_a", "acc_model_missing_pin_b")
+    _pin_file_owner(monkeypatch, accounts["acc_model_missing_pin_a"])
+    recorded_errors = _count_record_errors(monkeypatch)
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        raise ProxyResponseError(404, _MODEL_NOT_FOUND_ERROR, failure_phase="status")
+        yield ""  # pragma: no cover
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    response = await async_client.post(
+        "/v1/responses",
+        json={"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True},
+    )
+
+    assert seen_account_ids == ["acc_model_missing_pin_a"]
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "model_not_found"
+    assert recorded_errors == []
+
+
+@pytest.mark.asyncio
+async def test_compact_model_not_found_surfaces_without_account_health_penalty(async_client, monkeypatch):
+    accounts = await _import_accounts(async_client, "acc_compact_model_missing")
+    recorded_errors = _count_record_errors(monkeypatch)
+
+    async def fake_compact(payload, headers, access_token, account_id):
+        raise ProxyResponseError(404, _MODEL_NOT_FOUND_ERROR, failure_phase="status")
+
+    monkeypatch.setattr(proxy_module, "core_compact_responses", fake_compact)
+
+    response = await async_client.post(
+        "/backend-api/codex/responses/compact",
+        json={"model": "gpt-5.1", "instructions": "hi", "input": []},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "model_not_found"
+    assert recorded_errors == []
+    assert await _account_status(accounts["acc_compact_model_missing"]) == (AccountStatus.ACTIVE, None)

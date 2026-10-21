@@ -8752,7 +8752,18 @@ def test_backend_responses_websocket_reconnects_after_account_health_failure(app
     )
 
 
-def test_backend_responses_websocket_transparently_retries_precreated_usage_limit_reached(app_instance, monkeypatch):
+_WEBSOCKET_USAGE_LIMIT_FRAME_ERRORS = [
+    pytest.param({"code": "usage_limit_reached", "message": "usage limit reached"}, id="coded"),
+    # Upstream sends the serialized rejection with no error code at all; it must walk the pool
+    # and bench the account exactly like the coded form.
+    pytest.param({"message": "The usage limit has been reached"}, id="codeless"),
+]
+
+
+@pytest.mark.parametrize("frame_error", _WEBSOCKET_USAGE_LIMIT_FRAME_ERRORS)
+def test_backend_responses_websocket_transparently_retries_precreated_usage_limit_reached(
+    app_instance, monkeypatch, frame_error
+):
     first_upstream = _FakeUpstreamWebSocket(
         [
             _FakeUpstreamMessage(
@@ -8763,7 +8774,7 @@ def test_backend_responses_websocket_transparently_retries_precreated_usage_limi
                         "response": {
                             "id": "resp_ws_quota_fail",
                             "status": "failed",
-                            "error": {"code": "usage_limit_reached", "message": "usage limit reached"},
+                            "error": frame_error,
                             "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
                         },
                     },
@@ -8886,9 +8897,24 @@ def test_backend_responses_websocket_transparently_retries_precreated_usage_limi
     )
 
 
+@pytest.mark.parametrize(
+    "frame_error",
+    [
+        pytest.param(
+            {
+                "type": "invalid_request_error",
+                "code": "usage_limit_reached",
+                "message": "The usage limit has been reached",
+            },
+            id="coded",
+        ),
+        pytest.param({"message": "You've hit your usage limit."}, id="codeless"),
+    ],
+)
 def test_backend_responses_websocket_transparently_retries_precreated_error_usage_limit_reached(
     app_instance,
     monkeypatch,
+    frame_error,
 ):
     first_upstream = _FakeUpstreamWebSocket(
         [
@@ -8898,11 +8924,7 @@ def test_backend_responses_websocket_transparently_retries_precreated_error_usag
                     {
                         "type": "error",
                         "status": 429,
-                        "error": {
-                            "type": "invalid_request_error",
-                            "code": "usage_limit_reached",
-                            "message": "The usage limit has been reached",
-                        },
+                        "error": frame_error,
                     },
                     separators=(",", ":"),
                 ),
@@ -9023,9 +9045,34 @@ def test_backend_responses_websocket_transparently_retries_precreated_error_usag
     )
 
 
+@pytest.mark.parametrize(
+    ("status", "frame_error"),
+    [
+        pytest.param(
+            400,
+            {
+                "type": "invalid_request_error",
+                "code": "invalid_request_error",
+                "message": "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.",
+            },
+            id="unsupported_entitlement",
+        ),
+        pytest.param(
+            404,
+            {
+                "type": "invalid_request_error",
+                "code": "model_not_found",
+                "message": "The model `gpt-5.6-sol` does not exist or you do not have access to it.",
+            },
+            id="model_not_found",
+        ),
+    ],
+)
 def test_backend_responses_websocket_retries_stale_account_model_route_on_another_account(
     app_instance,
     monkeypatch,
+    status,
+    frame_error,
 ):
     first_upstream = _FakeUpstreamWebSocket(
         [
@@ -9034,14 +9081,8 @@ def test_backend_responses_websocket_retries_stale_account_model_route_on_anothe
                 text=json.dumps(
                     {
                         "type": "error",
-                        "status": 400,
-                        "error": {
-                            "type": "invalid_request_error",
-                            "code": "invalid_request_error",
-                            "message": (
-                                "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account."
-                            ),
-                        },
+                        "status": status,
+                        "error": frame_error,
                     },
                     separators=(",", ":"),
                 ),

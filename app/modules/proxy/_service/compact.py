@@ -48,7 +48,13 @@ from app.modules.proxy.affinity import (
     _sticky_key_from_turn_state_header,
 )
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
-from app.modules.proxy.helpers import _header_account_id, _normalize_error_code, _parse_openai_error
+from app.modules.proxy.helpers import (
+    _header_account_id,
+    _normalize_error_code,
+    _parse_openai_error,
+    classify_upstream_failure,
+    keeps_account_in_the_walk,
+)
 from app.modules.proxy.load_balancer import AccountLease, AccountSelection
 from app.modules.proxy.work_admission import AdmissionLease, WorkAdmissionController
 
@@ -1298,12 +1304,28 @@ class _CompactMixin:
                                 account.id,
                                 transient_retries,
                             )
+                            exhausted_error = _parse_openai_error(exc.payload)
+                            keep_account_in_walk = keeps_account_in_the_walk(
+                                classify_upstream_failure(
+                                    error_code=_normalize_error_code(
+                                        exhausted_error.code if exhausted_error else None,
+                                        exhausted_error.type if exhausted_error else None,
+                                    ),
+                                    error=_upstream_error_from_openai(exhausted_error),
+                                    http_status=exc.status_code,
+                                    phase="first_event",
+                                )
+                            )
                             await proxy._handle_proxy_error(account, exc)
                             # Record remaining errors so total equals transient_retries,
                             # meeting the load balancer backoff threshold (error_count >= 3).
                             await proxy._load_balancer.record_errors(account, transient_retries - 1)
                             last_exc = exc
-                            excluded_account_ids.add(account.id)
+                            # The health writes above are separate from exclusion: model
+                            # capacity describes the requested model, so the account stays
+                            # selectable instead of rotating the whole pool.
+                            if not keep_account_in_walk:
+                                excluded_account_ids.add(account.id)
                             transient_exhausted = True
                             break  # break inner loop → outer loop tries different account
                         error = _parse_openai_error(exc.payload)
@@ -1404,12 +1426,25 @@ class _CompactMixin:
                                 classified["failure_class"],
                             )
                             raise
-                        classified = await proxy._handle_stream_error(
-                            account,
-                            _upstream_error_from_openai(error),
-                            code,
+                        upstream_error = _upstream_error_from_openai(error)
+                        classified = classify_upstream_failure(
+                            error_code=code,
+                            error=upstream_error,
                             http_status=exc.status_code,
+                            phase="first_event",
                         )
+                        if classified["failure_class"] == "account_unavailable":
+                            # A revoked workspace is terminal for this account.
+                            # Keyed requests hold the health write until the API-key
+                            # reservation settles, like any other permanent failure.
+                            await record_or_defer_permanent_health(account, code)
+                        else:
+                            classified = await proxy._handle_stream_error(
+                                account,
+                                upstream_error,
+                                code,
+                                http_status=exc.status_code,
+                            )
                         if getattr(base_settings, "deterministic_failover_enabled", True):
                             action = failover_decision(
                                 failure_class=classified["failure_class"],
@@ -1429,7 +1464,8 @@ class _CompactMixin:
                         )
                         if action == "failover_next":
                             last_exc = exc
-                            excluded_account_ids.add(account.id)
+                            if not keeps_account_in_the_walk(classified):
+                                excluded_account_ids.add(account.id)
                             transient_exhausted = True
                             break
                         await settle_compact_usage(

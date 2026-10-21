@@ -62,12 +62,13 @@ from app.modules.proxy.affinity import (
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.helpers import (
     _apply_error_metadata,
-    _is_account_model_unsupported_error,
     _normalize_error_code,
     _parse_openai_error,
     _upstream_error_from_openai,
     classify_upstream_failure,
+    is_pre_acceptance_model_rejection,
     is_upstream_model_capacity_error,
+    keeps_account_in_the_walk,
 )
 from app.modules.proxy.load_balancer import AccountLease, AccountSelection
 
@@ -702,7 +703,7 @@ class _StreamingRetryMixin:
                     settlement.error_message = error_message
                     settlement.error = exc.error
                     settlement.account_health_error = (
-                        _facade()._should_penalize_stream_error(exc.code)
+                        _facade()._should_penalize_stream_error(exc.code, error_message)
                         or is_upstream_model_capacity_error(error_message)
                         or exc.account_health_error
                     )
@@ -847,7 +848,7 @@ class _StreamingRetryMixin:
                 error.code if error else None,
                 error.type if error else None,
             )
-            if not _is_account_model_unsupported_error(
+            if not is_pre_acceptance_model_rejection(
                 code=error_code,
                 message=error.message if error else None,
                 model=payload.model,
@@ -1723,7 +1724,9 @@ class _StreamingRetryMixin:
                                     settlement.error = _upstream_error_from_openai(error)
                                 else:
                                     settlement.error = tex.error
-                                settlement.account_health_error = _facade()._should_penalize_stream_error(error_code)
+                                settlement.account_health_error = _facade()._should_penalize_stream_error(
+                                    error_code, error_message
+                                )
                                 settled = await _settle_stream_usage_before_pending_penalty(settlement)
                                 if settled and settlement.account_health_error:
                                     await proxy._handle_stream_error(
@@ -1839,12 +1842,28 @@ class _StreamingRetryMixin:
                                     _facade()._raise_proxy_budget_exhausted()
                                 if _facade()._is_account_neutral_error_code(code):
                                     raise
-                                classified = await proxy._handle_stream_error(
-                                    account,
-                                    _upstream_error_from_openai(error),
-                                    code,
+                                previsible_upstream_error = _upstream_error_from_openai(error)
+                                classified = classify_upstream_failure(
+                                    error_code=code,
+                                    error=previsible_upstream_error,
                                     http_status=tex.status_code,
+                                    phase="first_event",
                                 )
+                                if classified["failure_class"] == "account_unavailable" and api_key_reservation:
+                                    # A revoked workspace is terminal for this account.
+                                    # Keyed requests queue the health write behind the
+                                    # API-key reservation settlement, which runs before the
+                                    # queued penalties are applied.
+                                    pending_post_refresh_transient_penalties.append(
+                                        (account, previsible_upstream_error, code, tex.status_code, 1)
+                                    )
+                                else:
+                                    classified = await proxy._handle_stream_error(
+                                        account,
+                                        previsible_upstream_error,
+                                        code,
+                                        http_status=tex.status_code,
+                                    )
                                 if getattr(base_settings, "deterministic_failover_enabled", True):
                                     action = failover_decision(
                                         failure_class=classified["failure_class"],
@@ -1866,7 +1885,12 @@ class _StreamingRetryMixin:
                                     last_transient_exc = tex
                                     await _release_tracked_stream_lease(current_account_lease)
                                     current_account_lease = None
-                                    excluded_account_ids.add(account.id)
+                                    # Model capacity describes the requested model, not the
+                                    # account: the health write above still lands, but the
+                                    # account must stay selectable or the walk rotates the
+                                    # whole pool over a condition no account can serve.
+                                    if not keeps_account_in_the_walk(classified):
+                                        excluded_account_ids.add(account.id)
                                     _move_verified_fresh_replay_from_owner(
                                         account_id=account.id,
                                         outcome="owner_previsible_failure",
@@ -1922,6 +1946,14 @@ class _StreamingRetryMixin:
                                 transient_retries,
                                 error_code,
                             )
+                            keep_account_in_walk = keeps_account_in_the_walk(
+                                classify_upstream_failure(
+                                    error_code=error_code,
+                                    error=error_payload,
+                                    http_status=tex.status_code if isinstance(tex, ProxyResponseError) else None,
+                                    phase="first_event",
+                                )
+                            )
                             await proxy._handle_stream_error(account, error_payload, error_code)
                             # Record remaining errors so total equals transient_retries,
                             # meeting the load balancer backoff threshold (error_count >= 3).
@@ -1939,7 +1971,10 @@ class _StreamingRetryMixin:
                                 )
                             await _release_tracked_stream_lease(current_account_lease)
                             current_account_lease = None
-                            excluded_account_ids.add(account.id)
+                            # The health write above is separate from the exclusion
+                            # decision: model capacity leaves the account selectable.
+                            if not keep_account_in_walk:
+                                excluded_account_ids.add(account.id)
                             break  # outer loop: select different account
                         finally:
                             pop_stream_timeout_overrides(stream_timeout_tokens)
@@ -2210,7 +2245,9 @@ class _StreamingRetryMixin:
                                 settlement.error_code = error_code
                                 settlement.error_message = error_message
                                 settlement.error = _upstream_error_from_openai(error)
-                                settlement.account_health_error = _facade()._should_penalize_stream_error(error_code)
+                                settlement.account_health_error = _facade()._should_penalize_stream_error(
+                                    error_code, error_message
+                                )
                                 settled = await _settle_stream_usage_before_pending_penalty(settlement)
                                 if settled and settlement.account_health_error:
                                     await proxy._handle_stream_error(
@@ -2227,14 +2264,25 @@ class _StreamingRetryMixin:
                             )
                             if getattr(retry_exc, _POST_REFRESH_TRANSIENT_EXHAUSTED_ATTR, False):
                                 transient_error_payload = _stream_settlement_error_payload(settlement)
+                                transient_error_code = settlement.error_code or error_code or "upstream_error"
+                                keep_account_in_walk = keeps_account_in_the_walk(
+                                    classify_upstream_failure(
+                                        error_code=transient_error_code,
+                                        error=transient_error_payload,
+                                        http_status=getattr(retry_exc, "status_code", None),
+                                        phase="first_event",
+                                    )
+                                )
                                 last_transient_exc = retry_exc
                                 last_retryable_stream_error = _RetryableStreamError(
-                                    settlement.error_code or error_code or "upstream_error",
+                                    transient_error_code,
                                     transient_error_payload,
+                                    exclude_account=not keep_account_in_walk,
                                 )
                                 await _release_tracked_stream_lease(current_account_lease)
                                 current_account_lease = None
-                                excluded_account_ids.add(account.id)
+                                if not keep_account_in_walk:
+                                    excluded_account_ids.add(account.id)
                                 continue
                             account_model_retry = await _retry_account_model_rejection(
                                 retry_exc,
@@ -2395,7 +2443,7 @@ class _StreamingRetryMixin:
                             require_security_work_authorized = True
                             continue
                     health_write_allowed = await _drain_pending_post_refresh_penalty_on_terminal(settlement)
-                    if health_write_allowed and _facade()._should_penalize_stream_error(error_code):
+                    if health_write_allowed and _facade()._should_penalize_stream_error(error_code, error_message):
                         await proxy._handle_stream_error(
                             account,
                             _upstream_error_from_openai(error),

@@ -12,61 +12,111 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import type { AccountImportFileResult } from "@/features/accounts/hooks/use-accounts";
 
 export type ImportDialogProps = {
   open: boolean;
   busy: boolean;
-  error: string | null;
   onOpenChange: (open: boolean) => void;
-  onImport: (file: File) => Promise<void>;
+  onImport: (files: File[]) => Promise<AccountImportFileResult[]>;
 };
 
 export function ImportDialog({
   open,
   busy,
-  error,
   onOpenChange,
   onImport,
 }: ImportDialogProps) {
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [failures, setFailures] = useState<AccountImportFileResult[]>([]);
+  const [inputKey, setInputKey] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!file) {
+    if (files.length === 0) {
       return;
     }
-    await onImport(file);
-    onOpenChange(false);
-    setFile(null);
+
+    setSubmitting(true);
+    try {
+      const results = await onImport(files);
+      const failed = results.filter((result) => result.error !== null);
+      setFailures(failed);
+      setFiles(failed.map((result) => result.file));
+      setInputKey((currentKey) => currentKey + 1);
+      if (failed.length === 0) {
+        onOpenChange(false);
+      }
+    } finally {
+      setSubmitting(false);
+    }
   };
 
+  const importBusy = busy || submitting;
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!importBusy) onOpenChange(nextOpen);
+      }}
+    >
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Import auth.json</DialogTitle>
-          <DialogDescription>Upload an exported account auth.json file.</DialogDescription>
+          <DialogDescription>Upload one or more exported account auth.json files.</DialogDescription>
         </DialogHeader>
 
-        <form className="space-y-4" onSubmit={handleSubmit}>
+        <form className="space-y-4" aria-busy={importBusy} onSubmit={handleSubmit}>
           <div className="space-y-2">
-            <Label htmlFor="auth-json-file">File</Label>
+            <Label htmlFor="auth-json-file">Files</Label>
             <Input
+              key={inputKey}
               id="auth-json-file"
               type="file"
               accept="application/json,.json"
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+              multiple
+              disabled={importBusy}
+              onChange={(event) => {
+                setFiles(Array.from(event.currentTarget.files ?? []));
+                setFailures([]);
+              }}
             />
           </div>
 
-          {error ? (
-            <p className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1 text-xs text-destructive">
-              {error}
-            </p>
+          {files.length > 0 ? (
+            <div className="space-y-1 text-xs text-muted-foreground">
+              <p>Selected files</p>
+              <ul className="max-h-28 space-y-1 overflow-y-auto rounded-md border px-2 py-1">
+                {files.map((file, index) => (
+                  <li
+                    key={`${file.name}-${file.size}-${file.lastModified}-${index}`}
+                    className="truncate"
+                    title={file.name}
+                  >
+                    {file.name}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {failures.length > 0 ? (
+            <ul
+              role="alert"
+              className="max-h-28 space-y-1 overflow-y-auto rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1 text-xs text-destructive"
+            >
+              {failures.map((failure, index) => (
+                <li key={`${failure.file.name}-${index}`}>
+                  {failure.file.name}: {failure.error}
+                </li>
+              ))}
+            </ul>
           ) : null}
 
           <DialogFooter>
-            <Button type="submit" disabled={busy || !file}>
+            <Button type="submit" disabled={importBusy || files.length === 0}>
               Import
             </Button>
           </DialogFooter>
