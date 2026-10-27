@@ -16,7 +16,7 @@ When the proxy returns a 4xx or 5xx response for a proxied request, the system M
 
 ### Requirement: Continuity-sensitive responses flows emit explicit operator diagnostics
 
-When the proxy resolves or fails closed a continuity-sensitive follow-up request, the system MUST emit structured diagnostics that let operators determine how continuity ownership was resolved or why the proxy returned a retryable masked error. Fail-closed diagnostics for upstream tool-call linkage corruption MUST label the two upstream variants distinctly: `missing_tool_output` for a call whose output never arrived (upstream message `"No tool output found for function call call_..."`) and `orphaned_tool_output` for a tool output whose call is absent from the resolved previous-response context (upstream message `"No tool call found for function call output with call_id ..."`). The structured fail-closed log MUST include the normalized `upstream_error_code` when the upstream error payload is available, captured before any payload rewriting mutates it. The client-visible error envelope MUST remain `stream_incomplete` (`server_error`) for both variants, and the variant labeling MUST NOT change reconnect-request, grouped-terminal, or rewrite behavior relative to the prior single `missing_tool_output` classification.
+When resolving or failing closed a continuity-sensitive follow-up, the system MUST emit structured diagnostics identifying ownership resolution or the retryable masked error's reason. When an upstream error payload is available, the structured fail-closed log MUST include its normalized `upstream_error_code`, captured before rewriting.
 
 #### Scenario: owner resolution source is recorded for a previous-response follow-up
 
@@ -45,7 +45,7 @@ When the proxy resolves or fails closed a continuity-sensitive follow-up request
 
 ### Requirement: Full upstream conversation archive
 
-The proxy MUST provide an opt-in durable archive of Codex-to-upstream conversation traffic. When enabled, the archive MUST write gzip-compressed newline-delimited JSON records for upstream request payloads, streamed Responses events, compact response payloads, and websocket text or binary frames without performing gzip file I/O in the request event loop during normal operation. The archive writer queue MUST be bounded and MUST apply synchronous write backpressure instead of growing without limit when the background writer is saturated. Archive records MUST include request id, timestamp, direction, traffic kind, transport, account id when known, upstream target metadata, redacted headers, and the full payload or frame body. Credential-bearing headers such as authorization, cookies, proxy authorization, token headers, and API key headers MUST be redacted before persistence. JSON records MUST preserve non-ASCII payload text as UTF-8 rather than Unicode escape sequences. When disabled, no archive file MUST be created by the archive writer.
+The proxy MUST offer an opt-in durable Codex-to-upstream conversation archive. When enabled, it MUST write gzip JSONL for upstream request payloads, streamed Responses events, compact response payloads, and websocket text or binary frames. Normal operation MUST keep gzip file I/O outside the request event loop. The writer queue MUST be bounded and apply synchronous write backpressure when the background writer is saturated.
 
 #### Scenario: operator enables archive for audit
 
@@ -221,9 +221,7 @@ When the greenfield runtime baseline is documented or enabled, the project MUST 
 - **THEN** metrics or documented request-log queries allow operators to count the mismatch without inspecting raw prompt data or secret-bearing logs
 
 ### Requirement: Service-tier mismatches use successful terminal evidence
-The service-tier mismatch counter MUST count only successful requests with an explicit nonblank terminal-reported tier that differs from the normalized requested tier. A created or in-progress tier, requested-tier fallback, missing terminal tier, or unsuccessful attempt MUST NOT increment the counter. The change MUST preserve existing counter coverage and bounded labels rather than adding identities or payload data.
-
-An explicitly returned `auto` MUST remain observable as the reported tier. Operator guidance MUST describe it as inconclusive for Fast delivery rather than proof of a downgrade. Counter equality or absence MUST NOT be described as evidence of upstream scheduling.
+The service-tier mismatch counter MUST count only successful requests whose explicit nonblank terminal tier differs from the normalized requested tier. Created/in-progress tiers, requested-tier fallbacks, missing terminal tiers, and unsuccessful attempts MUST NOT increment it. Existing counter coverage and bounded labels MUST remain, without identities or payload data.
 
 #### Scenario: Explicit terminal default differs from requested priority
 - **WHEN** a successful counted request asks for `priority` and completes with explicit `default`
@@ -302,7 +300,12 @@ contain request ids, account ids, or free-form upstream messages.
 
 ### Requirement: Request metric labels have bounded cardinality
 
-The service MUST expose request counter and duration metrics with finite-vocabulary `method` and `path` labels. The `method` label MUST be one of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`, or `OTHER`; any other HTTP method MUST map to `OTHER`. The `path` label MUST preserve the existing `/v1/...`, `/api/...`, and `/health/...` collapse values and the existing bare `/health` value. Paths under `/backend-api/` MUST map to `/backend-api/...`, and paths under `/internal/` MUST map to `/internal/...`; every other path MUST map to the single `/other` sentinel. Metric labels MUST NOT contain raw or truncated unmatched paths.
+Request counter and duration metrics MUST use bounded labels:
+
+- `method`: preserve `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, and `OPTIONS`. Map all other methods to `OTHER`.
+- `path`: preserve existing `/v1/...`, `/api/...`, `/health/...`, and bare `/health` values. Collapse `/backend-api/` paths to `/backend-api/...` and `/internal/` paths to `/internal/...`. Map all other paths to `/other`.
+
+Labels MUST NOT contain raw or truncated unmatched paths.
 
 #### Scenario: Unmatched paths share one metric label
 
@@ -328,7 +331,7 @@ The service MUST expose request counter and duration metrics with finite-vocabul
 
 ### Requirement: Rendered log records redact URL userinfo and keyed secrets
 
-Every log record rendered by the application's text, access, and JSON formatters MUST have URL userinfo, in both the `scheme://user:password@` and the username-only `scheme://user@` forms, replaced with `scheme://[REDACTED]@` and `Basic <token>` authorization tokens (in the `Basic`, `basic`, and `BASIC` scheme spellings) replaced with `Basic [REDACTED]`, regardless of the originating logger and including exception and stack text. Structured extra keys MUST be redacted like values. Records at WARNING level or higher MUST additionally have keyed secrets (`password=`, `token=`, `api_key=`, bearer, basic and authorization values in any letter case, JSON secret fields embedded in strings, and structured extra fields whose key names a secret, whatever the value type) redacted. Redaction MUST never raise and MUST fail closed: if a redaction pass fails, the affected text is replaced with a `[REDACTED: log redaction failed]` placeholder and the record is still emitted with its timestamp, level, and logger; structured extras that are cyclic, pathologically deep, or unprintable MUST still be emitted with redaction applied to every finite, printable part. Application startup MUST route `warnings.warn` output through the same log handlers. Log records that contain no secret patterns MUST render byte-identically to the unredacted rendering.
+The application's text, access, and JSON formatters MUST redact every logger's records, including exception and stack text. They MUST replace `scheme://user:password@` and `scheme://user@` with `scheme://[REDACTED]@`, and `Basic <token>` with `Basic [REDACTED]` for `Basic`, `basic`, and `BASIC` spellings. Structured extra keys MUST be redacted like values.
 
 #### Scenario: Unclosed aiohttp connection repr is credential-free
 
@@ -391,7 +394,7 @@ Every log record rendered by the application's text, access, and JSON formatters
 
 ### Requirement: Secret-pattern redaction stays on the current line
 
-Keyed, bearer, basic, authorization, JSON, and Python-repr secret patterns MUST be applied independently to each CR/LF-delimited line of rendered log text. A match MUST NOT consume CR or LF or any text from a following line. Unterminated JSON secret values MUST be redacted through the end of the current line. A Bearer credential MUST treat a glued `:` tail on the same line as credential material. Same-line comma and ampersand separators MUST keep their existing truncation behavior. Records below WARNING MUST still skip these keyed patterns.
+Keyed, bearer, basic, authorization, JSON, and Python-repr secret patterns MUST apply per CR/LF-delimited log line. Matches MUST NOT consume CR, LF, or text from later lines. Redaction MUST cover unterminated JSON secrets through line end and same-line glued `:` tails on Bearer credentials. Comma and ampersand separators MUST retain existing same-line truncation behavior. Records below WARNING MUST still skip these keyed patterns.
 
 #### Scenario: Authorization does not swallow the next traceback line
 
@@ -430,9 +433,7 @@ Keyed, bearer, basic, authorization, JSON, and Python-repr secret patterns MUST 
 
 ### Requirement: Loop exception handler output redacts context value reprs
 
-Application startup MUST install an asyncio loop exception handler that sanitizes the `message` and redacts the `repr()` of every other context value the default handler would render before delegating to the previously installed or default handler. If the exception's `str()`, `repr()`, or formatted traceback would change under redaction, the handler MUST replace that exception with a secret-free snapshot that does not carry the raw cause or context. `source_traceback` and `handle_traceback` MUST use formatted-text redaction. Secret-free context output MUST be byte-identical to the default handler output. Installation MUST be idempotent. Both `install_redacting_loop_exception_handler` and application lifespan MUST call `logging.captureWarnings(True)` so uvicorn workers inherit the same handlers.
-
-The previously installed handler and the default fallback MUST catch `BaseException` except `KeyboardInterrupt` and `SystemExit` (including `CancelledError`) and MUST emit the sanitized context plus a fixed `Unhandled error in exception handler` record without rethrowing. Fail-closed MUST omit `exception`, `source_traceback`, and `handle_traceback`, keeping only the sanitized `message` and opaque stand-ins for remaining values, so the report is still emitted and no unredacted value reaches the delegate. A context value whose `repr()` raises MUST be replaced by an opaque stand-in.
+Startup MUST idempotently install an asyncio loop exception handler. Before delegating to the previous or default handler, it MUST sanitize `message` and redact `repr()` for every other context value the default handler would render. Secret-free output MUST match the default handler byte-for-byte. A value whose `repr()` raises MUST become an opaque stand-in.
 
 #### Scenario: Unclosed aiohttp connection repr is credential-free before logging
 
@@ -459,4 +460,94 @@ The previously installed handler and the default fallback MUST catch `BaseExcept
 - **WHEN** the redaction pass itself fails
 - **THEN** the record is still emitted with a sanitized `message` and opaque stand-ins
 - **AND** `exception`, `source_traceback`, and `handle_traceback` are omitted
+
+### Requirement: Tool-linkage diagnostics distinguish corruption variants
+
+Upstream tool-linkage fail-closed diagnostics MUST label a call whose output never arrived as `missing_tool_output` (`"No tool output found for function call call_..."`). They MUST label an output whose call is absent from the resolved previous-response context as `orphaned_tool_output` (`"No tool call found for function call output with call_id ..."`).
+
+#### Scenario: Missing output retains its distinct label
+
+- **WHEN** upstream reports `"No tool output found for function call call_X"`
+- **THEN** fail-closed diagnostics label the failure `missing_tool_output`
+
+### Requirement: Tool-linkage labels preserve continuity recovery behavior
+
+Both tool-linkage corruption variants MUST retain the client-visible `stream_incomplete` (`server_error`) envelope. Variant labeling MUST NOT change reconnect-request, grouped-terminal, or rewrite behavior from the prior single `missing_tool_output` classification.
+
+#### Scenario: Variant labeling does not change recovery
+
+- **WHEN** upstream tool-linkage corruption is labeled `orphaned_tool_output`
+- **THEN** reconnect-request, grouped-terminal, and rewrite behavior remain the same as under the prior single `missing_tool_output` classification
+
+### Requirement: Archive records retain metadata and redact credentials
+
+Archive records MUST include request id, timestamp, direction, traffic kind, transport, account id when known, upstream target metadata, redacted headers, and full payload or frame body. Credential-bearing headers, including authorization, cookies, proxy authorization, token headers, and API key headers, MUST be redacted before persistence. Non-ASCII payload text MUST remain UTF-8, not Unicode escapes. When disabled, the writer MUST NOT create archive files.
+
+#### Scenario: Archive persistence preserves content without header credentials
+
+- **WHEN** the enabled writer persists a record with non-ASCII payload text and credential-bearing headers
+- **THEN** it retains the full body and required metadata, stores non-ASCII text as UTF-8, and redacts the headers before persistence
+
+### Requirement: Service-tier reporting avoids unsupported scheduling conclusions
+
+Explicit `auto` MUST remain observable as the reported tier. Guidance MUST describe it as inconclusive for Fast delivery, not proof of downgrade. Counter equality or absence MUST NOT be presented as upstream scheduling evidence.
+
+#### Scenario: Explicit auto is inconclusive for Fast delivery
+
+- **WHEN** upstream explicitly reports `auto`
+- **THEN** it remains the observable tier and guidance does not treat it as proof of downgrade
+
+### Requirement: Warning logs redact keyed secrets
+
+At WARNING or higher, application text, access, and JSON formatters MUST also redact `password=`, `token=`, `api_key=`, case-insensitive bearer/basic/authorization values, JSON secret fields embedded in strings, and secret-keyed structured extras of any value type.
+
+#### Scenario: Warning secrets are removed across renderers
+
+- **WHEN** a WARNING record contains keyed secrets in text or structured extras
+- **THEN** text, access, and JSON formatters redact them regardless of their value type
+
+### Requirement: Log redaction failures preserve sanitized records
+
+Redaction MUST never raise. Failed passes MUST replace affected text with `[REDACTED: log redaction failed]` and still emit the timestamp, level, and logger. Cyclic, pathologically deep, or unprintable extras MUST still be emitted with every finite, printable part redacted. Secret-free records MUST render byte-identically to unredacted output.
+
+#### Scenario: Deep structured extras retain finite redacted content
+
+- **WHEN** a log record contains pathologically deep structured extras
+- **THEN** the record is emitted with redaction applied to every finite, printable part
+
+### Requirement: Startup routes warnings through application logging
+
+Application startup MUST route `warnings.warn` through the same log handlers. Both `install_redacting_loop_exception_handler` and application lifespan MUST call `logging.captureWarnings(True)` so uvicorn workers inherit the same handlers.
+
+#### Scenario: Workers capture warnings through redacting handlers
+
+- **WHEN** application lifespan or loop exception handler installation runs
+- **THEN** it calls `logging.captureWarnings(True)` and warnings use the application log handlers
+
+### Requirement: Loop exception snapshots remove secret causes and context
+
+If redaction changes an exception's `str()`, `repr()`, or formatted traceback, the loop exception handler MUST replace it with a secret-free snapshot without raw cause or context. `source_traceback` and `handle_traceback` MUST use formatted-text redaction.
+
+#### Scenario: Secret exception snapshot has no raw cause
+
+- **WHEN** redaction changes an exception's formatted traceback
+- **THEN** the handler delegates a secret-free snapshot without raw cause or context
+
+### Requirement: Loop exception delegate failures emit sanitized context
+
+The previous handler and default fallback MUST catch `BaseException`, including `CancelledError`, except `KeyboardInterrupt` and `SystemExit`. They MUST emit sanitized context plus a fixed `Unhandled error in exception handler` record without rethrowing.
+
+#### Scenario: Cancelled delegate still emits sanitized diagnostics
+
+- **WHEN** the previous handler or default fallback raises `CancelledError`
+- **THEN** sanitized context and `Unhandled error in exception handler` are emitted without rethrowing
+
+### Requirement: Loop redaction failures omit unsafe traceback context
+
+Fail-closed reports MUST omit `exception`, `source_traceback`, and `handle_traceback`, retaining only sanitized `message` and opaque stand-ins for other values. Unredacted values MUST NOT reach the delegate.
+
+#### Scenario: Redaction failure excludes raw context
+
+- **WHEN** loop context redaction fails
+- **THEN** the delegate receives only sanitized `message` and opaque stand-ins, without exception or traceback fields
 

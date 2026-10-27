@@ -6,7 +6,7 @@ Define fleet-summary background refresh lifecycle, including graceful-shutdown p
 ## Requirements
 ### Requirement: Fleet refreshes participate in graceful shutdown
 
-The system MUST strongly own every accepted `POST /api/fleet/refresh` task from creation until its dedicated session has finished and closed, regardless of whether its caller remains attached. Task creation and registry insertion MUST occur synchronously before the route first awaits the task. Graceful shutdown MUST wait for all such tracked refreshes for up to `shutdown_drain_timeout_seconds` before stopping usage-refresh singleflight work or closing shared HTTP and database resources. If the deadline expires, the system MUST report each fleet refresh that did not drain before continuing shutdown.
+The system MUST strongly own each accepted `POST /api/fleet/refresh` task from creation through dedicated-session completion and closure, even if callers detach. Creation and registration MUST be synchronous before the route first awaits it. Graceful shutdown MUST wait up to `shutdown_drain_timeout_seconds` for all tracked refreshes before stopping usage-refresh singleflight or closing shared HTTP/DB resources. On expiry, it MUST report each undrained fleet refresh before continuing shutdown.
 
 #### Scenario: Caller cancellation does not orphan fleet refresh work
 
@@ -38,7 +38,7 @@ The system MUST strongly own every accepted `POST /api/fleet/refresh` task from 
 
 ### Requirement: Post-cutoff fleet refreshes are rejected before resource work
 
-Immediately after the in-flight drain attempt returns, graceful shutdown MUST synchronously close fleet task admission before any further shutdown await. A `POST /api/fleet/refresh` request that reaches its producer after this cutoff MUST return the dashboard `503 service_unavailable` error envelope and MUST NOT create a refresh coroutine, task, background session, or other refresh resource work.
+Immediately after the in-flight drain attempt returns, graceful shutdown MUST synchronously close fleet task admission before any further shutdown await. A `POST /api/fleet/refresh` request reaching its producer after this cutoff MUST return the dashboard `503 service_unavailable` error envelope and MUST NOT create a refresh coroutine, task, background session, or other refresh resource work.
 
 #### Scenario: Late fleet producer receives service unavailable
 

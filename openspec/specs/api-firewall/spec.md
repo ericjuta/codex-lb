@@ -1,7 +1,7 @@
 # api-firewall Specification
 
 ## Purpose
-TBD - created by archiving change port-firewall-to-react. Update Purpose after archive.
+Describe proxy IP allowlist management and enforcement, trusted-proxy client identity, and firewall caching configuration.
 ## Requirements
 ### Requirement: Firewall allowlist management API
 Dashboard API MUST expose firewall allowlist management endpoints at `/api/firewall/ips` for listing, creating, and deleting allowed client IP addresses.
@@ -43,7 +43,7 @@ The application MUST enforce firewall allowlist for proxy-facing paths `/backend
 
 ### Requirement: Trusted proxy header handling
 
-Firewall IP resolution MUST use forwarded client headers only when proxy-header trust is enabled and the socket source IP belongs to the configured trusted proxy CIDR list. `X-Forwarded-For` and RFC 7239 `Forwarded` values MUST be resolved from right to left through one shared trusted-hop algorithm. Other client-IP headers, including `X-Real-IP`, `True-Client-IP`, and `CF-Connecting-IP`, MUST NOT affect firewall identity. Every repeated field value MUST be combined in arrival order before resolution. A missing, malformed, ambiguous, obfuscated, unknown, or non-IP trusted-proxy chain MUST return no resolved client IP so an active firewall allowlist fails closed.
+The firewall MUST use forwarded headers only with proxy-header trust enabled and a socket IP in configured trusted proxy CIDRs. It MUST join repeated fields in arrival order, then use one right-to-left trusted-hop algorithm for `X-Forwarded-For` and RFC 7239 `Forwarded`. Other client-IP headers (`X-Real-IP`, `True-Client-IP`, `CF-Connecting-IP` included) MUST be ignored. Missing, malformed, ambiguous, obfuscated, unknown or non-IP chains MUST yield no IP so active allowlists fail closed.
 
 #### Scenario: Trusted proxy chain
 
@@ -80,7 +80,7 @@ Firewall IP resolution MUST use forwarded client headers only when proxy-header 
 
 ### Requirement: Firewall IP cache TTL is operator-configurable with a safe default
 
-The application MUST cache firewall allow/deny decisions per source IP for a configurable TTL, and the default TTL MUST be large enough (at least 30 seconds) that the cache provides material relief on hot paths under load. Operators MUST be able to tune it via `firewall_ip_cache_ttl_seconds` (env `CODEX_LB_FIREWALL_IP_CACHE_TTL_SECONDS`). Explicit cache invalidation paths (allowlist mutation in `/api/firewall/ips`, the `cache_poller` invalidation channel) MUST keep working unchanged.
+The application MUST cache firewall allow/deny decisions per source IP with a configurable TTL. The default MUST be at least 30 seconds and provide material hot-path relief under load. Operators MUST be able to set `firewall_ip_cache_ttl_seconds` (env `CODEX_LB_FIREWALL_IP_CACHE_TTL_SECONDS`). Allowlist mutation at `/api/firewall/ips` and the `cache_poller` invalidation channel MUST keep invalidating the cache unchanged.
 
 #### Scenario: Default TTL provides effective caching
 

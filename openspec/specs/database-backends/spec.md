@@ -6,7 +6,7 @@ Define supported database backend wiring so local, Helm, SQLite, and external Po
 ## Requirements
 ### Requirement: Helm external PostgreSQL wiring resolves a non-empty database URL
 
-When the Helm chart deploys with `postgresql.enabled=false`, it MUST provide a non-empty `CODEX_LB_DATABASE_URL` to the workload from one of the supported external database inputs. The chart MUST accept a direct `externalDatabase.url`, and it MUST also support reading `database-url` from an operator-provided external database secret reference without requiring the application encryption-key secret to be the same object.
+With `postgresql.enabled=false`, the Helm chart MUST supply a non-empty workload `CODEX_LB_DATABASE_URL` from a supported external input. It MUST support both a direct `externalDatabase.url` and reading `database-url` from an operator-provided external database secret reference that need not be the application encryption-key secret.
 
 #### Scenario: Direct external database URL is used
 
@@ -22,7 +22,7 @@ When the Helm chart deploys with `postgresql.enabled=false`, it MUST provide a n
 
 ### Requirement: PostgreSQL engines validate and recycle pooled connections
 
-When `database_url` resolves to a PostgreSQL backend, the application MUST configure each async engine -- both the request-path `engine` and the optional background-task `_background_engine` -- with `pool_pre_ping=True` and a finite `pool_recycle` window. This is required so the application detects connections that the PostgreSQL server has silently closed (idle timeout, restart, network reset) before the first real query is dispatched on them, and so connections are cycled before they reach any reasonable upstream keep-alive boundary.
+When `database_url` resolves to PostgreSQL, the application MUST configure both async engines — request-path `engine` and optional background-task `_background_engine` — with `pool_pre_ping=True` and finite `pool_recycle`. This detects silently closed connections (idle timeout, restart, network reset) before their first real query and cycles connections before any reasonable upstream keep-alive boundary.
 
 #### Scenario: Stale connections are rejected before checkout
 
@@ -63,7 +63,7 @@ the background pool size and overflow separately.
 
 ### Requirement: Detached background tasks own their database session lifetime
 
-A background task that is intentionally decoupled from its caller's lifetime — for example a singleflight refresh kept alive with `asyncio.shield` so concurrent waiters share one in-flight operation — MUST NOT perform database work through a session whose lifetime is owned by the (cancellable) caller. Such a task MUST acquire its own session (via `get_background_session()` or an equivalent caller-independent factory), use it, and release it entirely within the task. This prevents the caller's cancellation (e.g. a client disconnect) from closing a session that the still-running detached task then touches, which — because `AsyncSession` is not safe for concurrent use — strands a pooled connection that never returns and, accumulated over time, exhausts the background engine pool.
+Detached tasks (e.g. `asyncio.shield` singleflight refresh shared by concurrent waiters) MUST NOT use cancellable-caller-owned sessions. Each MUST acquire, use, then release its own session within the task via `get_background_session()` or an equivalent caller-independent factory. Caller cancellation (e.g. disconnect) can close a still-used session: `AsyncSession` is not concurrency-safe, so stranded connections accumulate and exhaust the background pool.
 
 #### Scenario: Client disconnect during token refresh does not strand a connection
 
@@ -109,7 +109,7 @@ SQLite deployments MUST maintain an index that supports latest `usage_history` l
 
 ### Requirement: SQLite live profile controls write contention
 
-When `codex-lb` is configured to use SQLite for live serving, official behavior and guidance MUST treat SQLite as a single-writer backend and MUST provide a supported operating profile that limits concurrent write contention without requiring PostgreSQL.
+For live SQLite serving, `codex-lb` behavior and official guidance MUST treat SQLite as a single-writer backend and provide a supported profile that limits concurrent write contention without requiring PostgreSQL.
 
 #### Scenario: SQLite live profile is conservative by default
 
@@ -141,7 +141,7 @@ Write-hot SQLite operations that are part of request admission, usage reservatio
 
 ### Requirement: Higher-concurrency deployments recommend PostgreSQL
 
-`codex-lb` MUST preserve SQLite as the default backend for zero-config and simple local startup, and it MUST document PostgreSQL as the recommended backend for deployments that expect higher concurrency, write-heavy traffic, or sustained multi-worker serving.
+`codex-lb` MUST keep SQLite as the default for zero-config and simple local startup and document PostgreSQL as recommended for higher concurrency, write-heavy traffic, or sustained multi-worker serving.
 
 #### Scenario: Zero-config startup keeps SQLite as the default
 
@@ -173,11 +173,7 @@ The greenfield runtime baseline MUST use PostgreSQL through `CODEX_LB_DATABASE_U
 
 ### Requirement: Local and CI PostgreSQL surfaces track PostgreSQL 18
 
-Local Compose and PostgreSQL-backed CI jobs MUST use PostgreSQL 18 for the
-supported PostgreSQL coverage path. The local Compose PostgreSQL profile MUST
-mount persistent data at the PostgreSQL 18 Docker image's supported parent data
-directory and MUST preload `pg_stat_statements` when query-level runtime tuning
-is part of the sustained deployment profile.
+Local Compose and PostgreSQL-backed CI jobs MUST use PostgreSQL 18 for supported PostgreSQL coverage. The local Compose PostgreSQL profile MUST mount persistent data at the PostgreSQL 18 Docker image's supported parent data directory and preload `pg_stat_statements` when the sustained deployment profile includes query-level runtime tuning.
 
 #### Scenario: Local Compose PostgreSQL uses PostgreSQL 18
 

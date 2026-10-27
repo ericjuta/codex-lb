@@ -1,11 +1,11 @@
 # files-upload-protocol Specification
 
 ## Purpose
-TBD - created by archiving change add-backend-api-files-protocol. Update Purpose after archive.
+Describe native Codex file upload registration and finalization, including authentication, account selection, bounded polling, and request logging.
 ## Requirements
 ### Requirement: Native file upload registration endpoint
 
-The system SHALL expose `POST /backend-api/files` as an authenticated proxy endpoint for the upstream Codex file upload protocol. The endpoint SHALL accept a JSON body containing `file_name` (non-empty string), `file_size` (positive integer, less than or equal to 512 MiB / `OPENAI_FILE_UPLOAD_LIMIT_BYTES`), and `use_case` (string, defaulting to `"codex"`). The service MUST forward the request to upstream `POST /files` using a selected account's Bearer token and `chatgpt-account-id`, and MUST return the upstream JSON body (including `file_id` and Azure Blob `upload_url`) verbatim. The service MUST NOT proxy or rewrite the SAS upload URL itself; clients PUT bytes directly to that URL.
+Authenticated `POST /backend-api/files` SHALL proxy Codex uploads, accepting JSON `file_name` (non-empty string), `file_size` (positive integer ≤ 512 MiB / `OPENAI_FILE_UPLOAD_LIMIT_BYTES`) and `use_case` (string, default `"codex"`). It MUST forward to upstream `POST /files` with the selected account's Bearer token and `chatgpt-account-id`, returning JSON (including `file_id`, Azure Blob `upload_url`) verbatim. It MUST NOT proxy or rewrite the SAS upload URL; clients PUT bytes directly to it.
 
 #### Scenario: Native file create request is forwarded
 
@@ -31,7 +31,7 @@ The system SHALL expose `POST /backend-api/files` as an authenticated proxy endp
 
 ### Requirement: File finalize / status polling endpoint
 
-The system SHALL expose `POST /backend-api/files/{file_id}/uploaded` as an authenticated proxy endpoint for upload finalization. The endpoint MUST accept a non-empty `file_id` path parameter and an empty JSON body. The service MUST forward the call to upstream `POST /files/{file_id}/uploaded` and MUST mirror the upstream Codex CLI's status-polling loop server-side: while the upstream returns `status == "retry"`, the service MUST re-poll every 250 ms up to a 30 s total budget, then return the most recent payload regardless of status. On `status` of `success` or `failed` the service MUST return immediately. The upstream JSON body (including `status`, `download_url`, `file_name`, `mime_type`, and `file_size_bytes`) MUST be returned verbatim.
+Authenticated `POST /backend-api/files/{file_id}/uploaded` SHALL finalize uploads. It MUST accept non-empty `file_id` and empty JSON body, forwarding to upstream `POST /files/{file_id}/uploaded`. Codex CLI-style polling MUST run server-side every 250 ms while `status == "retry"`, for ≤30 s total, then return latest payload at any status. `success`/`failed` MUST return immediately. Upstream JSON (`status`, `download_url`, `file_name`, `mime_type`, `file_size_bytes` included) MUST return verbatim.
 
 #### Scenario: Finalize returns success on first poll
 
@@ -56,7 +56,7 @@ The system SHALL expose `POST /backend-api/files/{file_id}/uploaded` as an authe
 
 ### Requirement: File proxy routes share account-selection and request-log plumbing
 
-File proxy routes MUST select an upstream account using the same load-balancer / freshness / 401-retry pattern as `/backend-api/transcribe`, and MUST persist a request-log entry on every attempt. Log entries MUST use synthetic model identifiers `files-create` (for `POST /backend-api/files`) and `files-finalize` (for `POST /backend-api/files/{file_id}/uploaded`) so dashboard request-log queries can filter file activity. Transport MUST be recorded as HTTP. File requests MUST NOT count against per-model API key limits unless the API key explicitly allows the synthetic model identifiers.
+File proxy routes MUST use `/backend-api/transcribe`'s load-balancer / freshness / 401-retry account-selection pattern and persist a request-log entry on every attempt. Logs MUST use synthetic models `files-create` for `POST /backend-api/files` and `files-finalize` for `POST /backend-api/files/{file_id}/uploaded`. Transport MUST be recorded as HTTP. File requests MUST NOT count against per-model API key limits unless the key explicitly allows the synthetic model identifiers.
 
 #### Scenario: 401 from upstream triggers forced refresh and one retry
 
@@ -70,7 +70,7 @@ File proxy routes MUST select an upstream account using the same load-balancer /
 
 ### Requirement: File create and finalize routes require API key authentication when enforcement is enabled
 
-The system MUST apply the same `validate_proxy_api_key` and dashboard `apiKeyAuthEnabled` gating to the file routes as it does to `/backend-api/transcribe`. When API key auth is enabled and a request lacks a valid API key, the service MUST return HTTP 401 with an OpenAI-format `invalid_api_key` error.
+File routes MUST use the same `validate_proxy_api_key` and dashboard `apiKeyAuthEnabled` gating as `/backend-api/transcribe`. With API key auth enabled, requests without a valid API key MUST return HTTP 401 with an OpenAI-format `invalid_api_key` error.
 
 #### Scenario: File create is rejected without API key when auth enforcement is on
 

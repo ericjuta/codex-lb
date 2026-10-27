@@ -13,15 +13,13 @@ rationale, upstream semantics, and operational notes.
 
 ## Requirements
 ### Requirement: WebSocket Responses Stream Continuation Folding
-codex-lb SHALL apply CodexCont continuation folding to continuation-eligible
-Responses streams served over the downstream WebSocket transport
-(`/backend-api/codex/responses`), governed by the same
-`CODEX_LB_CODEX_CONTINUATION_ENABLED` gate and eligibility rules as the HTTP path
-(continuation enabled, streaming, reasoning not explicitly disabled). When
-continuation is disabled or the request is ineligible, the WebSocket transport
-MUST relay upstream events unchanged. Folding MUST be applied in-place within the
-upstream relay so failover, auth retry, previous-response recovery, and
-tool-call de-duplication continue to apply to eligible turns.
+codex-lb SHALL fold downstream WebSocket Responses streams
+(`/backend-api/codex/responses`) under the HTTP path's
+`CODEX_LB_CODEX_CONTINUATION_ENABLED` gate and eligibility rules: continuation
+enabled, streaming, and reasoning not explicitly disabled. Disabled or ineligible
+turns MUST relay upstream events unchanged. Folding MUST occur in-place in the
+upstream relay, preserving failover, auth retry, previous-response recovery, and
+tool-call de-duplication.
 
 #### Scenario: Truncated WebSocket round continues
 - **WHEN** a downstream WebSocket Responses turn is continuation eligible and its
@@ -56,12 +54,10 @@ reservations.
   the hidden round
 
 ### Requirement: WebSocket Settlement Uses Proxy Billed Usage
-codex-lb WebSocket settlement MUST use `metadata.proxy_billed_usage` (the true
-aggregated usage across folded rounds) for API-key usage settlement and
-request-log usage whenever a WebSocket Responses terminal event carries it,
-rather than the agent-facing `response.usage`. Downstream clients MUST still
-receive the agent-facing `response.usage`. When no `metadata.proxy_billed_usage`
-is present, settlement MUST use `response.usage` as before.
+For WebSocket Responses terminals, API-key settlement and request logs MUST use
+`metadata.proxy_billed_usage` (aggregate usage across folded rounds) when present,
+otherwise `response.usage`. Downstream clients MUST receive the agent-facing
+`response.usage` in either case.
 
 #### Scenario: Folded WebSocket stream settles aggregated usage
 - **WHEN** a folded WebSocket stream returns agent-facing `response.usage` and
@@ -75,13 +71,11 @@ is present, settlement MUST use `response.usage` as before.
 - **THEN** codex-lb API-key settlement and request logs record `response.usage`
 
 ### Requirement: Folded WebSocket Turns Preserve Next-Turn Chaining
-codex-lb MUST, when a WebSocket Responses turn is folded across hidden
-continuation rounds, keep the downstream-visible response id stable (the
-visible round's id) and map that visible id to the final hidden round's upstream
-response id so that a follow-up turn referencing the visible id in
-`previous_response_id` is forwarded upstream with the final round's id. Both
-the visible id and the final round's upstream id MUST be registered in the
-previous-response owner index for follow-up account routing.
+For folded WebSocket Responses turns, codex-lb MUST retain the visible round's
+response id downstream and map it to the final hidden round's upstream id.
+Follow-up `previous_response_id` references to the visible id MUST be forwarded
+with the final round's id. Both ids MUST be registered in the previous-response
+owner index for follow-up account routing.
 
 #### Scenario: Follow-up after a folded tool-call turn chains the final round
 - **WHEN** a folded WebSocket turn's hidden round emits a `function_call` and
@@ -99,20 +93,13 @@ previous-response owner index for follow-up account routing.
   the turn's downstream `response.created`
 
 ### Requirement: Chained Hidden WebSocket Rounds Chain The Previous Round
-codex-lb MUST send a hidden WebSocket continuation round for a chained turn
-with `previous_response_id` set to the just-completed round's own response id,
-and an input consisting only of that round's replayed reasoning items plus the
-continuation marker. A chained turn's incremental input resolves solely
-against upstream stored context, and the upstream invalidates an anchor once a
-response has chained off it — the original client anchor is consumed by the
-visible round and MUST NOT be reused, and the incremental input MUST NOT be
-replayed (it already lives in the visible round's stored context). Turns
-without an anchor MUST continue to use the anchorless full-input replay.
-When a chained turn's truncated round emitted a client-answered tool call
-(`function_call`, `custom_tool_call`, or `apply_patch_call`), codex-lb MUST
-NOT open a hidden round (the anchored context would hold an unanswered call);
-it MUST stop the fold and deliver the buffered output, including the tool
-call, to the client.
+Chained WebSocket hidden rounds MUST use the just-completed round's id as
+`previous_response_id` and only its reasoning items plus the continuation
+marker as input. They MUST NOT reuse the original anchor or replay
+incremental input. Anchorless turns MUST replay full input. A truncated chained round
+emitting a client-answered `function_call`, `custom_tool_call`, or `apply_patch_call`
+MUST stop folding without a hidden round and deliver all buffered output,
+including the call, to the client.
 
 #### Scenario: Chained turn's hidden round chains the visible round
 - **WHEN** a WebSocket turn carrying `previous_response_id` and incremental
@@ -131,15 +118,10 @@ call, to the client.
 - **AND** the turn completes with the tool call delivered to the client
 
 ### Requirement: Folded Turns Track Only Delivered Calls As Interruptible
-codex-lb MUST, when a folded WebSocket turn completes, limit the turn's
-pending (interruptible) function-call tracking to calls present in the folded
-terminal's delivered output. Under the unified stop rule no fold mode
-discards a buffered client tool call — a truncated round emitting one stops
-the fold and delivers it — so this prune is a defense-in-depth invariant:
-should a regression reintroduce a discarded call, the client never received
-it and the final round's stored upstream context does not contain it, so
-interrupted-tool-output injection MUST NOT synthesize an output for any call
-absent from the delivered terminal output on a follow-up turn.
+When a folded WebSocket turn completes, codex-lb MUST track as pending
+(interruptible) only function calls in the folded terminal's delivered output.
+On follow-up turns, interrupted-tool-output injection MUST NOT synthesize
+outputs for calls absent from that output, even if a regression discarded them.
 
 #### Scenario: Undelivered call is not treated as interrupted
 - **WHEN** a folded turn's terminal output omits a `function_call` observed
@@ -150,14 +132,12 @@ absent from the delivered terminal output on a follow-up turn.
 - **AND** no synthetic interrupted output is injected for the undelivered call
 
 ### Requirement: Orphaned Tool-Output Errors Fail Closed
-codex-lb MUST classify the upstream error message
+On WebSocket relay and HTTP bridge paths, codex-lb MUST classify
 `"No tool call found for function call output with call_id ..."`
-(`type=invalid_request_error`, `param=input`) as a continuity-corruption
-condition equivalent to the existing missing-tool-output classification, on
-both the WebSocket relay and the HTTP bridge paths. Matching turns MUST NOT
-relay the raw upstream 400 downstream; they MUST receive the fail-closed
-`stream_incomplete` rewrite so the client retries with a self-contained
-full-history resend.
+(`type=invalid_request_error`, `param=input`) as continuity corruption,
+equivalent to missing-tool-output errors. Matching turns MUST receive the
+fail-closed `stream_incomplete` rewrite, not the raw upstream 400, so clients
+retry with a self-contained full-history resend.
 
 #### Scenario: Orphaned tool output on a follow-up turn is rewritten
 - **WHEN** a WebSocket follow-up turn carrying `previous_response_id` receives
@@ -169,7 +149,11 @@ full-history resend.
 - **AND** a `continuity_fail_closed` observation is recorded
 
 ### Requirement: Continuation Fold Decisions Emit A Prometheus Counter
-codex-lb MUST increment a Prometheus counter `codex_lb_codex_continuation_decision_total`, labeled `transport`, `decision`, and `tier`, exactly once per fold round terminal whose usage matches the reasoning-token truncation fingerprint (truncation tier present), on both the HTTP pull fold and the WebSocket push fold. The `transport` label MUST be `http` or `websocket`. The `decision` label MUST be drawn from the closed set `continue`, `buffered_tool_calls`, `missing_round_anchor`, `no_encrypted_content`, `max_continue`, `max_total_output_tokens`, `tier_out_of_window`, `stop`. The `tier` label MUST be the truncation tier rendered as a bounded low-cardinality string, with tiers above a fixed cap collapsed into a single overflow bucket. Round terminals that do not match the truncation fingerprint MUST NOT increment the counter, and decision recording MUST be a no-op when the optional Prometheus dependency is unavailable.
+For HTTP pull and WebSocket push folds, codex-lb MUST increment
+`codex_lb_codex_continuation_decision_total` exactly once per round terminal
+whose usage matches the reasoning-token truncation fingerprint (tier present).
+Non-matching terminals MUST NOT increment the counter. Recording MUST be a no-op
+when the optional Prometheus dependency is unavailable.
 
 #### Scenario: WebSocket fold continues past a truncated round
 - **WHEN** a WebSocket fold round terminal matches the truncation fingerprint at tier 1
@@ -189,19 +173,26 @@ codex-lb MUST increment a Prometheus counter `codex_lb_codex_continuation_decisi
 - **WHEN** a fold round terminal does not match the truncation fingerprint
 - **THEN** the counter is not incremented for that terminal
 
+### Requirement: Continuation decision counter labels remain bounded
+The continuation decision counter MUST label `transport` as `http` or
+`websocket`, `decision` as one of `continue`, `buffered_tool_calls`,
+`missing_round_anchor`, `no_encrypted_content`, `max_continue`,
+`max_total_output_tokens`, `tier_out_of_window`, or `stop`, and `tier` as a
+bounded low-cardinality truncation-tier string. Tiers above a fixed cap MUST
+collapse into one overflow bucket.
+
+#### Scenario: Counter tier exceeds its fixed cap
+- **WHEN** a matching continuation terminal has a tier above the fixed cap
+- **THEN** the counter uses the single overflow tier bucket
+
 ### Requirement: Truncated Rounds Emitting Client Tool Calls Stop The Fold In Every Mode
-codex-lb MUST stop a continuation fold — instead of opening another hidden
-round — when the just-truncated round's buffered output contains a
-client-answered tool call (`function_call`, `custom_tool_call`, or
-`apply_patch_call`). The rule SHALL apply uniformly in all three fold modes:
-chained WebSocket turns, anchorless WebSocket turns, and the HTTP pull
-engine. The stopped fold MUST flush the buffered output — tool calls
-included — into the delivered downstream events and the reconstructed
-terminal's `output`, so the client receives the calls it must answer. No
-fold mode SHALL discard a buffered client tool call: a chained hidden round
-would anchor a context holding an unanswered call (the upstream rejects it),
-and an anchorless or HTTP full-history replay would silently drop actionable
-output and re-think, risking duplicate side-effect tool calls.
+codex-lb MUST stop folding without opening another hidden round when the
+just-truncated round buffered a client-answered tool call (`function_call`,
+`custom_tool_call`, or `apply_patch_call`). This rule SHALL apply to chained and
+anchorless WebSocket turns and the HTTP pull engine. The stopped fold MUST flush
+all buffered output, including tool calls, into downstream events and the
+reconstructed terminal's `output`. No fold mode SHALL discard a buffered client
+tool call.
 
 #### Scenario: Anchorless WebSocket turn stops and delivers the tool call
 - **WHEN** a WebSocket turn without `previous_response_id` truncates on the
@@ -219,14 +210,12 @@ output and re-think, risking duplicate side-effect tool calls.
   whose `output` contains the `function_call`
 
 ### Requirement: Buffered-Tool-Call Stops Carry An Overriding Stopped Reason
-codex-lb MUST stamp `metadata.proxy_stopped_reason = "buffered_tool_calls"`
-on the reconstructed terminal whenever a fold stops because the truncated
-round's buffered output contains a client-answered tool call, in every fold
-mode. The reason MUST override the generic stopped-reason derivation — it
-MUST NOT be mislabeled by the derivation's `tier_out_of_window` fallback —
-and the buffered-tool-call check MUST be evaluated only for rounds that
-would otherwise continue, so rounds that do not hit the continuation
-fingerprint keep their tool-call terminals unchanged with no stopped reason.
+In every fold mode, a stop caused by a truncated round's buffered client tool
+call MUST set `metadata.proxy_stopped_reason = "buffered_tool_calls"` on the
+reconstructed terminal. This MUST override generic reason derivation, including
+its `tier_out_of_window` fallback. The buffered-tool-call check MUST run only for
+rounds that would otherwise continue. Non-fingerprint tool-call terminals MUST
+remain unchanged with no stopped reason.
 
 #### Scenario: HTTP fold stop reports buffered_tool_calls
 - **WHEN** the HTTP pull engine stops a fold because the truncated round
@@ -247,16 +236,13 @@ fingerprint keep their tool-call terminals unchanged with no stopped reason.
 - **THEN** the terminal is delivered without a `proxy_stopped_reason`
 
 ### Requirement: WebSocket Continuity State Is Persisted To A Shared Store
-codex-lb MUST persist a session's WebSocket continuity state — last completed
-input count, last completed response id, last completed input-prefix
-fingerprint, pending function-call ids, and folded response-id aliases — to a
-shared `websocket_continuity_states` store keyed by
-`(session_key, api_key_id)` (empty string when no API key), after each
-recorded continuity completion: both the plain `response.completed` path and
-the fold-terminal path, where the persisted snapshot MUST include any
-just-recorded folded response-id alias. States without a continuity key
-(codex session affinity disabled, or no session id derivable from the
-connection headers) MUST NOT be persisted.
+After each recorded plain `response.completed` or fold-terminal continuity
+completion, codex-lb MUST persist last-completed input count, response id and
+input-prefix fingerprint, pending function-call ids and folded response-id
+aliases (including new aliases) in shared `websocket_continuity_states`, keyed by
+`(session_key, api_key_id)` (empty string when no API key). States MUST NOT persist
+without a continuity key: codex affinity disabled or no session id derivable from
+connection headers.
 
 #### Scenario: Plain completion persists the continuity snapshot
 - **WHEN** a keyed WebSocket turn completes with `response.completed` and the
@@ -277,14 +263,12 @@ connection headers) MUST NOT be persisted.
   connection's continuity state
 
 ### Requirement: WebSocket Connections Hydrate Continuity State On Setup
-codex-lb MUST, when a downstream WebSocket connection's continuity lookup
-misses the worker's in-memory index, attempt to hydrate the freshly created
-state from the shared store exactly once at connection setup, before the
-relay loop starts. Hydration MUST apply only while the state is pristine
-(all fields at defaults) so persisted data can never overwrite fresher
-in-memory data, and hydrated fields MUST be defensively validated (including
-re-applying the folded-alias bound) before use. A lookup that hits the
-in-memory index MUST NOT read the store.
+On a downstream WebSocket continuity lookup miss in the worker's in-memory
+index, codex-lb MUST attempt shared-store hydration of the new state exactly
+once during connection setup, before the relay loop. Hydration MUST apply only
+to pristine states (all fields at defaults). Fields MUST be defensively
+validated before use, including re-applying the folded-alias bound. In-memory
+hits MUST NOT read the store.
 
 #### Scenario: Cross-worker reconnect restores the folded alias
 - **WHEN** a client whose folded turn completed on worker A reconnects to
@@ -302,14 +286,13 @@ in-memory index MUST NOT read the store.
 - **THEN** no store read is performed and the in-memory state is used as-is
 
 ### Requirement: Continuity-State Persistence Never Blocks The Relay
-Continuity-state persistence MUST be best-effort and non-blocking: writes
-MUST run as tracked background tasks that the relay never awaits, each task
-MUST open its own database session scope (never sharing a session with the
-relay or another task), and the persisted payload MUST be snapshotted
-synchronously at schedule time so later turns cannot mutate an in-flight
-write. Within a worker, writes for one state MUST be ordered such that an
-older snapshot never overwrites a newer one. Task failures MUST be logged
-via the task set's completion handling, not raised into the relay.
+Continuity-state persistence MUST be best-effort and non-blocking. Writes MUST
+run as tracked background tasks, never awaited by the relay, each with its own
+unshared database session. Payloads MUST be snapshotted synchronously at schedule
+time, preventing later turns from mutating in-flight writes. Within each worker,
+writes for one state MUST be ordered so older snapshots cannot overwrite newer
+ones. Failures MUST be logged through task-set completion handling, not raised
+into the relay.
 
 #### Scenario: The relay does not wait for the store
 - **WHEN** a continuity completion schedules a persistence write
@@ -324,15 +307,13 @@ via the task set's completion handling, not raised into the relay.
   connection
 
 ### Requirement: Continuity Store Failures Degrade To In-Memory Behavior
-Any failure of the shared continuity-state store MUST degrade to the
-per-worker in-memory-only behavior that exists today and MUST NOT fail the
-WebSocket relay: a missing table (mid-rollout), an unavailable database, an
-absent repository binding, and a corrupt or non-conforming persisted payload
-MUST each result in a warning and an empty (or unhydrated) state. Warning
-log lines MUST NOT contain raw session identifiers; identifiers MUST be
-hashed following the existing continuity observability convention. Stale
-persisted data read by another worker MUST be recoverable through the
-existing fail-closed continuity retry, never through corruption of the turn.
+Shared-store failures MUST fall back to existing per-worker in-memory-only behavior,
+not fail the WebSocket relay. Missing tables, unavailable databases, absent
+repository bindings and corrupt/non-conforming payloads MUST yield a warning and
+empty or unhydrated state. Warnings MUST hash session identifiers under the
+existing continuity observability convention, never log them raw. Stale reads on
+another worker MUST be recoverable by existing fail-closed continuity retry,
+never corrupt the turn.
 
 #### Scenario: Hydration read failure yields an empty state
 - **WHEN** the store read at connection setup raises

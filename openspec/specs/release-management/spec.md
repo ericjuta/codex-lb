@@ -1,11 +1,11 @@
 # release-management Specification
 
 ## Purpose
-TBD - created by archiving change add-beta-release-channel. Update Purpose after archive.
+Describe beta release preparation and publication, prerelease artifact isolation from stable aliases, and release-please-owned stable promotion. This fork does not currently run the release-please workflow, so release-please-dependent steps require a separately maintained release process.
 ## Requirements
 ### Requirement: Beta releases are prepared through release PRs
 
-Beta releases SHALL be prepared by an automatically maintained pull request against `main` that updates the release-managed version files to `X.Y.Z-beta.N`. The beta preparation flow SHALL run after release-please completes and after pushes to `main`, SHALL derive `X.Y.Z` from the open release-please PR branch, and SHALL do nothing when there is no open release-please PR. Beta release PRs SHALL NOT update `.github/release-please-manifest.json` because stable version ownership remains with release-please.
+An automatically maintained PR against `main` SHALL prepare beta releases by setting release-managed version files to `X.Y.Z-beta.N`. Preparation SHALL run after release-please completes and after pushes to `main`. It SHALL derive `X.Y.Z` from the open release-please PR branch, or do nothing if none exists. Beta PRs SHALL NOT update `.github/release-please-manifest.json`. Release-please retains stable version ownership.
 
 #### Scenario: automation syncs the next beta from the release-please PR
 
@@ -37,7 +37,13 @@ Beta releases SHALL be prepared by an automatically maintained pull request agai
 
 ### Requirement: Merged beta release PRs publish GitHub prereleases
 
-When a pull request from a `release/beta-*` branch is merged into `main`, the release automation SHALL require `RELEASE_PLEASE_TOKEN` rather than falling back to `GITHUB_TOKEN`, verify that all release-managed version files agree on a beta version, create the matching `vX.Y.Z-beta.N` tag at the merge commit, and publish a GitHub prerelease for that tag. Re-running the workflow after the tag already exists SHALL be safe and SHALL NOT create a second tag.
+When a `release/beta-*` PR merges into `main`, release automation SHALL:
+
+- Require `RELEASE_PLEASE_TOKEN`, with no `GITHUB_TOKEN` fallback.
+- Verify all release-managed version files agree on a beta version.
+- Create the matching `vX.Y.Z-beta.N` tag at the merge commit and publish its GitHub prerelease.
+
+Reruns after the tag exists SHALL be safe and SHALL NOT create a second tag.
 
 #### Scenario: beta PR merge publishes a prerelease tag
 
@@ -50,7 +56,7 @@ When a pull request from a `release/beta-*` branch is merged into `main`, the re
 
 ### Requirement: Prerelease artifacts do not advance stable aliases
 
-The release publishing workflow SHALL accept both stable tags (`vX.Y.Z`) and prerelease tags (`vX.Y.Z-alpha.N`, `vX.Y.Z-beta.N`, `vX.Y.Z-rc.N`). For prerelease tags, Docker publishing SHALL NOT update `latest`, `X`, or `X.Y` aliases, and the GitHub Release SHALL remain marked as a prerelease and not latest. Stable tags SHALL retain existing stable aliases and latest-release behavior.
+Release publishing SHALL accept stable (`vX.Y.Z`) and prerelease (`vX.Y.Z-alpha.N`, `vX.Y.Z-beta.N`, `vX.Y.Z-rc.N`) tags. Prereleases SHALL NOT update Docker aliases `latest`, `X`, or `X.Y`. Their GitHub Releases SHALL remain prereleases, not latest. Stable tags SHALL retain existing stable aliases and latest-release behavior.
 
 #### Scenario: beta release publishes beta-only Docker tags
 

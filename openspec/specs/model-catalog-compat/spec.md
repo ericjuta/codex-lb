@@ -1,19 +1,11 @@
 # model-catalog-compat Specification
 
 ## Purpose
-TBD - created by archiving change populate-bootstrap-model-metadata. Update Purpose after archive.
+Describe bootstrap and refreshed model discovery, catalog authority, and context-window metadata for OpenAI-compatible and Codex-native endpoints.
 ## Requirements
 ### Requirement: Bootstrap model catalog is available before refresh
 
-Before the first successful upstream model-registry refresh, the system MUST
-serve a conservative static catalog of known Codex model slugs from both
-`GET /v1/models` and `GET /backend-api/codex/models`. This static catalog is a
-bundled fallback for startup/offline paths; refreshed upstream model-registry
-data remains the authoritative source once available. The bootstrap catalog MUST
-include `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`,
-`gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`,
-`gpt-5.2`, and `codex-auto-review`, and MUST NOT invent unverified variant
-slugs such as `gpt-5.5-pro`.
+Before the first successful registry refresh, `GET /v1/models` and `GET /backend-api/codex/models` MUST serve a conservative bundled static startup/offline catalog of known Codex slugs. Refreshed upstream data remains authoritative once available. The bootstrap MUST include `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.2`, and `codex-auto-review`, and MUST NOT invent unverified variants such as `gpt-5.5-pro`.
 
 #### Scenario: OpenAI-compatible models endpoint serves bootstrap slugs
 

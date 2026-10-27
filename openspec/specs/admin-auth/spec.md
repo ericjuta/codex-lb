@@ -26,7 +26,7 @@ The system SHALL rate-limit failed password login attempts using the existing `T
 
 ### Requirement: Password length is bounded by bcrypt's input limit
 
-The system SHALL enforce both a minimum and a maximum length on dashboard passwords submitted to `POST /api/dashboard-auth/password/setup` and to the `new_password` field of `POST /api/dashboard-auth/password/change`. The maximum length MUST be measured against the UTF-8 encoded byte length of the password (matching bcrypt's internal limit), not against the codepoint count, and MUST be set to exactly 72 bytes.
+The system SHALL enforce minimum and maximum dashboard password lengths for `POST /api/dashboard-auth/password/setup` and `POST /api/dashboard-auth/password/change`'s `new_password`. The maximum MUST be exactly 72 UTF-8 bytes, matching bcrypt's limit, not 72 codepoints.
 
 #### Scenario: Setup rejects passwords longer than 72 bytes
 
@@ -51,7 +51,7 @@ The system SHALL enforce both a minimum and a maximum length on dashboard passwo
 
 ### Requirement: Dashboard password sessions use a configurable absolute lifetime
 
-The system SHALL issue dashboard password-authenticated sessions with an absolute lifetime controlled by persisted dashboard settings. The default lifetime SHALL remain 12 hours. The configured lifetime SHALL apply to newly issued dashboard password sessions by setting both the encrypted session expiry payload and the cookie `Max-Age` to the same value.
+Persisted dashboard settings SHALL control dashboard password-authenticated sessions' absolute lifetime, defaulting to 12 hours. Newly issued sessions SHALL set both the encrypted expiry payload and cookie `Max-Age` to that lifetime.
 
 #### Scenario: Newly issued dashboard password session honors configured lifetime
 
@@ -67,9 +67,7 @@ The system SHALL issue dashboard password-authenticated sessions with an absolut
 
 ### Requirement: Trusted proxy client identity resists appended Forwarded chain spoofing
 
-When proxy-header trust is enabled and the socket peer belongs to a configured trusted proxy CIDR, the system MUST resolve an RFC 7239 `Forwarded` client chain from right to left. It MUST advance toward an earlier `for=` hop only while the immediately downstream peer is trusted. Every forwarded element MUST contain exactly one valid IP `for=` node, optionally with a valid port. Every parameter name and value MUST follow RFC 7239 token or quoted-string syntax, and no parameter name may repeat within an element. IPv6 nodes MUST be bracketed and quoted, and every node carrying a port MUST be quoted; numeric ports MUST contain one to five ASCII digits and fall within `0..65535`. Otherwise the entire `Forwarded` value MUST fail closed and MUST NOT classify the request as local.
-
-`X-Real-IP`, `True-Client-IP`, and `CF-Connecting-IP` MUST each occur at most once. Repetition of any such singleton client-IP header MUST return no resolved client IP and MUST NOT classify the request as local.
+With proxy-header trust enabled and the socket peer in a configured trusted proxy CIDR, the system MUST resolve RFC 7239 `Forwarded` right-to-left. It MUST advance to an earlier `for=` hop only while the immediately downstream peer is trusted.
 
 #### Scenario: Client-preseeded loopback value cannot bypass remote bootstrap protection
 
@@ -91,6 +89,10 @@ When proxy-header trust is enabled and the socket peer belongs to a configured t
 - **AND** the `Forwarded` elements contain one valid IP `for=` node per hop
 - **THEN** the system resolves the originating client IP from the earliest reachable element
 
+### Requirement: Forwarded elements require valid RFC 7239 syntax
+
+For trusted-proxy resolution, each `Forwarded` element MUST have exactly one valid IP `for=` node, optionally with a valid port. Names/values MUST use RFC 7239 token or quoted-string syntax. Names MUST NOT repeat per element. IPv6 nodes MUST be bracketed and quoted. Port-bearing nodes MUST be quoted. Numeric ports MUST have 1–5 ASCII digits within `0..65535`. Otherwise the entire `Forwarded` value MUST fail closed and MUST NOT classify the request as local.
+
 #### Scenario: Malformed or incomplete Forwarded chain fails closed
 
 - **WHEN** any `Forwarded` element has a missing, duplicate, obfuscated, unknown, or malformed `for=` node
@@ -108,6 +110,10 @@ When proxy-header trust is enabled and the socket peer belongs to a configured t
 - **WHEN** a trusted socket proxy supplies a valid quoted bracketed IPv6 `for=` node with a numeric port
 - **THEN** the system resolves the IPv6 address without the brackets or port
 
+### Requirement: Singleton client-IP headers reject repeated fields
+
+`X-Real-IP`, `True-Client-IP`, and `CF-Connecting-IP` MUST each occur at most once. Repetition MUST yield no resolved client IP and MUST NOT establish locality.
+
 #### Scenario: Repeated singleton client-IP header fails closed
 
 - **WHEN** a trusted socket request contains more than one field for `X-Real-IP`, `True-Client-IP`, or `CF-Connecting-IP`
@@ -116,7 +122,7 @@ When proxy-header trust is enabled and the socket peer belongs to a configured t
 
 ### Requirement: Trusted-proxy locality requires trusted socket provenance
 
-When proxy-header trust is enabled, the system MUST classify a forwarded loopback client as local only when the raw socket peer belongs to a configured trusted-proxy CIDR and forwarded client resolution succeeds. The mere presence of a forwarded client-IP header from an untrusted socket peer MUST NOT establish locality or bypass remote dashboard bootstrap requirements.
+With proxy-header trust enabled, the system MUST classify a forwarded loopback client as local only if its raw socket peer matches a configured trusted-proxy CIDR and forwarded resolution succeeds. A forwarded client-IP header from an untrusted socket peer MUST NOT establish locality or bypass remote dashboard bootstrap requirements.
 
 #### Scenario: Untrusted loopback proxy cannot bypass remote bootstrap
 

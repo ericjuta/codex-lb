@@ -23,7 +23,7 @@ The Settings page SHALL include sections for: routing settings (sticky threads, 
 
 The Accounts page SHALL display a two-column layout: left panel with searchable account list, import button, and add account button; right panel with selected account details including usage, token info, and actions (pause/resume/delete/re-authenticate). The browser OAuth stage SHALL show an authorization URL with a copy action that remains functional in secure and non-secure contexts.
 
-The Accounts page SHALL also allow exporting a selected account as an OpenCode-compatible `auth.json` payload with explicit raw-token warnings.
+The page SHALL offer selected-account OpenCode-compatible `auth.json` export with explicit raw-token warnings.
 
 #### Scenario: Account selection
 
@@ -80,6 +80,28 @@ The Accounts page SHALL also allow exporting a selected account as an OpenCode-c
 - **THEN** the dashboard requests a per-account export from the backend
 - **AND** shows copy/download controls for the official OpenCode `auth.json` payload
 - **AND** warns that the payload contains raw account tokens
+### Requirement: Device OAuth replacement preserves polling cancellation
+
+Starting a replacement device OAuth flow SHALL cancel any previous pending device poll. Cancellation during route-resolution database cleanup MUST remain effective after cleanup completes, before the previous poll starts token exchange. The replacement flow MUST remain available for polling.
+
+#### Scenario: Replace a poll waiting for token exchange
+
+- **WHEN** a replacement device flow starts while the previous pending flow waits for token exchange
+- **THEN** the previous poll terminates through cancellation
+- **AND** the replacement is the only pending device flow and continues polling
+
+#### Scenario: Replace a poll during route-session rollback
+
+- **WHEN** a replacement device flow starts while the previous poll rolls back its route-resolution database session
+- **THEN** that cleanup finishes and the previous poll terminates through cancellation without starting token exchange
+- **AND** the replacement flow continues polling
+
+#### Scenario: Replace a poll during route-session close
+
+- **WHEN** a replacement device flow starts while the previous poll closes its route-resolution database session
+- **THEN** that cleanup finishes and the previous poll terminates through cancellation without starting token exchange
+- **AND** the replacement flow continues polling
+
 ### Requirement: Request logs display account plan tier
 When a request log entry is associated with an account, the dashboard request-log API response MUST expose the persisted request-log `planType` snapshot, and the recent-requests table MUST render the plan tier in a visible request-log column or badge.
 
@@ -156,7 +178,7 @@ The dashboard request logs view SHALL allow operators to filter rows by one or m
 
 ### Requirement: Dashboard weekly credits pace
 
-The dashboard SHALL show weekly quota pace when account weekly capacity credits, remaining credits, reset time, and window length are available. The pace calculation MUST use credit totals rather than averaging per-account percentages, because weekly ChatGPT quota credits are not the same unit as raw request tokens. The dashboard MUST prefer the backend-provided `weeklyCreditPace` object from `GET /api/dashboard/overview` when present, and MAY fall back to a local calculation only for older responses that do not include that field.
+The dashboard SHALL show weekly quota pace when account weekly capacity credits, remaining credits, reset time, and window length are available. The calculation MUST use credit totals, not averaged account percentages: weekly ChatGPT quota credits and raw request tokens use different units. The dashboard MUST prefer `weeklyCreditPace` from `GET /api/dashboard/overview` when present. It MAY calculate pace locally only for older responses without that field.
 
 #### Scenario: Weekly credits pace uses account reset deadlines
 
@@ -257,15 +279,7 @@ The SPA settings page SHALL expose a dashboard password session lifetime control
 
 ### Requirement: Account summary duplicate email indicator
 
-The dashboard accounts API SHALL expose an `isEmailDuplicate` boolean on each
-`AccountSummary` returned by `GET /api/accounts`. The field MUST be `true` when
-another account row in the same response has the same real email address and
-the same ChatGPT account identity, and MUST be `false` for unique real
-email/identity pairs. Missing, blank, and legacy placeholder emails equal to
-`DEFAULT_EMAIL` (`unknown@example.com`) MUST be excluded from duplicate
-detection and MUST NOT be flagged as duplicates. Rows that share an email but
-belong to different ChatGPT account identities MUST NOT be flagged as
-duplicates.
+Each `AccountSummary` from `GET /api/accounts` SHALL include an `isEmailDuplicate` boolean. It MUST be `true` when another row in the response has the same real email and ChatGPT account identity, and `false` for unique pairs. Missing, blank, and `DEFAULT_EMAIL` (`unknown@example.com`) emails MUST be excluded from duplicate detection and not flagged. Rows sharing an email but not a ChatGPT account identity MUST NOT be flagged.
 
 #### Scenario: Duplicate real email and identity pairs are flagged
 
@@ -310,9 +324,7 @@ data is available.
 
 ### Requirement: Dashboard usage donuts present credits as stacked remaining and capacity
 
-The dashboard's primary and secondary usage donuts MUST present remaining credits and capacity as two stacked values separated by a horizontal divider: the remaining count above (bold, `data-testid="donut-center-remaining"`) and the capacity count below (muted, `data-testid="donut-center-capacity"`). Both values MUST use locale-aware thousands separators (e.g. `7,331` and `7,560`). Compact-format abbreviation (e.g. `7.33k`) MUST NOT be used in the donut center for these panels.
-
-The primary donut title MUST read `5-Hour Credits`. The secondary donut title MUST read `Weekly Credits`.
+The dashboard's primary and secondary usage donuts MUST stack remaining credits above capacity in the center, with a horizontal divider. Remaining MUST be bold (`data-testid="donut-center-remaining"`). Capacity MUST be muted (`data-testid="donut-center-capacity"`). Both MUST use locale-aware thousands separators (e.g. `7,331`, `7,560`), never compact abbreviations (e.g. `7.33k`). Titles MUST be `5-Hour Credits` (primary) and `Weekly Credits` (secondary).
 
 #### Scenario: Dashboard donut shows stacked remaining and capacity
 
@@ -323,20 +335,16 @@ The primary donut title MUST read `5-Hour Credits`. The secondary donut title MU
 
 ### Requirement: API sidebar shows pooled credit bars
 
-The APIs page left sidebar SHALL render pooled credit bars on each API key list item. Each bar SHALL display a label, percentage, and colored progress bar using the same `MiniQuotaBar` component as the Accounts sidebar.
-
-Labels SHALL be "Pooled 5h" for the primary window and "Pooled Weekly" for the secondary window. No reset countdown text SHALL be shown.
-
-When `pooledCapacityCreditsPrimary > 0` and `pooledRemainingPercentPrimary` is not null, the "Pooled 5h" bar SHALL be visible. Otherwise it SHALL be hidden. The "Pooled Weekly" bar SHALL be visible when `pooledRemainingPercentSecondary` is not null.
-
-When both bars are visible, they SHALL be laid out in a 2-column grid. When only one bar is visible, it SHALL use a 1-column layout.
-
-When API key limit rules exist, the sidebar SHALL also render the legacy limit progress bar below the pooled bars with an "API Limit" label and percentage value so it remains clearly distinct from the pooled-account bars.
+The APIs page left sidebar SHALL show pooled credit bars on each API key list item using the Accounts sidebar's `MiniQuotaBar`, with a label, percentage, and colored progress bar. Labels SHALL be "Pooled 5h" (primary) and "Pooled Weekly" (secondary), without reset countdowns. Two visible bars SHALL use a 2-column grid. One SHALL use a 1-column layout.
 
 #### Scenario: Both pooled bars visible
 
 - **WHEN** an API key has both primary and secondary pooled credit data
 - **THEN** the sidebar item shows "Pooled 5h" and "Pooled Weekly" bars in a 2-column grid
+
+### Requirement: API sidebar pooled credit bar visibility
+
+The "Pooled 5h" bar SHALL be visible when `pooledCapacityCreditsPrimary > 0` and `pooledRemainingPercentPrimary` is not null, and hidden otherwise. The "Pooled Weekly" bar SHALL be visible when `pooledRemainingPercentSecondary` is not null.
 
 #### Scenario: Primary bar hidden for free-tier accounts
 
@@ -347,6 +355,10 @@ When API key limit rules exist, the sidebar SHALL also render the legacy limit p
 
 - **WHEN** an API key has no pooled credit data
 - **THEN** no credit bars are rendered on that list item
+
+### Requirement: API sidebar distinguishes legacy limits from pooled credits
+
+When API key limit rules exist, the sidebar SHALL render the legacy limit progress bar below the pooled bars with an "API Limit" label and percentage to distinguish it from pooled-account bars.
 
 #### Scenario: API limit bar is labeled distinctly
 
@@ -421,7 +433,7 @@ The dashboard SHALL expose global limit warm-up controls in Settings and per-acc
 
 ### Requirement: Account alias contract
 
-The dashboard accounts API SHALL expose an operator-controlled, human-readable `alias` on every account summary, and SHALL provide an endpoint that lets an authenticated dashboard session set or clear that alias. The alias MUST be persisted on the `Account` record and MUST be reflected in `AccountSummary.alias`. When a non-empty alias is set, the same `AccountSummary.display_name` field MUST resolve to the alias so consumers that already render `display_name` see the operator's chosen label without further changes. When the alias is null or cleared, `display_name` MUST fall back to the account's email so existing UI continues to identify the account.
+The dashboard accounts API SHALL expose an operator-controlled, human-readable `alias` on every summary and an endpoint for authenticated dashboard sessions to set or clear it. The alias MUST persist on `Account` and appear in `AccountSummary.alias`. `AccountSummary.display_name` MUST use a non-empty alias, or the account email when the alias is null or cleared, so existing consumers show the chosen label or identify the account by email without changes.
 
 #### Scenario: Listing surfaces the alias when set
 
@@ -461,9 +473,7 @@ The dashboard accounts API SHALL expose an operator-controlled, human-readable `
 
 ### Requirement: APIs tab shows a 7-day account-cost donut for selected API keys
 
-When the selected API key's 7-day usage payload contains one or more `accountCosts[]` items, the APIs tab detail panel SHALL render the account-cost donut section and usage-trend section inside a single shared card. On large screens, the split layout SHALL use a 25:75 width ratio with the donut on the left, the trend on the right, and a vertical separator between them.
-
-The donut section SHALL include a title and subtitle, SHALL show the 7-day total cost in the donut center, SHALL not render a separate `Total $...` summary in the section header, and SHALL render the legend below the donut.
+When the selected API key's 7-day usage payload has `accountCosts[]` items, the APIs tab detail panel SHALL place the account-cost donut and usage trend in one card. On large screens, it SHALL use a 25:75 width split: donut left, trend right, with a vertical separator. The donut section SHALL have a title, subtitle, 7-day total cost in the donut center, and legend below the donut, without a separate `Total $...` header summary.
 
 #### Scenario: Donut renders inside the shared usage card
 - **WHEN** a selected API key has 7-day account-cost data and trend data
@@ -476,9 +486,7 @@ The donut section SHALL include a title and subtitle, SHALL show the 7-day total
 
 ### Requirement: APIs tab account-cost donut uses existing account labels and privacy rules
 
-The donut legend SHALL use the account label derived from the existing payload fields: `Deleted Account` for `isDeleted: true`, otherwise the account `email` when present, otherwise `Unknown Account`. Non-deleted account labels MUST respect the hide-account-info privacy setting used elsewhere in the dashboard.
-
-The legend SHALL show each visible bucket's 7-day cost, SHALL coordinate hover highlighting with the matching pie slice, and SHALL use the same vertically scrollable five-row viewport pattern as the dashboard donuts when more rows exist than fit without scrolling.
+Donut legend labels SHALL use existing payload fields: `Deleted Account` if `isDeleted: true`, otherwise `email` when present, otherwise `Unknown Account`. Non-deleted labels MUST respect the dashboard hide-account-info setting. The legend SHALL show each visible bucket's 7-day cost, link hover highlighting to its pie slice, and use the dashboard donuts' vertically scrollable five-row viewport pattern when rows exceed the space available without scrolling.
 
 #### Scenario: Deleted account label is explicit
 - **WHEN** an `accountCosts[]` item has `isDeleted: true`
@@ -585,11 +593,10 @@ The dashboard request-log `View Details` dialog MUST render a `Cost` section und
 
 ### Requirement: Reports page renders English user-facing labels
 
-The dashboard SHALL render `/reports` with the following exact page-owned user-facing labels for the current reports surface:
+Current `/reports` page-owned labels SHALL use this exact text:
 
 - `Cost Report`
 - `Usage history by date range`
-- `Loading...`
 - `Total Cost`
 - `Requests`
 - `Cost by Day`
@@ -603,13 +610,8 @@ The dashboard SHALL render `/reports` with the following exact page-owned user-f
 - `Cost`
 - `Accounts`
 - `Total`
-- `Failed to load report data:`
-- `Failed to load model and user-agent options:`
-- `Failed to load account options:`
-- `Some report data could not be loaded. Try reloading.`
-- `Retry`
 
-Backend-provided strings, account values, model values, and raw server error payload text SHALL remain out of scope for this wording change unless `/reports` renders page-owned labels around them.
+Backend-provided strings, account values, model values, and raw server error payload text SHALL remain out of scope unless `/reports` renders page-owned labels around them.
 
 #### Scenario: Reports page shows English labels
 
@@ -619,6 +621,19 @@ Backend-provided strings, account values, model values, and raw server error pay
 - **AND** the summary cards include `Total Cost` and `Requests`
 - **AND** the chart and table section titles include `Cost by Day`, `Tokens by Day`, `Distribution by Model`, `Distribution by UserAgent`, and `Daily Breakdown`
 - **AND** the daily table headings include `Day`, `Input Tokens`, `Output Tokens`, `Cost`, and `Accounts`
+
+### Requirement: Reports page renders English state labels
+
+The dashboard SHALL use these exact page-owned state labels on the current `/reports` surface:
+
+- `Loading...`
+- `Failed to load report data:`
+- `Failed to load model and user-agent options:`
+- `Failed to load account options:`
+- `Some report data could not be loaded. Try reloading.`
+- `Retry`
+
+Backend-provided strings, account values, model values, and raw server error payload text SHALL remain out of scope unless `/reports` renders page-owned labels around them.
 
 #### Scenario: Reports page state labels are English
 
@@ -630,9 +645,7 @@ Backend-provided strings, account values, model values, and raw server error pay
 
 ### Requirement: Reports distribution donuts show compact active-metric totals
 
-The `/reports` page SHALL render both `Distribution by Model` and `Distribution by UserAgent` cards with a donut-center total that uses the page-owned label `Total` above the current metric value.
-When a donut card is in `cost` mode, its center total and legend values SHALL display compact USD values with up to two fractional digits and `K`, `M`, or `B` suffixes when applicable.
-When a donut card is in `req` mode, its center total and legend values SHALL display compact request values with up to two fractional digits and `K`, `M`, or `B` suffixes when applicable.
+On `/reports`, `Distribution by Model` and `Distribution by UserAgent` cards SHALL show the page-owned label `Total` above the current metric value in the donut center. Center totals and legend values SHALL use compact USD in `cost` mode and compact request values in `req` mode, with up to two fractional digits and `K`, `M`, or `B` suffixes when applicable.
 
 #### Scenario: Reports distribution donut totals switch with the selected metric
 
@@ -741,13 +754,7 @@ The progressive-disclosure composition MUST preserve fork-specific routes, setti
 
 ### Requirement: Dashboard overview and request-log listing fail independently
 
-The Dashboard SHALL gate overview-backed statistics, quota, projections, and account controls only on dashboard overview availability. The Request Logs section SHALL own the initial loading, terminal error, and ready states of its listing query without hiding healthy overview-backed content.
-
-When the initial request-log listing reaches a terminal error, the Request Logs section MUST remain visible, MUST render the listing error inside that section, MUST announce that error through an alert semantic local to the section, and MUST expose a keyboard-operable, accessibly named Retry action. Activating Retry MUST refetch only the request-log listing query and MUST NOT refetch or hide healthy overview-backed content.
-
-While the initial overview request is pending with no data, the Dashboard SHALL render the existing page-wide skeleton. When that request reaches a terminal error with no data, it MUST NOT render the skeleton; it MUST preserve the shell, MUST announce the error, and MUST expose a keyboard-operable Retry.
-
-Retry SHALL refetch only the overview query. The terminal error SHALL remain rendered and Retry SHALL remain disabled with a busy state while that no-data refetch is in flight. Successful refetch SHALL replace the error with overview content. Cached overview data SHALL remain visible on later refetch errors.
+The Dashboard SHALL gate overview-backed statistics, quota, projections, and account controls only on overview availability. Request Logs SHALL own its listing's initial loading, terminal error, and ready states without hiding healthy overview content. On that error, it MUST stay visible, show and announce the error as a section-local alert, and offer a keyboard-operable, accessibly named Retry. Retry MUST refetch only the listing query without refetching or hiding healthy overview content.
 
 #### Scenario: Initial request-log failure preserves healthy overview
 
@@ -773,6 +780,10 @@ Retry SHALL refetch only the overview query. The terminal error SHALL remain ren
 - **AND** the Request Logs section renders its own loading state
 - **AND** the page-wide Dashboard loading skeleton is not rendered
 
+### Requirement: Dashboard initial overview failure replaces the loading skeleton
+
+With no overview data, the Dashboard SHALL show the existing page-wide skeleton while the initial request is pending. On terminal error, it MUST remove the skeleton, preserve the shell, announce the error, and expose a keyboard-operable Retry.
+
 #### Scenario: Initial overview loading keeps the existing page skeleton
 
 - **WHEN** the dashboard overview is not yet available
@@ -786,6 +797,10 @@ Retry SHALL refetch only the overview query. The terminal error SHALL remain ren
 - **THEN** shell landmarks remain mounted
 - **AND** the loading skeleton is removed
 - **AND** an alert and keyboard-operable Retry are rendered
+
+### Requirement: Dashboard overview retry preserves recovery state and cached data
+
+Retry SHALL refetch only the overview query. During a no-data refetch, the terminal error SHALL stay visible and Retry SHALL stay disabled with a busy state. Success SHALL replace the error with overview content. Cached overview data SHALL stay visible on later refetch errors.
 
 #### Scenario: Retry remains visible while fetching
 
@@ -808,7 +823,7 @@ Retry SHALL refetch only the overview query. The terminal error SHALL remain ren
 
 ### Requirement: Dashboard route failures preserve a recoverable shell
 
-The authenticated dashboard SHALL retain its header, main landmark, status region, and React root when a route is unknown, pending, or fails to render. Unknown routes MUST render localized Not Found status and a keyboard Dashboard link. Pending lazy routes MUST render visible loading status. Rejected lazy imports MUST render an announced error with keyboard reload and Dashboard actions. Reload MUST fully navigate the current URL so the browser requests the current asset graph. Route-level code splitting MUST remain intact.
+The authenticated dashboard SHALL keep its header, main landmark, status region, and React root when a route is unknown, pending, or fails to render. Unknown routes MUST show localized Not Found status and a keyboard Dashboard link. Pending lazy routes MUST show visible loading status. Rejected lazy imports MUST show an announced error with keyboard reload and Dashboard actions. Reload MUST fully navigate the current URL to request the current asset graph. Route-level code splitting MUST remain.
 
 #### Scenario: Unknown route retains shell
 

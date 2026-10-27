@@ -6,9 +6,24 @@ Define API key lifecycle, enforcement, accounting, and dashboard management cont
 ## Requirements
 ### Requirement: API Key creation
 
-The system SHALL allow the admin to create API keys via `POST /api/api-keys/` with a `name` (required), `allowed_models` (optional list), `weekly_token_limit` (optional integer), `expires_at` (optional ISO 8601 datetime), and `assigned_account_ids` (optional list). The system MUST generate a key in the format `sk-clb-{48 hex chars}`, store only the `sha256` hash in the database, and return the plain key exactly once in the creation response. The system MUST accept timezone-aware ISO 8601 datetimes for `expiresAt`, normalize them to UTC naive for persistence, and return the expiration as UTC in API responses.
+The system SHALL support admin key creation via `POST /api/api-keys/`: required `name`, optional `allowed_models` (list), `weekly_token_limit` (integer), `expires_at` (ISO 8601 datetime), and `assigned_account_ids` (list).
 
-When `assigned_account_ids` is omitted or empty, the created key SHALL remain unscoped and apply to all accounts. When `assigned_account_ids` is provided with one or more valid account IDs, the created key SHALL enable account-assignment scope and persist those assignments.
+It MUST generate `sk-clb-{48 hex chars}`, store only its `sha256` hash in the database, and return the plain key exactly once, on creation. It MUST accept timezone-aware ISO 8601 `expiresAt`, persist UTC-naive values, and return UTC expirations.
+
+#### Scenario: Create key and show plain key
+
+- **WHEN** admin submits `POST /api/api-keys/` with a valid payload
+- **THEN** the response contains the full plain key exactly once and the system never returns the plain key on subsequent reads
+
+#### Scenario: Create key with timezone-aware expiration
+
+- **WHEN** admin submits `POST /api/api-keys/` with `{ "name": "dev-key", "expiresAt": "2025-12-31T00:00:00Z" }`
+- **THEN** the system persists the expiration successfully without PostgreSQL datetime binding errors
+- **AND** the response returns `expiresAt` representing the same UTC instant
+
+### Requirement: API Key creation account assignments
+
+On `POST /api/api-keys/`, missing or empty `assigned_account_ids` SHALL create an unscoped key applying to all accounts. One or more valid IDs SHALL enable assignment scope and persist assignments.
 
 #### Scenario: Create unscoped key without assigned accounts
 
@@ -26,17 +41,6 @@ When `assigned_account_ids` is omitted or empty, the created key SHALL remain un
 
 - **WHEN** admin submits `POST /api/api-keys/` with an unknown account ID in `assignedAccountIds`
 - **THEN** the system returns 400
-
-#### Scenario: Create key and show plain key
-
-- **WHEN** admin submits `POST /api/api-keys/` with a valid payload
-- **THEN** the response contains the full plain key exactly once and the system never returns the plain key on subsequent reads
-
-#### Scenario: Create key with timezone-aware expiration
-
-- **WHEN** admin submits `POST /api/api-keys/` with `{ "name": "dev-key", "expiresAt": "2025-12-31T00:00:00Z" }`
-- **THEN** the system persists the expiration successfully without PostgreSQL datetime binding errors
-- **AND** the response returns `expiresAt` representing the same UTC instant
 
 ### Requirement: API Key update
 The system SHALL allow updating key properties via `PATCH /api/api-keys/{id}`. Updatable fields: `name`, `allowedModels`, `weeklyTokenLimit`, `expiresAt`, `isActive`. The key hash and prefix MUST NOT be modifiable. The system MUST accept timezone-aware ISO 8601 datetimes for `expiresAt` and normalize them to UTC naive before persistence.
@@ -75,7 +79,7 @@ The system SHALL allow regenerating an API key via `POST /api/api-keys/{id}/rege
 - **THEN** the system returns the updated key object with a new `key` and `keyPrefix`; the old key immediately stops authenticating
 
 ### Requirement: API Key authentication global switch
-The system SHALL provide an `api_key_auth_enabled` boolean in `DashboardSettings`. When false (default), local requests to protected proxy routes MAY proceed without an API key. Operators MAY additionally opt specific non-local proxy clients into unauthenticated access by configuring `proxy_unauthenticated_client_cidrs`. Requests that are neither local nor explicitly allowlisted MUST be rejected until proxy authentication is configured. When true, protected proxy routes require a valid API key in the `Authorization` header using the Bearer authentication scheme.
+`DashboardSettings` SHALL expose boolean `api_key_auth_enabled` (default false). When false, local protected proxy requests MAY omit API keys. Operators MAY allow specific non-local clients unauthenticated access via `proxy_unauthenticated_client_cidrs`. Other non-local requests MUST be rejected until proxy authentication is configured. When true, protected proxy routes require a valid API key via Bearer authentication in `Authorization`.
 
 #### Scenario: Enable API key auth
 
@@ -116,13 +120,7 @@ The system SHALL provide an `api_key_auth_enabled` boolean in `DashboardSettings
 - **THEN** the system calls `PUT /api/settings` and reflects the new state
 
 ### Requirement: API Key Bearer authentication guard
-The system SHALL validate API keys on protected proxy routes (`/v1/*`, `/backend-api/codex/*`, `/backend-api/transcribe`) when `api_key_auth_enabled` is true. Validation MUST be implemented as a router-level `Security` dependency, not ASGI middleware. The dependency MUST compute `sha256` of the Bearer token and look up the hash in the `api_keys` table.
-
-The dependency SHALL return a typed `ApiKeyData` value directly to the route handler. Route handlers MUST NOT access API key data via `request.state`.
-
-`/api/codex/usage` SHALL NOT be covered by the API key auth guard scope.
-
-The dependency SHALL raise a domain exception on validation failure. The exception handler SHALL format the response using the OpenAI error envelope.
+With `api_key_auth_enabled=true`, API keys SHALL be validated on `/v1/*`, `/backend-api/codex/*`, and `/backend-api/transcribe`, excluding `/api/codex/usage`. A router-level `Security` dependency, not ASGI middleware, MUST hash the Bearer token with `sha256` and look it up in `api_keys`. It SHALL return typed `ApiKeyData` directly to handlers. Handlers MUST NOT use `request.state` for key data. Failures SHALL raise domain exceptions, formatted by handlers in the OpenAI error envelope.
 
 #### Scenario: Disabled auth allowlist uses raw socket peer only
 - **WHEN** `api_key_auth_enabled` is false
@@ -161,11 +159,7 @@ The dependency SHALL raise a domain exception on validation failure. The excepti
 
 ### Requirement: Model restriction enforcement
 
-The system SHALL enforce per-key model restrictions in the proxy service layer (not middleware). When `allowed_models` is set (non-null, non-empty) and the requested model is not in the list, the system MUST reject the request. The `/v1/models` endpoint MUST filter the model list based on the authenticated key's `allowed_models`.
-
-For fixed-model endpoints such as `/v1/audio/transcriptions` and `/backend-api/transcribe`, the service MUST evaluate restrictions against fixed effective model `gpt-4o-transcribe`.
-
-`/backend-api/codex/models` SHALL keep the existing allowlist filtering behavior by default. When an authenticated API key has `apply_to_codex_model = true` and `allowed_models` is non-empty, `/backend-api/codex/models` SHALL return the full catalog and rewrite each model entry visibility so allowlisted models use `visibility: "list"` and every other model uses `visibility: "hide"`. When `apply_to_codex_model = true` but `allowed_models` is null or empty, `/backend-api/codex/models` SHALL preserve the original behavior because there is no allowlist to apply.
+The proxy service layer, not middleware, SHALL enforce per-key model restrictions. Requests outside non-null, non-empty `allowed_models` MUST be rejected. `/v1/models` MUST filter by the authenticated key's `allowed_models`. Fixed-model endpoints such as `/v1/audio/transcriptions` and `/backend-api/transcribe` MUST check effective model `gpt-4o-transcribe`.
 
 #### Scenario: Requested model not allowed
 
@@ -210,6 +204,10 @@ For fixed-model endpoints such as `/v1/audio/transcriptions` and `/backend-api/t
 - **WHEN** a key has `allowed_models: ["gpt-5.1"]` and a request is made to `/v1/audio/transcriptions` or `/backend-api/transcribe`
 - **THEN** the proxy returns 403 with OpenAI-format error code `model_not_allowed` for model `gpt-4o-transcribe`
 
+### Requirement: API key Codex catalog visibility policy
+
+`/backend-api/codex/models` SHALL retain default allowlist filtering. For an authenticated key with `apply_to_codex_model = true` and non-empty `allowed_models`, it SHALL instead return the full catalog with `visibility: "list"` for allowlisted entries and `visibility: "hide"` for all others. With null or empty `allowed_models`, it SHALL preserve original behavior even when opted in, as no allowlist applies.
+
 #### Scenario: Codex models keep filtered behavior by default
 - **WHEN** a key has `allowed_models: ["o3-pro"]` and `apply_to_codex_model: false`
 - **AND** the key calls `GET /backend-api/codex/models`
@@ -247,7 +245,7 @@ The system SHALL atomically increment `weekly_tokens_used` on the API key record
 
 ### Requirement: Weekly token usage reset
 
-The system SHALL keep the existing lazy on-read reset strategy for API key usage limits. When validating an API key, if a limit `reset_at < now()`, the system MUST reset the counter and advance `reset_at` by whole window intervals until it is in the future. The system MUST also run an hourly background fallback sweep that repairs expired API key limit usage even when no validation request arrives.
+The system SHALL retain lazy on-read resets for API key usage limits. On key validation, a limit with `reset_at < now()` MUST have its counter reset and `reset_at` advanced by whole window intervals into the future. An hourly background fallback sweep MUST also repair expired usage without validation requests.
 
 #### Scenario: Weekly reset triggered on validation
 
@@ -280,9 +278,7 @@ The system SHALL record the `api_key_id` in the `request_logs` table for proxy r
 
 ### Requirement: Frontend API Key management
 
-The SPA settings page SHALL include an API Key management section with: a toggle for `apiKeyAuthEnabled`, a key list table showing prefix/name/models/limit/usage/expiry/status, a create dialog (name, model selection, assigned-account selection, weekly limit, expiry date), and key actions (edit, delete, regenerate). On key creation, the SPA MUST display the plain key in a copy-able dialog with a warning that it will not be shown again, and the copy action MUST remain functional in secure and non-secure contexts.
-
-The create and edit dialogs SHALL expose an `Apply to codex /model` checkbox directly below `Allowed models`. The checkbox SHALL default to unchecked for new keys and SHALL edit the stored API key value for existing keys.
+SPA settings SHALL include API Key management: an `apiKeyAuthEnabled` toggle, a prefix/name/models/limit/usage/expiry/status table, a create dialog (name, model/assigned-account selection, weekly limit, expiry date), and edit/delete/regenerate actions. Creation MUST show a plain-key dialog warning it will not be shown again, copyable in secure and non-secure contexts.
 
 #### Scenario: Create key with optional account scoping
 
@@ -302,6 +298,10 @@ The create and edit dialogs SHALL expose an `Apply to codex /model` checkbox dir
 - **THEN** the copy operation succeeds using secure Clipboard API when available
 - **AND** falls back to dialog-scoped `execCommand("copy")` when secure Clipboard API is unavailable
 
+### Requirement: API key dialogs manage Codex model visibility
+
+Create/edit API key dialogs SHALL put an `Apply to codex /model` checkbox directly below `Allowed models`. It SHALL default unchecked for new keys and edit existing keys' stored value.
+
 #### Scenario: Create key with codex model visibility option
 - **WHEN** an admin opens the create API key dialog
 - **THEN** the `Apply to codex /model` checkbox appears directly below `Allowed models`
@@ -311,7 +311,7 @@ The create and edit dialogs SHALL expose an `Apply to codex /model` checkbox dir
 - **WHEN** an admin opens the edit API key dialog for a key with `apply_to_codex_model: true`
 - **THEN** the `Apply to codex /model` checkbox is shown as checked
 ### Requirement: Cost accounting uses model and service-tier pricing
-When computing API key `cost_usd` usage, the system MUST price requests using the resolved model pricing and the authoritative `service_tier` reported by the upstream response when available, falling back to the forwarded request `service_tier` only when the response omits it. Requests sent with non-standard service tiers MUST use the published pricing for the tier actually used instead of falling back to standard-tier pricing.
+API key `cost_usd` MUST use resolved model pricing and the upstream response's authoritative `service_tier`, falling back to the forwarded request tier only if omitted. Non-standard tiers MUST use published pricing for the tier actually used, not standard-tier pricing.
 
 #### Scenario: Priority-tier request increments cost limit
 - **WHEN** an authenticated request for a priced model is finalized with `service_tier: "priority"`
@@ -338,16 +338,7 @@ The system MUST recognize `gpt-5.4` pricing when computing request costs. For st
 
 ### Requirement: Model-scoped limit enforcement
 
-The system SHALL separate authentication validation from quota enforcement. `validate_key()` in the auth guard SHALL only verify key validity (existence, active status, expiry, basic reset). Quota enforcement SHALL occur at a point where the request model is known.
-
-Limit applicability rules:
-- `limit.model_filter is None` → always applies (global limit)
-- `limit.model_filter == request_model` → applies (model-scoped limit)
-- otherwise → does not apply for this request
-
-For model-less requests (e.g., `/v1/models`), only global limits SHALL be evaluated.
-
-The service contract SHALL be typed explicitly: `enforce_limits_for_request(key_id: str, *, request_model: str | None, request_service_tier: str | None = None) -> None`.
+Authentication and quota enforcement SHALL be separate. Auth-guard `validate_key()` SHALL check only existence, active status, expiry, basic reset. Quotas SHALL be enforced when the model is known: limits apply iff `model_filter is None` or equals `request_model`. Model-less requests (e.g., `/v1/models`) SHALL evaluate only global limits. The typed service contract SHALL be `enforce_limits_for_request(key_id: str, *, request_model: str | None, request_service_tier: str | None = None) -> None`.
 
 #### Scenario: Model-scoped limit does not block other models
 
@@ -374,13 +365,12 @@ The service contract SHALL be typed explicitly: `enforce_limits_for_request(key_
 
 ### Requirement: Limit update with usage state preservation
 
-When updating API key limits, the system SHALL preserve existing usage state (`current_value`, `reset_at`) for unchanged limit rules. Limit comparison key is `(limit_type, limit_window, model_filter)`.
+Limit updates SHALL match rules by `(limit_type, limit_window, model_filter)`:
+- Matches SHALL preserve `current_value` and `reset_at`, updating only `max_value`.
+- New rules use a fresh `reset_at`. With `resetUsage=false`, initialize `current_value` from successful request-log usage in its current window. With `resetUsage=true`, set it to 0.
+- Delete removed rules.
 
-- Matching existing rule: `current_value` and `reset_at` SHALL be preserved; only `max_value` is updated
-- New rule (no match): when `resetUsage` is false, `current_value` is initialized from successful request-log usage in the new rule's current window; when `resetUsage` is true, `current_value=0`; always with a fresh `reset_at`
-- Removed rule (in existing but not in update): row is deleted
-
-Usage reset SHALL only occur via an explicit action (`reset_usage` field or dedicated endpoint), never as a side-effect of metadata or policy edits.
+Usage SHALL reset only through an explicit action (`reset_usage` field or dedicated endpoint), never metadata or policy edits.
 
 #### Scenario: Metadata-only edit preserves usage state
 
@@ -405,14 +395,9 @@ Usage reset SHALL only occur via an explicit action (`reset_usage` field or dedi
 
 ### Requirement: API key edit payload — conditional limits transmission
 
-The frontend API key edit dialog SHALL transmit `limits` in the PATCH payload only when limit values have actually changed. The system SHALL normalize and compare initial and current limit values to detect changes.
+The frontend edit dialog SHALL normalize and compare initial/current limit values and send PATCH `limits` only when values change. Metadata-only edits (name, is_active) MUST omit `limits`. Reordered identical rules MUST count as unchanged and omit `limits`.
 
-- Metadata-only changes (name, is_active): `limits` field MUST be omitted from the payload
-- Identical rule sets with different ordering: MUST be treated as unchanged (`limits` omitted)
-
-Backend contract:
-- `limits` absent in payload: limit policy unchanged (usage/reset state preserved)
-- `limits` present in payload: policy replacement (state-preserving upsert applied)
+Backend: absent `limits` leaves policy and usage/reset state unchanged. Present `limits` replaces policy with a state-preserving upsert.
 
 #### Scenario: Name-only edit omits limits from payload
 
@@ -426,11 +411,7 @@ Backend contract:
 
 ### Requirement: Public OpenAI-compatible model list filtering
 
-OpenAI-compatible model list endpoints SHALL filter models using a single predicate that requires both conditions:
-1. `model.supported_in_api` is true
-2. If `allowed_models` is configured, the model is in the allowed set
-
-This predicate SHALL be applied consistently across `/api/models`, `/v1/models`, and the OpenAI-style `data` alias in `/backend-api/codex/models`. The Codex-native `models` catalog in `/backend-api/codex/models` SHALL also expose unsupported upstream models only when the model is a Codex shell-command model (`shell_type="shell_command"`); unsupported non-shell models SHALL remain hidden.
+`/api/models`, `/v1/models`, and `/backend-api/codex/models.data` SHALL share one predicate: `model.supported_in_api` is true and, if `allowed_models` is configured, the model is in that set. The Codex-native `/backend-api/codex/models.models` catalog SHALL expose unsupported upstream models only for Codex shell-command models (`shell_type="shell_command"`). Unsupported non-shell models SHALL stay hidden.
 
 #### Scenario: Unsupported model excluded from /v1/models
 
@@ -568,16 +549,7 @@ The system MUST recognize `gpt-5.4-mini` pricing when computing request costs. S
 
 ### Requirement: API keys can read their own `/v1/usage`
 
-The system SHALL expose `GET /v1/usage` for self-service usage lookup by API-key clients. The route MUST require a valid API key in the `Authorization` header using the Bearer authentication scheme even when `api_key_auth_enabled` is false globally. The response MUST include only data for the authenticated key and MUST return:
-
-- `request_count`
-- `total_tokens`
-- `cached_input_tokens`
-- `total_cost_usd`
-- `limits[]` containing only limits configured on the authenticated API key, with `limit_type`, `limit_window`, `max_value`, `current_value`, `remaining_value`, `model_filter`, `reset_at`, and `source`
-- `upstream_limits[]` containing aggregate upstream Codex credit windows when available, with the same fields and `source: "aggregate"`
-
-Validation failures MUST use the existing OpenAI error envelope used by `/v1/*` routes.
+The system SHALL expose `GET /v1/usage` for API-key self-service. It MUST require a valid Bearer API key in `Authorization`, even with `api_key_auth_enabled=false`. Validation failures MUST use the existing `/v1/*` OpenAI error envelope. Responses MUST contain only authenticated-key data.
 
 #### Scenario: Missing API key is rejected
 
@@ -588,6 +560,13 @@ Validation failures MUST use the existing OpenAI error envelope used by `/v1/*` 
 
 - **WHEN** a client calls `GET /v1/usage` with an unknown, expired, or inactive Bearer key
 - **THEN** the system returns 401 in the OpenAI error format
+
+### Requirement: API key self-usage response fields
+
+`GET /v1/usage` MUST return:
+- `request_count`, `total_tokens`, `cached_input_tokens`, `total_cost_usd`.
+- `limits[]`: only the authenticated key's configured limits, with `limit_type`, `limit_window`, `max_value`, `current_value`, `remaining_value`, `model_filter`, `reset_at`, `source`.
+- `upstream_limits[]`: aggregate upstream Codex credit windows when available, with the same fields and `source: "aggregate"`.
 
 #### Scenario: Key with no usage returns zero totals
 
@@ -639,13 +618,7 @@ The dashboard API key CRUD surface MUST allow callers to persist an optional enf
 
 ### Requirement: API key list includes pooled credit data
 
-The `GET /api/api-keys/` list endpoint SHALL include per-key pooled credit data computed by aggregating upstream usage across the selectable accounts assigned to each key. When a key has no assigned accounts, the system SHALL pool across all selectable accounts.
-
-Selectable accounts exclude accounts whose status is `paused` or `deactivated`, matching load-balancer routing eligibility.
-
-The response SHALL include `pooled_remaining_percent_primary` (float or null), `pooled_remaining_percent_secondary` (float or null), and `pooled_capacity_credits_primary` (float, default 0.0) on each key object.
-
-When `pooled_capacity_credits_primary` is 0.0 (e.g., all assigned accounts are free-tier), `pooled_remaining_percent_primary` SHALL be null.
+`GET /api/api-keys/` SHALL pool per-key upstream usage over selectable assigned accounts, or all selectable accounts if none are assigned. These exclude `paused`/`deactivated`, matching load-balancer routing eligibility. Keys SHALL include `pooled_remaining_percent_primary` and `pooled_remaining_percent_secondary` (float or null), and `pooled_capacity_credits_primary` (float, default 0.0). Zero primary capacity (e.g., all assigned accounts free-tier) SHALL make primary remaining percent null.
 
 #### Scenario: Scoped key pools assigned accounts only
 
@@ -703,9 +676,7 @@ The database SHALL provide an index that supports filtering request logs by API 
 
 ### Requirement: Request-aware API-key usage reservations
 
-API-key usage reservation admission MUST reserve a bounded request-aware budget instead of an unconditional fixed 8192 input-token plus 8192 output-token pre-charge for every request. The reservation budget MUST be used only for admission and in-flight accounting; final usage accounting MUST continue to settle to the authoritative completed request usage and service-tier pricing.
-
-For token limits, admission MUST reserve from the request input and output token budgets. The input budget MAY be estimated from self-contained request payloads, while opaque upstream context MUST fall back to a conservative input budget. The output budget MUST use a bounded system default unless codex-lb can verify that a client-provided output cap is actually enforced upstream. For `cost_usd` limits, admission MUST compute the reservation cost from the same input and output token budgets and the effective request service tier. Reservation finalization MUST adjust every applicable reserved value to actual completed usage exactly once, including limits whose admission reservation was zero.
+API-key admission MUST reserve a bounded request-aware budget, not a fixed 8192 input + 8192 output tokens per request. Token-limit admission MUST reserve request input/output budgets. Self-contained input MAY be estimated. Opaque upstream context MUST use a conservative input budget. Output MUST use a bounded system default unless codex-lb verifies that upstream enforces a client output cap. `cost_usd` reservations MUST use the same token budgets and effective request service tier.
 
 #### Scenario: Concurrent priority lanes do not require 8 × 8192 output-token headroom
 
@@ -719,6 +690,10 @@ For token limits, admission MUST reserve from the request input and output token
 - **THEN** API-key admission uses the conservative default input-token reservation budget for input tokens
 - **AND** final accounting still settles to actual completed usage
 
+### Requirement: API-key reservation finalization uses actual usage exactly once
+
+Reservation budgets MUST serve only admission and in-flight accounting. Final accounting MUST settle to authoritative completed usage and service-tier pricing. Finalization MUST adjust every applicable reserved value to actual completed usage exactly once, including limits with zero admission reservations.
+
 #### Scenario: Zero-reservation limits still settle actual usage
 
 - **WHEN** API-key admission records a zero-delta reservation item for an applicable limit
@@ -726,7 +701,7 @@ For token limits, admission MUST reserve from the request input and output token
 - **THEN** reservation finalization increments the limit by the actual usage instead of skipping the limit
 
 ### Requirement: Map `auto`/`default` enforced service tier to outbound omission
-When a request is enforced under an API key whose `enforced_service_tier` is `auto` or `default`, the proxy MUST forward the request with `service_tier` absent (`None`) rather than as the literal string. Enforcement of `priority` and `flex` MUST continue to forward the literal value unchanged. codex-lb accepts `auto`, `default`, `priority`, and `flex` (plus the `fast` alias for `priority`) at the API-key `enforced_service_tier` surface; the ChatGPT/Codex backend rejects `auto` and `default` as literal values, since both already mean "let upstream pick".
+API-key `enforced_service_tier` accepts `auto`, `default`, `priority`, `flex`, and `fast` (alias for `priority`). The proxy MUST omit outbound `service_tier` (`None`) for enforced `auto`/`default`, not forward literal strings. The ChatGPT/Codex backend rejects those literals because both mean "let upstream pick". Enforced `priority`/`flex` MUST be forwarded unchanged.
 
 #### Scenario: Enforced service tier is `default`
 - **WHEN** a request is processed under an API key with `enforced_service_tier = "default"`
@@ -801,23 +776,13 @@ When API-key authentication and proxy-header trust are disabled, a loopback sock
 
 ### Requirement: GPT-5.6 usage cost pricing matches the current published rates
 
-When computing API-key usage, request-log, reservation, or aggregate cost for the canonical GPT-5.6 models, the system MUST use these USD-per-1M-token rates for input, cached input, and output:
+Canonical GPT-5.6 API-key usage, request-log, reservation, and aggregate costs MUST use these USD/1M input/cached-input/output token rates:
 
 | Model | Standard | Fast/priority | Flex | Standard long context |
 | --- | --- | --- | --- | --- |
-| `gpt-5.6-sol` | `5 / 0.50 / 30` | `10 / 1 / 60` | `2.5 / 0.25 / 15` | `10 / 1 / 45` |
-| `gpt-5.6-terra` | `2 / 0.20 / 12` | `4 / 0.40 / 24` | `1 / 0.10 / 6` | `4 / 0.40 / 18` |
-| `gpt-5.6-luna` | `0.20 / 0.02 / 1.20` | `0.40 / 0.04 / 2.40` | `0.10 / 0.01 / 0.60` | `0.40 / 0.04 / 1.80` |
-
-The existing `priority` and `fast` service-tier aliases MUST use the
-Fast/priority rates. Standard long-context rates MUST apply only when input
-tokens exceed 272,000. Flex long-context pricing MUST continue to use the
-existing Flex short-context rates and multipliers. Model aliases with a
-version or snapshot suffix MUST resolve to the corresponding canonical table
-entry.
-
-Batch rates and cache-write rates MUST NOT be introduced into this contract
-without corresponding proxy request and usage fields.
+| `gpt-5.6-sol` | `5/0.50/30` | `10/1/60` | `2.5/0.25/15` | `10/1/45` |
+| `gpt-5.6-terra` | `2/0.20/12` | `4/0.40/24` | `1/0.10/6` | `4/0.40/18` |
+| `gpt-5.6-luna` | `0.20/0.02/1.20` | `0.40/0.04/2.40` | `0.10/0.01/0.60` | `0.40/0.04/1.80` |
 
 #### Scenario: Terra standard usage uses the current rate
 
@@ -831,6 +796,10 @@ without corresponding proxy request and usage fields.
 - **THEN** the token cost is `$2.444`
 - **WHEN** the same usage uses `flex`
 - **THEN** the token cost is `$0.611`
+
+### Requirement: GPT-5.6 pricing aliases and long-context rules
+
+For GPT-5.6, `priority`/`fast` MUST use Fast/priority rates. Standard long-context rates MUST apply only above 272,000 input tokens. Flex long-context pricing MUST retain existing Flex short-context rates and multipliers. Version/snapshot model aliases MUST resolve to the corresponding canonical table entry. Batch and cache-write rates MUST NOT enter this contract without corresponding proxy request and usage fields.
 
 #### Scenario: Terra standard long-context usage uses the current long-context rate
 
@@ -866,9 +835,7 @@ Every successful response containing a full plain API key MUST include `Cache-Co
 
 ### Requirement: Keyed owner-unavailable streams settle before account health
 
-Default stream API-key reservation settlement MUST continue to await in the request path. Cancellation MAY transfer tracked cleanup without changing that default. This requirement MUST NOT detach ordinary settlement from the response path.
-
-When a keyed websocket stream terminates with an account-health error, when a keyed HTTP SSE failure is rewritten to `previous_response_owner_unavailable`, or when a keyed HTTP SSE terminal queue drains empty before terminal health or success is recorded, the finalizer MUST wait for settlement to commit before the account-health write. If the primary settlement fails, the finalizer MUST wait for fallback release to commit before recording account health. If neither operation confirms settlement, the account-health write and any deferred penalties MUST remain unapplied.
+Default stream API-key settlement MUST await in the request/response path, not detach. Cancellation MAY transfer tracked cleanup. Before account-health writes, finalizers MUST await settlement commit (fallback release commit on failure) at keyed websocket health-error endings or keyed HTTP SSE failures rewritten to `previous_response_owner_unavailable` or terminal queues draining empty before terminal health/success. Without confirmation, health writes and deferred penalties MUST stay unapplied.
 
 #### Scenario: Websocket health-error settlement precedes the health write
 

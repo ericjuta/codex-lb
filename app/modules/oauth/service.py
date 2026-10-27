@@ -78,7 +78,7 @@ async def _oauth_route() -> ResolvedUpstreamRoute | None:
     async with get_background_session() as session:
         strict = await _has_active_proxy_bindings(session)
         try:
-            return await resolve_upstream_route(
+            route = await resolve_upstream_route(
                 session,
                 account_id=None,
                 operation="oauth",
@@ -88,6 +88,13 @@ async def _oauth_route() -> ResolvedUpstreamRoute | None:
             )
         except UpstreamProxyRouteError as exc:
             raise OAuthError(exc.reason, str(exc), status_code=502) from exc
+
+    # Session rollback/close may consume cancellation while finishing cleanup.
+    # Do not resume OAuth upstream work after that cancellation was requested.
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        raise asyncio.CancelledError
+    return route
 
 
 @dataclass

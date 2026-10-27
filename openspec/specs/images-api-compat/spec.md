@@ -42,7 +42,7 @@ The system SHALL expose `POST /v1/images/generations` and accept the OpenAI Imag
 
 ### Requirement: OpenAI-compatible image edit endpoint
 
-The system SHALL expose `POST /v1/images/edits` and accept the OpenAI Images Edits multipart shape (`image` repeatable file part, optional `mask`, plus `model`, `prompt`, `n`, `size`, `quality`, `background`, `output_format`, `output_compression`, `partial_images`, `stream`, `user`). The endpoint MUST apply the same model gating and parameter rules as `/v1/images/generations`. The endpoint MUST forward `image[]` and `mask` parts as `input_image` content (base64 data URLs) inside the internal Responses request.
+`POST /v1/images/edits` SHALL accept OpenAI Images Edits multipart: repeatable `image` files, optional `mask`, and `model`, `prompt`, `n`, `size`, `quality`, `background`, `output_format`, `output_compression`, `partial_images`, `stream`, `user`. It MUST apply `/v1/images/generations` model gating and parameter rules and forward `image[]` and `mask` as `input_image` base64 data URLs in the internal Responses request.
 
 #### Scenario: Compatible image edit request returns a JSON envelope
 
@@ -56,7 +56,7 @@ The system SHALL expose `POST /v1/images/edits` and accept the OpenAI Images Edi
 
 ### Requirement: Image generation is implemented as a Responses tool adapter
 
-The system SHALL implement `/v1/images/generations` and `/v1/images/edits` by issuing an internal `/v1/responses` request whose `tools` array includes `{"type": "image_generation", ...}` and whose `input` is constructed to deterministically force a single `image_generation` tool call. The system MUST route that internal request through the existing proxy account-selection, sticky session, retry, and authentication pipeline. The system MUST NOT introduce a new `chatgpt-token → openai-api-key` token-exchange path solely to support these endpoints.
+`/v1/images/generations` and `/v1/images/edits` SHALL issue internal `/v1/responses` requests with `{"type": "image_generation", ...}` in `tools` and `input` that deterministically forces one `image_generation` call. Requests MUST use existing proxy account-selection, sticky session, retry, and authentication pipelines. The system MUST NOT add a `chatgpt-token → openai-api-key` token-exchange path solely for these endpoints.
 
 #### Scenario: Internal Responses call uses existing routing
 
@@ -70,19 +70,7 @@ The system SHALL implement `/v1/images/generations` and `/v1/images/edits` by is
 
 ### Requirement: Image routes select a code-owned Responses host model
 
-The system SHALL select the internal Responses host for both
-`POST /v1/images/generations` and `POST /v1/images/edits` from the ordered
-candidates `gpt-5.6-luna`, then `gpt-5.5`. A candidate SHALL qualify only when
-the existing model registry reports non-empty plan visibility and does not mark
-that candidate suppressed. If neither candidate qualifies, the system SHALL
-select `gpt-5.6-luna` as the default host.
-
-The system MUST NOT expose an `images_host_model` setting or use operator
-configuration to override this selection. The system MUST preserve
-`images_default_model` and the public `gpt-image-2` default. Host selection MUST
-NOT change public image-model policy, accounting, or request-log identity.
-Catalog visibility MUST NOT grant account entitlement or bypass existing
-account routing, authentication, suppression, or retry behavior.
+For `POST /v1/images/generations` and `POST /v1/images/edits`, the system SHALL select the first qualifying Responses host: `gpt-5.6-luna`, then `gpt-5.5`. Candidates SHALL qualify only with non-empty registry plan visibility and no suppression. If neither qualifies, the system SHALL default to `gpt-5.6-luna`. It MUST NOT expose `images_host_model` or allow operator overrides of this selection.
 
 #### Scenario: Both image routes prefer visible Luna over the old host
 
@@ -112,6 +100,10 @@ account routing, authentication, suppression, or retry behavior.
 - **THEN** the internal Responses host defaults to `gpt-5.6-luna`
 - **AND** existing account routing still determines whether any account can serve that host
 
+### Requirement: Image host selection preserves public identity and account policy
+
+Host selection MUST preserve `images_default_model`, its public `gpt-image-2` default, public image-model policy, accounting, and request-log identity. Catalog visibility MUST NOT grant account entitlement or bypass existing account routing, authentication, suppression, or retry behavior.
+
 #### Scenario: Public model identity remains independent of the host
 
 - **WHEN** a valid image generation or edit request omits its public model
@@ -120,17 +112,25 @@ account routing, authentication, suppression, or retry behavior.
 
 ### Requirement: Image generation streaming uses canonical OpenAI Images events
 
-When a client requests `stream=true` on `/v1/images/generations` or `/v1/images/edits`, the system SHALL translate upstream Responses SSE events into the OpenAI Images streaming format. The system MUST emit `image_generation.partial_image` for each upstream `response.image_generation_call.partial_image` and an `image_generation.completed` event for *every* `image_generation_call` ResponseItem the upstream surfaces, in arrival order, when the trailing `response.completed` arrives. The `usage` field MUST be attached only to the final `image_generation.completed` event so multi-image responses match the OpenAI Images streaming shape. The system MUST NOT forward Responses-specific events (`response.created`, `response.in_progress`, `response.image_generation_call.in_progress`, `response.image_generation_call.generating`, reasoning/content events) to the client. The system MUST also surface upstream errors that occur before the first SSE chunk as a structured OpenAI error envelope rather than a broken/truncated stream body.
+For `stream=true` on `/v1/images/generations` or `/v1/images/edits`, the system SHALL translate Responses SSE to OpenAI Images events. It MUST emit `image_generation.partial_image` for each `response.image_generation_call.partial_image`. It MUST NOT forward Responses-specific events (`response.created`, `response.in_progress`, `response.image_generation_call.in_progress`, `response.image_generation_call.generating`, reasoning/content events).
 
 #### Scenario: Partial images are forwarded with stable field names
 
 - **WHEN** the upstream stream emits `response.image_generation_call.partial_image` with `partial_image_b64` and `partial_image_index`
 - **THEN** the client receives `image_generation.partial_image` with `b64_json` set to `partial_image_b64`, the same `partial_image_index`, and the upstream `size`, `quality`, `background`, and `output_format`
 
+### Requirement: Image stream completion preserves all upstream images
+
+On trailing `response.completed`, the system MUST emit `image_generation.completed` for every upstream `image_generation_call` ResponseItem, in arrival order. Only the final `image_generation.completed` event MUST carry `usage`.
+
 #### Scenario: Final image completes the stream
 
 - **WHEN** the upstream stream emits `response.output_item.done` with `item.type == "image_generation_call"` and a non-empty `result`
 - **THEN** the client receives `image_generation.completed` with `b64_json`, `revised_prompt`, `size`, `quality`, `background`, and `output_format`, followed by a terminating `[DONE]`-equivalent event
+
+### Requirement: Image stream errors use structured envelopes
+
+Upstream errors before the first SSE chunk MUST surface as structured OpenAI error envelopes, not broken or truncated stream bodies.
 
 #### Scenario: Upstream image generation failure becomes a single error event
 
@@ -153,7 +153,7 @@ The system SHALL apply API-key allowed-model policy and model-scoped usage limit
 
 ### Requirement: Image routes expose bounded operational observability
 
-The system SHALL emit structured route-completion logs and Prometheus metrics for `/v1/images/generations` and `/v1/images/edits`. Observability labels MUST be bounded to route, effective public model, stream flag, HTTP status, and outcome, and MUST NOT include prompts, image bytes, file names, access tokens, or raw upstream payloads. The duration start time MUST be captured at HTTP ingress, before authentication, body admission, or handler execution, by a pure ASGI middleware that stores it in the request scope state; pre-handler rejections MUST measure duration from that ingress start time.
+The system SHALL emit structured route-completion logs and Prometheus metrics for `/v1/images/generations` and `/v1/images/edits`. Labels MUST be limited to route, effective public model, stream flag, HTTP status, and outcome. They MUST NOT include prompts, image bytes, file names, access tokens, or raw upstream payloads.
 
 #### Scenario: Successful image request records completion telemetry
 
@@ -166,6 +166,10 @@ The system SHALL emit structured route-completion logs and Prometheus metrics fo
 - **WHEN** an image request is rejected by validation or mapped from an upstream/image-generation error
 - **THEN** the service emits the same bounded `images_route_complete` fields with a non-success outcome
 - **AND** increments the image request counter and duration histogram without logging prompt or binary image content
+
+### Requirement: Image route duration starts at ingress
+
+Pure ASGI middleware MUST capture duration start time at HTTP ingress, before authentication, body admission, or handler execution, and store it in request scope state. Pre-handler rejections MUST measure duration from that start time.
 
 #### Scenario: Pre-handler rejection measures duration from ingress
 

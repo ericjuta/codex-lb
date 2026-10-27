@@ -8,7 +8,7 @@ Define private Codex Live Voice call-owner continuity, authenticated sideband ro
 
 ### Requirement: Realtime call creation binds the final account under a required proxy key
 
-The proxy SHALL require a registered proxy API key for `POST /backend-api/codex/realtime/calls` even when ordinary proxy API-key authentication is disabled. After a successful upstream response with a root-relative or absolute `Location` whose parsed path is exactly `/v1/realtime/calls/{call_id}`, where `{call_id}` is a bounded ASCII `rtc_...` or canonical UUID, it MUST bind the call immutably to the final ChatGPT account that completed the request. Relative paths without the leading `/`, unrelated path prefixes, abbreviated `/live/...` or `/realtime/calls/...` paths, and paths with extra segments are unsupported. The binding MUST be scoped to the proxy key, MUST persist across replicas as only a bounded digest in a reserved non-user-forgeable namespace, MUST expire after a fixed interval, and MUST NOT persist the raw call id, API key, OAuth token, SDP, attestation value, or frame body. Private call-creation diagnostics, including caller-local AuthManager metadata work and process-global shared refresh work, MUST redact internal account identifiers and suppress exception details; shared refresh diagnostics MUST use the strict policy regardless of which caller creates the singleflight task.
+The proxy SHALL require a registered proxy API key for `POST /backend-api/codex/realtime/calls` even when ordinary proxy API-key authentication is disabled. After upstream success with a supported `Location`, it MUST immutably bind the call to the final ChatGPT account that completed the request.
 
 #### Scenario: initial or replacement account creates the call
 
@@ -54,9 +54,38 @@ The proxy SHALL require a registered proxy API key for `POST /backend-api/codex/
 - **THEN** the warning contains no internal account identifier, exception text, or traceback
 - **AND** shared refresh safety does not depend on whether an ordinary or private caller created the singleflight task
 
+### Requirement: Realtime binding accepts only exact supported Location paths
+
+Realtime binding MUST accept only root-relative or absolute `Location` values with parsed path exactly `/v1/realtime/calls/{call_id}` and a bounded ASCII `rtc_...` or canonical UUID call id. Relative paths without a leading `/`, unrelated prefixes, abbreviated `/live/...` or `/realtime/calls/...` paths, and extra path segments are unsupported.
+
+#### Scenario: Relative Location without a leading slash is unsupported
+
+- **WHEN** successful call creation returns a relative `Location` without a leading `/`
+- **THEN** that Location is unsupported for owner binding
+
+### Requirement: Realtime owner bindings persist only bounded private state
+
+The binding MUST be proxy-key-scoped, persist across replicas as only a bounded digest in a reserved non-user-forgeable namespace, and expire after a fixed interval. It MUST NOT persist the raw call id, API key, OAuth token, SDP, attestation value, or frame body.
+
+#### Scenario: Durable owner state excludes raw private material
+
+- **WHEN** a realtime owner binding is persisted
+- **THEN** its reserved namespace contains only a bounded digest scoped to the proxy key
+- **AND** the binding expires after a fixed interval
+- **AND** no raw call id, API key, OAuth token, SDP, attestation value, or frame body is persisted
+
+### Requirement: Private freshness diagnostics apply caller-independent redaction
+
+Private call-creation diagnostics, including caller-local AuthManager metadata work and process-global shared refresh work, MUST redact internal account identifiers and suppress exception details. Shared refresh diagnostics MUST apply this strict policy regardless of the singleflight task's creator.
+
+#### Scenario: Ordinary task creation cannot weaken shared refresh diagnostics
+
+- **WHEN** an ordinary caller creates a shared refresh singleflight task
+- **THEN** its diagnostics redact internal account identifiers and suppress exception details under the same strict policy as private callers
+
 ### Requirement: Every sideband route uses the exact bound owner without refresh or failover
 
-The proxy SHALL expose `WS /backend-api/codex/{call_id}`, `WS /v1/live/{call_id}`, and `WS /v1/realtime?call_id={call_id}` only to a registered proxy key and only for that key's live binding. All adapters MUST use one bounded call-id normalizer, current key-assignment check, exact-owner selection, fresh owner load, reattach stream lease, relay, and connector service. Current-app and v3 ingress MUST reject any downstream `call_id` query parameter before entering the live service or connector and MUST NOT reconcile it with the path id. Current-app and v3 ingress MUST connect upstream to `/v1/live/{call_id}`. Legacy ingress MUST consume exactly one downstream `call_id` and append its normalized value once after remaining ordered query pairs to `/v1/realtime`.
+The proxy SHALL expose `WS /backend-api/codex/{call_id}`, `WS /v1/live/{call_id}`, and `WS /v1/realtime?call_id={call_id}` only to a registered proxy key for its live binding.
 
 #### Scenario: returned Location joins through every supported ingress
 
@@ -92,9 +121,27 @@ The proxy SHALL expose `WS /backend-api/codex/{call_id}`, `WS /v1/live/{call_id}
 - **AND** the connector uses the current persisted bearer, account, installation, and route identity
 - **AND** the stream lease is released exactly once
 
+### Requirement: Sideband adapters share owner attachment services
+
+All sideband adapters MUST share one bounded call-id normalizer, current key-assignment check, exact-owner selection, fresh owner load, reattach stream lease, relay, and connector service.
+
+#### Scenario: Every ingress uses the shared owner attachment path
+
+- **WHEN** a supported sideband ingress attaches to a bound call
+- **THEN** it uses the shared normalizer, current assignment check, exact-owner selection, fresh owner load, lease, relay, and connector service
+
+### Requirement: Sideband ingress preserves route-specific call-id handling
+
+Current-app and v3 ingress MUST reject any downstream `call_id` query parameter before entering the live service or connector. They MUST NOT reconcile it with the path id and MUST connect upstream to `/v1/live/{call_id}`. Legacy ingress MUST consume exactly one downstream `call_id` and append its normalized value once after remaining ordered query pairs to `/v1/realtime`.
+
+#### Scenario: Legacy ingress appends one normalized call id
+
+- **WHEN** legacy ingress consumes its single downstream `call_id`
+- **THEN** it connects to `/v1/realtime` with the normalized value appended once after the remaining ordered query pairs
+
 ### Requirement: Realtime forwarding preserves protocol context, privacy, and deterministic ownership
 
-The live connector MUST replace downstream proxy authorization, account identity, and client-supplied installation identity with the bound owner identity. It MUST preserve remaining ordered query pairs and supplied version-specific alpha value or absence, FedRAMP, residency, session/context, originator, and attestation headers; strip Responses-only beta values; synthesize neither `OpenAI-Beta` nor `Sec-WebSocket-Protocol`; and apply existing egress policy. It MUST pass the exact ordered downstream WebSocket subprotocol offers through the transport negotiation API, MUST accept downstream only with an upstream-selected value that the downstream offered, and MUST preserve no selection when upstream selects none. It MUST relay text and binary messages without interpretation, preserve only bounded valid close data, enforce the existing message-size boundary, and close/cancel/await each owned peer or task at most once. Both the initial upstream close and its post-cancel drain MUST be bounded; cancellation-resistant cleanup MUST NOT delay handler completion or stream-lease release, and any eventual late task result MUST be consumed without exposing its details.
+The live connector MUST replace downstream proxy authorization, account identity, and client-supplied installation identity with the bound owner identity. It MUST apply existing egress policy.
 
 #### Scenario: protocol-faithful handshake
 
@@ -128,9 +175,37 @@ The live connector MUST replace downstream proxy authorization, account identity
 - **AND** sideband rows use `request_kind=realtime_live`, `transport=websocket`, and a redacted path
 - **AND** persisted private call-creation and sideband rows omit account identity, model content, upstream error text, failure metadata, live query text, and credentials
 
+### Requirement: Realtime forwarding preserves context without synthesizing negotiation headers
+
+The live connector MUST preserve remaining ordered query pairs and supplied version-specific alpha value or absence, FedRAMP, residency, session/context, originator, and attestation headers. It MUST strip Responses-only beta values and synthesize neither `OpenAI-Beta` nor `Sec-WebSocket-Protocol`.
+
+#### Scenario: Missing negotiation headers stay absent
+
+- **WHEN** a live caller supplies neither an alpha value nor WebSocket subprotocol offers
+- **THEN** forwarding preserves the alpha absence and synthesizes neither `OpenAI-Beta` nor `Sec-WebSocket-Protocol`
+
+### Requirement: Realtime subprotocol negotiation preserves upstream selection
+
+The live connector MUST pass exact ordered downstream WebSocket subprotocol offers through the transport negotiation API. It MUST accept downstream only with an upstream-selected value offered downstream, or no selection when upstream selects none.
+
+#### Scenario: Upstream selects no subprotocol
+
+- **WHEN** upstream selects none of the downstream WebSocket subprotocol offers
+- **THEN** downstream acceptance preserves no subprotocol selection
+
+### Requirement: Realtime relay and cleanup remain bounded
+
+The live connector MUST relay text and binary messages without interpretation, preserve only bounded valid close data, enforce the existing message-size boundary, and close/cancel/await each owned peer or task at most once. Initial upstream close and post-cancel drain MUST be bounded. Cancellation-resistant cleanup MUST NOT delay handler completion or stream-lease release. Any eventual late task result MUST be consumed without exposing details.
+
+#### Scenario: Late cleanup results remain private
+
+- **WHEN** cancellation-resistant upstream cleanup exceeds its bounded drain and later completes
+- **THEN** handler completion and stream-lease release proceed without waiting indefinitely
+- **AND** the eventual task result is consumed without exposing details
+
 ### Requirement: Internal ownership and request logs honor dashboard contracts
 
-Reserved realtime ownership is internal continuity state. Ordinary sticky-session operator APIs MUST hide it and MUST NOT delete it through single, bulk, filtered, or delete-all operations. The dashboard `RequestLogsResponseSchema` MUST accept a persisted full request row whose `requestKind` is `realtime_live` and transport is `websocket`; it MUST retain a closed enum rather than weakening request kinds to arbitrary strings.
+Reserved realtime ownership is internal continuity state. Ordinary sticky-session operator APIs MUST hide it and MUST NOT delete it through single, bulk, filtered, or delete-all operations. The dashboard `RequestLogsResponseSchema` MUST accept full persisted request rows with `requestKind=realtime_live` and `transport=websocket`. It MUST retain a closed request-kind enum, not arbitrary strings.
 
 #### Scenario: reserved owner is not an operator session
 
@@ -147,10 +222,19 @@ Reserved realtime ownership is internal continuity state. Ordinary sticky-sessio
 
 ### Requirement: Private realtime compatibility preserves zero-config base behavior and public boundaries
 
-The capability MUST use existing configuration and key registration. It MUST add no setting, migration, dependency, dashboard navigation item, README section, `.env.example` line, public model entry, public `/v1/realtime/calls`, or public `/v1/realtime/client_secrets` implementation. Its user documentation MUST identify these routes as private Codex app compatibility rather than advertise a public Realtime API. Without a registered key the private routes are unavailable, while the untouched base proxy and dashboard MUST continue to start and operate with zero new setup.
+The capability MUST use existing configuration and key registration. User documentation MUST describe these routes as private Codex app compatibility, not advertise a public Realtime API. Private routes require a registered key. The untouched base proxy and dashboard MUST start and operate with zero new setup.
 
 #### Scenario: operator does not use Live Voice
 
 - **WHEN** an operator starts the base proxy and dashboard without adding configuration for this capability
 - **THEN** existing startup and ordinary proxy/dashboard behavior remain available
 - **AND** no public model or documented public Realtime route advertises this private transport
+
+### Requirement: Private realtime compatibility adds no setup or public API surface
+
+The capability MUST add no setting, migration, dependency, dashboard navigation item, README section, `.env.example` line, public model entry, public `/v1/realtime/calls`, or public `/v1/realtime/client_secrets` implementation.
+
+#### Scenario: Private compatibility does not implement public call creation
+
+- **WHEN** private realtime compatibility is available
+- **THEN** it adds neither a public `/v1/realtime/calls` nor a public `/v1/realtime/client_secrets` implementation

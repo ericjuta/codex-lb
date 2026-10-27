@@ -31,16 +31,16 @@ The service MUST enforce the applicable request-body budget against actual raw b
 
 ### Requirement: HTTP ingress reuses existing budgets
 
-The service MUST use `max_decompressed_body_bytes` as the general raw and decompressed HTTP request-body budget. When an owning route capability defines a larger budget from an existing route-specific setting, the ingress guard MUST use that route budget. The HTTP ingress guard MUST NOT add another setting or change existing defaults.
-
-Route-specific budget and error-envelope selection MUST use the application-relative route path after removing any matching ASGI `root_path` prefix.
-
-Requests declaring `multipart/form-data` without `Content-Encoding` MUST remain outside this generic whole-body guard. Multipart requests carrying `Content-Encoding` MUST remain guarded. The service MUST NOT treat the client-declared multipart media type as a trusted security boundary.
+The service MUST use `max_decompressed_body_bytes` for raw and decompressed HTTP bodies, or the larger budget an owning route capability defines from an existing route-specific setting. The ingress guard MUST NOT add settings or change defaults.
 
 #### Scenario: Another HTTP path uses the general budget
 
 - **WHEN** a guarded request targets any other HTTP path
 - **THEN** its raw and decompressed HTTP ingress budget is `max_decompressed_body_bytes`
+
+### Requirement: Multipart ingress exemption requires unencoded content
+
+Declared `multipart/form-data` MUST bypass the generic whole-body guard without `Content-Encoding`. Encoded multipart MUST remain guarded. The declared multipart type MUST NOT be trusted as a security boundary.
 
 #### Scenario: Declared unencoded multipart remains unaffected
 
@@ -51,6 +51,10 @@ Requests declaring `multipart/form-data` without `Content-Encoding` MUST remain 
 
 - **WHEN** a `multipart/form-data` request carries a `Content-Encoding` header
 - **THEN** the service applies both the raw and decompressed budget checks
+
+### Requirement: Mounted ingress policies use application-relative paths
+
+Route budgets and error envelopes MUST use the application-relative path after removing any matching ASGI `root_path` prefix.
 
 #### Scenario: Mounted Responses route keeps its route-specific policy
 
@@ -85,7 +89,7 @@ For request bodies using `gzip`, `deflate`, `zstd`, `identity`, or supported sta
 
 ### Requirement: HTTP ingress failures use the path-family error envelope
 
-Ingress failures on `/v1/*`, `/backend-api/*`, `/api/codex/*`, and `/internal/bridge/*` MUST use an OpenAI-compatible error envelope with `type = invalid_request_error`. Equivalent paths MUST be classified after the existing outer path canonicalization. Other ingress paths MUST retain the dashboard-compatible error envelope. Oversized requests MUST use `code = payload_too_large`; malformed or unsupported compression MUST use `code = invalid_request_error` on OpenAI paths and `code = invalid_request` on other paths.
+Ingress failures on `/v1/*`, `/backend-api/*`, `/api/codex/*`, and `/internal/bridge/*` MUST use OpenAI-compatible envelopes with `type = invalid_request_error`. Paths MUST be classified after existing outer canonicalization. Other paths MUST retain dashboard-compatible envelopes. Oversized requests MUST use `code = payload_too_large`. Malformed or unsupported compression MUST use `code = invalid_request_error` on OpenAI paths, otherwise `code = invalid_request`.
 
 #### Scenario: OpenAI path rejects an oversized body
 
@@ -133,7 +137,7 @@ The HTTP ingress guard MUST NOT authenticate callers or replace, bypass, or relo
 
 ### Requirement: Keep-alive timers do not outlive lost connections
 
-The server MUST release the per-connection keep-alive timer whenever an HTTP connection is lost, regardless of whether the peer closed it cleanly or the loss was reported with an error (connection reset, timeout, or any other transport error). No per-connection server state (protocol, transport wrapper, request cycle, or request scope) MAY remain reachable from the event loop solely because a keep-alive timer is still armed for a connection that no longer exists. Clean-close teardown and the timer's idle-close behavior on intact connections MUST be unchanged, and the server MUST NOT close the transport again on the error path.
+The server MUST release each HTTP connection's keep-alive timer whenever the connection is lost, cleanly or with any transport error, including resets and timeouts. No connection state (protocol, transport wrapper, request cycle, or scope) MAY remain reachable from the event loop solely through that lost connection's armed timer. Clean-close teardown and idle-close behavior on intact connections MUST remain unchanged. The error path MUST NOT close the transport again.
 
 #### Scenario: Peer resets an idle keep-alive connection after a response
 
@@ -154,7 +158,12 @@ The server MUST release the per-connection keep-alive timer whenever an HTTP con
 
 ### Requirement: HTTP protocol selection preserves auto, h11, and httptools
 
-The server MUST honor the existing `--http` / `UVICORN_HTTP` choices `auto`, `h11`, and `httptools` while applying keep-alive timer cleanup. Explicit `h11` MUST select the h11 timer-cleanup subclass. Explicit `httptools` MUST select the httptools timer-cleanup subclass and MUST fail if httptools cannot be imported. `auto` MUST prefer the httptools timer-cleanup subclass when httptools is importable and MUST fall back to the h11 timer-cleanup subclass otherwise. Protocol selection MUST NOT add h2c or other upgrade-offer behavior.
+The server MUST preserve `--http` / `UVICORN_HTTP` choices with keep-alive timer-cleanup subclasses:
+- `h11` MUST select the h11 subclass.
+- `httptools` MUST select the httptools subclass or fail if it cannot be imported.
+- `auto` MUST select the httptools subclass when importable, otherwise the h11 subclass.
+
+Protocol selection MUST NOT add h2c or other upgrade-offer behavior.
 
 #### Scenario: Explicit h11 mode
 
@@ -201,7 +210,7 @@ The server MUST close an idle HTTP/1.1 keep-alive connection after a configurabl
 
 ### Requirement: Image-route start-time middleware relays responses in the request task
 
-The image-route start-time middleware MUST be a pure ASGI middleware that invokes the downstream application in the same task and forwards response messages directly. It MUST NOT be registered via Starlette `BaseHTTPMiddleware` (including `@app.middleware("http")`). Response bodies forwarded on success paths MUST be byte-identical to the downstream application's output. This requirement applies only to the image-route start-time middleware and MUST NOT require every other HTTP middleware to be pure ASGI.
+The image-route start-time middleware MUST use pure ASGI, invoke the downstream application in the same task, and forward response messages directly. It MUST NOT use Starlette `BaseHTTPMiddleware`, including `@app.middleware("http")`. Successful response bodies MUST remain byte-identical to downstream output. This requirement MUST NOT impose pure ASGI on other HTTP middleware.
 
 #### Scenario: Streaming body is forwarded unchanged
 

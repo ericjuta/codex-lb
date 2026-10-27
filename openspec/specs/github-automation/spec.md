@@ -81,16 +81,7 @@ The Codex label synchronization script MUST distinguish GitHub write-permission 
 
 ### Requirement: Codex review label sync review-thread state
 
-The Codex label synchronization script MUST grant `🤖 codex: ok` only when the
-current pull-request head has green required checks, a clean Codex review for
-that head, and no unresolved current-head Codex finding threads. It MUST treat
-unresolved, non-outdated Codex inline review findings on the current head as
-needs-work evidence, and MUST NOT treat inline Codex findings from resolved or
-outdated review threads as active needs-work evidence. It MUST attribute an
-unresolved thread to the current head only when the thread's current commit,
-original commit, or body text ties it to the current head, and MUST treat
-stale unresolved Codex inline threads as non-blocking when none of those tie
-them to the current head.
+The Codex label synchronizer MUST grant `🤖 codex: ok` only for a head with green required checks, a clean Codex review, and no unresolved current-head Codex findings. Unresolved, non-outdated current-head inline findings MUST count as needs-work evidence. Resolved or outdated threads MUST NOT count. An unresolved thread MUST count as current-head only if its current commit, original commit, or body text ties it to that head. Otherwise, stale unresolved inline threads MUST remain non-blocking.
 
 #### Scenario: Resolved inline finding no longer blocks the ok label
 
@@ -150,17 +141,7 @@ them to the current head.
 
 ### Requirement: Codex review labels use the authoritative current-head CI suite
 
-The Codex review label synchronizer SHALL identify the CI workflow from the
-most recent `CI Required` check and SHALL treat the newest same-head run of
-that workflow (ordered by the current attempt's start time, falling back to
-workflow-run creation time, then check recency and run id) as the authoritative
-CI suite when multiple runs of the same GitHub Actions CI workflow exist for
-one pull-request head, even when that run has not yet produced its own
-`CI Required` check. It MUST ignore Actions checks —
-including stale required contexts — only from superseded (older) runs of that
-workflow, while checks from the authoritative run, checks that cannot be
-attributed to a workflow run, non-Actions status evidence, and failures from
-independent workflows remain blocking evidence.
+The Codex review label synchronizer SHALL identify CI by the latest `CI Required` check. Its newest same-head run SHALL be authoritative even before its own check appears. Ordering SHALL use attempt start time, then run creation time, check recency, and run id. Only older runs' Actions checks in that workflow, including stale required contexts, MUST be ignored. Authoritative-run checks, unattributed checks, non-Actions statuses, and independent-workflow failures remain blocking evidence.
 
 #### Scenario: Cancelled duplicate leaves a unique failed placeholder
 
@@ -240,20 +221,13 @@ for a subsystem is unrelated to the change.
 
 ### Requirement: Simplicity budgets are enforced mechanically in CI
 
-The repository SHALL define simplicity budgets in `.github/simplicity-budgets.toml`
-covering at least: `README.md` maximum line count (counted after removing the
-generated `ALL-CONTRIBUTORS-LIST` block, marker lines inclusive), `README.md`
-maximum top-level heading count (h1 and h2 only, with lines inside fenced code
-blocks excluded), `.env.example` maximum line count, and the dashboard
-core-navigation maximum item count together with the source file and array
-name it is read from. A dedicated `Simplicity budgets` workflow, separate from
-the main CI workflow, SHALL run `.github/scripts/check_simplicity_budgets.py`
-(stdlib-only) on pull requests (including `labeled`/`unlabeled` events),
-pushes to `main`, and `merge_group` events, and the check SHALL fail when any
-measured value exceeds its budget. Budget increases are made by editing
-`.github/simplicity-budgets.toml`, which keeps every exceedance a reviewable
-diff (see the `contribution-simplicity` capability for the governing
-principles).
+The repository SHALL define at least these budgets in `.github/simplicity-budgets.toml`:
+- `README.md` lines, excluding the generated `ALL-CONTRIBUTORS-LIST` block and its markers.
+- `README.md` h1/h2 headings, excluding fenced code.
+- `.env.example` lines.
+- Dashboard core-navigation items, with their source file and array name.
+
+Budget increases require manifest edits under the `contribution-simplicity` principles.
 
 #### Scenario: README grows past its line budget
 
@@ -275,6 +249,10 @@ principles).
 - **AND** only h1 and h2 heading lines outside fences count against
   `readme.max_top_level_headings`
 
+### Requirement: Simplicity budget workflow runs independently
+
+A dedicated `Simplicity budgets` workflow, separate from main CI, SHALL run the stdlib-only `.github/scripts/check_simplicity_budgets.py` on pull requests (including `labeled`/`unlabeled`), pushes to `main`, and `merge_group` events. The check SHALL fail on any exceeded budget.
+
 #### Scenario: All budgets within limits
 
 - **WHEN** every measured value is at or below its configured budget
@@ -282,16 +260,12 @@ principles).
 
 ### Requirement: Nav budget refuses to pass when its target disappears
 
-The budget checker MUST exit with a distinct configuration-error status
-(exit code 2) and an explicit repoint instruction when the navigation source
-file or the configured navigation array named in
-`.github/simplicity-budgets.toml` `[core_nav]` cannot be found. A refactor
-that moves or renames the navigation array MUST update `[core_nav]` in the
-same change for the check to pass. The checker MUST use the same exit code 2
-when `.github/simplicity-budgets.toml` itself is missing or malformed, and
-when a `README.md` `ALL-CONTRIBUTORS-LIST:START` marker has no matching `END`
-marker (an unclosed block would otherwise silently exclude the rest of the
-file from the budget).
+The budget checker MUST exit with configuration-error code 2 and an explicit
+repoint instruction if the navigation source file or array configured in
+`.github/simplicity-budgets.toml` `[core_nav]` is missing. Moving or renaming the
+array MUST update `[core_nav]` in the same change for the check to pass.
+The checker MUST also exit 2 if the manifest is missing or malformed, or a
+`README.md` `ALL-CONTRIBUTORS-LIST:START` marker has no matching `END` marker.
 
 #### Scenario: Nav array renamed without repointing the manifest
 
@@ -303,20 +277,7 @@ file from the budget).
 
 ### Requirement: Simplicity budget override label
 
-The checker SHALL read PR label names from the `PR_LABELS` environment
-variable, a JSON array the workflow resolves by querying the pull request's
-current labels from the GitHub API at run time (never from the event
-payload, which can be stale or empty on fork pull requests and re-runs).
-When the `simplicity-budget-approved` label is present, budget violations
-SHALL be downgraded to warning annotations and the check SHALL exit 0 while
-still printing every measured metric. The workflow MUST trigger on `labeled`
-and `unlabeled` so that toggling the label re-evaluates the check
-immediately, and the failure message MUST explain the override path,
-including that re-running a failed run after labeling also works because
-labels are fetched live. Push and merge-group runs carry no pull-request
-labels, so the override MUST NOT apply there: a change that would leave
-`main` over budget MUST raise the budget in
-`.github/simplicity-budgets.toml` in the same diff.
+The checker SHALL read PR labels from `PR_LABELS`, a JSON array fetched at run time from the GitHub API, never the event payload. With `simplicity-budget-approved`, violations SHALL become warning annotations and the check SHALL exit 0 while printing every metric. The workflow MUST re-evaluate immediately on `labeled`/`unlabeled`. Failure messages MUST explain the override and that live label fetching makes reruns after labeling effective.
 
 #### Scenario: Maintainer approves a temporary exceedance
 
@@ -326,6 +287,10 @@ labels, so the override MUST NOT apply there: a change that would leave
   live label set from the API and sees the label (as would a manual re-run
   of the failed run)
 - **AND** the run reports the violations as warning annotations and exits 0
+
+### Requirement: Simplicity budget overrides are pull-request-only
+
+Push and merge-group runs carry no PR labels and MUST NOT apply the override. Changes leaving `main` over budget MUST raise the budget in `.github/simplicity-budgets.toml` in the same diff.
 
 #### Scenario: Label override does not launder main
 

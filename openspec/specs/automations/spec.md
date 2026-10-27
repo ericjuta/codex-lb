@@ -1,7 +1,7 @@
 # automations Specification
 
 ## Purpose
-TBD - created by archiving change add-automations-scheduled-pings. Update Purpose after archive.
+Describe scheduled automation job management, timezone-aware execution, replica coordination, account failover, run history, and isolation from user continuity.
 ## Requirements
 ### Requirement: Automation jobs are manageable via dashboard APIs
 
@@ -209,7 +209,7 @@ The system MUST persist run history rows and expose them via dashboard APIs so o
 
 ### Requirement: Grouped run-history selection is bounded and snapshot-consistent
 
-The grouped automation run-history repository MUST preserve existing candidate-cycle filtering, representative-run selection, cycle ordering, effective-status calculation, and filter-option semantics on SQLite and PostgreSQL while bounding repeated database work. For a non-empty grouped page, page selection, representative-run loading, and exact total calculation MUST use one database statement so rows and total come from one statement snapshot. When an offset is beyond the final row, the repository MAY execute one additional count statement to preserve the exact-total contract. Account and model filter-option facets MUST be loaded with no more than one database statement; status and trigger options MUST continue to come from their canonical complete enums.
+The grouped automation run-history repository MUST bound repeated database work while preserving existing SQLite and PostgreSQL semantics for candidate-cycle filtering, representative-run selection, cycle ordering, effective-status calculation, and filter options. Non-empty page selection, representative-run loading, and exact totals MUST share one database statement and snapshot. Offsets past the final row MAY use one extra count statement for exact totals.
 
 #### Scenario: Common page skips dynamic status aggregation
 
@@ -245,6 +245,10 @@ The grouped automation run-history repository MUST preserve existing candidate-c
 - **THEN** the representative is the latest matching run by `started_at` and `id`
 - **AND** the cycle order is derived from the complete cycle's established manual or scheduled start rule
 - **AND** model filtering uses the execution snapshot rather than a job's later model value
+
+### Requirement: Grouped run-history filter options use bounded queries
+
+For grouped automation run history, account and model filter-option facets MUST load in at most one database statement. Status and trigger options MUST retain canonical complete enums.
 
 #### Scenario: Filter options use one facet query
 

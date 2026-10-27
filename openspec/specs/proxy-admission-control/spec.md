@@ -47,7 +47,7 @@ The proxy MUST enforce separate in-process admission limits for token refresh, u
 
 ### Requirement: Account-local Responses work is capped before upstream creation
 
-For `/v1/responses`, `/backend-api/codex/responses`, and compact Responses traffic, the proxy MUST enforce account-local response-create and streaming concurrency limits in addition to process-wide admission limits. The default account response-create cap MUST be 4 and the default account stream cap MUST be 8 unless operators configure a different value. When an account is at either cap, new soft-affinity work MUST prefer another eligible account before returning local overload. Hard-continuity work MAY fail closed when the required owner account is saturated.
+For `/v1/responses`, `/backend-api/codex/responses`, and compact Responses traffic, the proxy MUST enforce account-local response-create and stream concurrency caps alongside process-wide admission limits. Account caps MUST default to 4 response creates and 8 streams unless configured otherwise. At either cap, new soft-affinity work MUST prefer another eligible account before returning local overload. Hard-continuity work MAY fail closed if its required owner account is saturated.
 
 #### Scenario: Soft work avoids saturated account
 
@@ -91,13 +91,9 @@ Local Responses overload failures MUST expose stable low-cardinality reason fiel
 
 ### Requirement: HTTP bridge startup admission waits are bounded
 
-The proxy MUST apply the configured proxy admission wait timeout to each HTTP bridge startup wait attempt for per-session response-create gate acquisition, bridge capacity waiters, and in-flight session creation waiters.
+Each HTTP bridge startup wait attempt MUST use the configured proxy admission wait timeout for per-session response-create gate acquisition, bridge capacity waiters, and in-flight session creation waiters.
 
-For per-session response-create gate acquisition by a bridged Responses request, an expired gate acquisition attempt MUST be treated as a recoverable capacity wait rather than a terminal failure: the request MUST release its queue slot and account lease, wait with capacity-wait progress semantics, and retry gate acquisition, bounded by the bridge request budget. Requests eligible for soft-affinity reroute MUST still attempt the reroute before entering the recoverable wait. When the bridge request budget is exhausted before the gate opens, the proxy MUST reject the request locally with HTTP 429, `error.code = "response_create_gate_timeout"`, and the stable local-overload reason.
-
-For bridge capacity waiters and in-flight session creation waiters, when the timeout expires the proxy MUST reject the request locally with HTTP 429 and an OpenAI-style `proxy_overloaded` error envelope. Timing out while observing another request's pending in-flight session creation MUST evict that in-flight marker when it is still pending so later requests can attempt a fresh bridge session instead of waiting on the same stalled future.
-
-If a request owns in-flight bridge session creation and is cancelled or fails after publishing the in-flight marker but before registering the created session, the proxy MUST remove or settle that in-flight marker. If a session owner later finishes creation after its in-flight marker was evicted, the owner MUST NOT return an unregistered bridge session to the caller.
+For bridged Responses, an expired gate acquisition attempt MUST be a recoverable capacity wait, not a terminal failure. The request MUST release its queue slot and account lease, wait with capacity-wait progress semantics, and retry gate acquisition within the bridge request budget.
 
 #### Scenario: Gate contention queues within the bridge request budget
 
@@ -106,6 +102,10 @@ If a request owns in-flight bridge session creation and is cancelled or fails af
 - **WHEN** a gate acquisition attempt exceeds the configured proxy admission wait timeout
 - **THEN** the request emits capacity-wait keepalive progress on streaming surfaces and retries gate acquisition
 - **AND** the request completes normally once the in-flight turn releases the gate before the bridge request budget expires
+
+### Requirement: HTTP bridge gate waits reroute before waiting and fail on budget exhaustion
+
+Requests eligible for soft-affinity reroute MUST attempt it before entering a recoverable gate wait. If the bridge request budget expires before the gate opens, the proxy MUST reject locally with HTTP 429, `error.code = "response_create_gate_timeout"`, and the stable local-overload reason.
 
 #### Scenario: Gate contention still fails once the request budget is exhausted
 
@@ -126,6 +126,10 @@ If a request owns in-flight bridge session creation and is cancelled or fails af
 - **WHEN** a gate acquisition attempt times out while a pending bridge request has been stuck past the stuck-gate retirement threshold
 - **THEN** the stuck session retirement check still runs on that attempt
 
+### Requirement: HTTP bridge capacity and session creation waiters fail locally on timeout
+
+Bridge capacity and in-flight session creation waiters MUST receive local HTTP 429 rejection with an OpenAI-style `proxy_overloaded` error envelope on timeout. A timeout while observing another request's pending in-flight session creation MUST evict its marker if still pending, so later requests can attempt a fresh bridge session rather than wait on the stalled future.
+
 #### Scenario: In-flight bridge session creation does not finish
 
 - **WHEN** a bridged Responses request waits on another request's in-flight session creation
@@ -139,6 +143,10 @@ If a request owns in-flight bridge session creation and is cancelled or fails af
 - **AND** no capacity becomes available before the configured proxy admission wait timeout
 - **THEN** the waiter is rejected locally with HTTP 429 and `error.code = "proxy_overloaded"`
 
+### Requirement: HTTP bridge creation owners settle published markers
+
+If a bridge session creation owner is cancelled or fails after publishing its in-flight marker but before registering the created session, the proxy MUST remove or settle the marker. An owner that finishes creation after marker eviction MUST NOT return an unregistered bridge session to the caller.
+
 #### Scenario: In-flight owner is cancelled during stale session close
 
 - **WHEN** a bridge session creation owner has published an in-flight marker
@@ -148,11 +156,7 @@ If a request owns in-flight bridge session creation and is cancelled or fails af
 
 ### Requirement: Stuck HTTP bridge response-create gate sessions are retired
 
-The proxy MUST retain the existing waiter-triggered retirement behavior for stale HTTP bridge response-create gate owners and MUST additionally enforce an owner-side deadline for a visible HTTP request whose current upstream `response.create` send remains completely eventless before `response.created`. The owner-side deadline MUST be measured from a monotonic timestamp recorded immediately before the current upstream send, MUST use the smaller of the configured stuck-gate retirement threshold and 240 seconds, MUST run without a second gate waiter, and MUST remain active when periodic SSE keepalives are disabled.
-
-The owner-side watchdog MUST apply only while the request owns the response-create gate, awaits `response.created`, has neither a response id nor recorded `response.created` latency, has received no matched `response.*` lifecycle event, and has produced no downstream-visible output or sequence evidence. Non-response telemetry such as `codex.rate_limits` MUST NOT suppress this watchdog. Any matched `response.*` lifecycle event, response-created milestone, or downstream-visible evidence MUST suppress the owner-side watchdog and leave existing timeout behavior unchanged.
-
-When the owner-side deadline expires, the proxy MUST recheck eligibility, emit a structured low-cardinality log and the existing stuck-retirement Prometheus counter, terminally fail and settle every pending request exactly once, and retire the whole bridge session. It MUST NOT transparently replay the timed-out request, move it to another account, or write an account-health failure for the missing-created timeout.
+The proxy MUST retain existing waiter-triggered retirement of stale HTTP bridge response-create gate owners. It MUST also enforce an owner-side deadline for a visible HTTP request whose current upstream `response.create` send remains completely eventless before `response.created`. This deadline MUST use the smaller of the configured stuck-gate retirement threshold and 240 seconds, run without a second gate waiter, and remain active when periodic SSE keepalives are disabled.
 
 #### Scenario: Lone eventless gate owner is retired before the client timeout
 
@@ -163,12 +167,20 @@ When the owner-side deadline expires, the proxy MUST recheck eligibility, emit a
 - **THEN** the proxy emits an explicit terminal failure and retires the bridge session
 - **AND** recovery occurs before the native client's 300-second parsed-event idle timeout
 
+### Requirement: HTTP bridge owner deadlines start immediately before the current send
+
+The owner-side deadline MUST be measured from a monotonic timestamp recorded immediately before the current upstream `response.create` send.
+
 #### Scenario: Send time rather than request age anchors the deadline
 
 - **GIVEN** a request spends most of its budget waiting for admission before it sends `response.create`
 - **WHEN** the upstream send succeeds
 - **THEN** the owner-side deadline begins from that current send
 - **AND** earlier queue or admission time does not make the request immediately stale
+
+### Requirement: HTTP bridge owner watchdog applies only to eventless gate owners
+
+The owner-side watchdog MUST apply only while the request owns the response-create gate and awaits `response.created`, with no response id, recorded `response.created` latency, matched `response.*` lifecycle event, or downstream-visible output or sequence evidence. Non-response telemetry such as `codex.rate_limits` MUST NOT suppress it. Any matched `response.*` lifecycle event, response-created milestone, or downstream-visible evidence MUST suppress it without changing existing timeout behavior.
 
 #### Scenario: Leading telemetry does not mask an eventless owner
 
@@ -183,6 +195,10 @@ When the owner-side deadline expires, the proxy MUST recheck eligibility, emit a
 - **WHEN** the eventless owner-side deadline would otherwise elapse
 - **THEN** this watchdog does not retire the session
 - **AND** existing stream, request-budget, and waiter-triggered timeout behavior remains authoritative
+
+### Requirement: HTTP bridge owner timeout settles all requests without replay or account penalties
+
+At owner-side deadline expiry, the proxy MUST recheck eligibility, emit a structured low-cardinality log and the existing stuck-retirement Prometheus counter, terminally fail and settle every pending request exactly once, and retire the whole bridge session. It MUST NOT transparently replay the timed-out request, move it to another account, or record an account-health failure for the missing-created timeout.
 
 #### Scenario: Timeout is fail-closed and account-neutral
 

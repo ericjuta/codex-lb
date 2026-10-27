@@ -17,8 +17,8 @@ Browser OAuth authorize requests MUST include an `originator` query parameter. T
 
 ### Requirement: Upstream websocket handshakes auto-detect standard proxy environment variables
 
-When operators don't explicitly configure `upstream_websocket_trust_env`, upstream websocket handshakes MUST honor standard outbound proxy environment variables before connecting directly.
-Explicit configuration MUST still override auto-detection.
+Unless `upstream_websocket_trust_env` is explicitly configured, upstream websocket handshakes MUST honor standard outbound proxy environment variables before connecting directly.
+Explicit configuration MUST override auto-detection.
 
 #### Scenario: secure websocket handshakes honor scheme-compatible env proxies by default
 
@@ -48,7 +48,7 @@ Explicit configuration MUST still override auto-detection.
 
 ### Requirement: Runtime version status checks latest GitHub release
 
-The service SHALL expose a dashboard-auth protected runtime version status API that reports the running codex-lb version, the latest known GitHub release version when available, whether an update is available, and the time of the latest lookup attempt. The lookup MUST be cached in-process to avoid per-request GitHub traffic, and lookup failures MUST NOT cause the API to fail.
+The service SHALL expose a dashboard-auth protected runtime version status API reporting the running codex-lb version, latest known GitHub release version when available, update availability, and latest lookup attempt time. Lookups MUST be cached in-process to avoid per-request GitHub traffic. Lookup failures MUST NOT fail the API.
 
 #### Scenario: Latest release is newer than current version
 
@@ -64,7 +64,7 @@ The service SHALL expose a dashboard-auth protected runtime version status API t
 
 ### Requirement: Model refresh recovers from shared HTTP client transport failures
 
-When the model registry refresh path fails before receiving an upstream HTTP response because of a transport-level error, the system MUST treat that failure as recoverable transport state, rebuild the shared outbound HTTP client, and retry the failed model-refresh operation at most once for the current failover cycle. HTTP status failures, invalid upstream payloads, and permanent authentication failures MUST NOT trigger shared-client rotation.
+A model registry refresh transport-level failure before an upstream HTTP response MUST be treated as recoverable transport state. The system MUST rebuild the shared outbound HTTP client and retry the failed model-refresh operation at most once for the current failover cycle. HTTP status failures, invalid upstream payloads, and permanent authentication failures MUST NOT trigger shared-client rotation.
 
 #### Scenario: model fetch transport failure rotates the shared client once
 
@@ -84,7 +84,7 @@ When the model registry refresh path fails before receiving an upstream HTTP res
 
 ### Requirement: Shared outbound HTTP client rotation preserves in-flight users
 
-Callers that use the default shared outbound HTTP session or retry client MUST lease the current shared client for the full duration of their upstream operation. Rotating the shared client MUST make new callers use the replacement client while deferring closure of the retired client until all active leases on that retired client have released. Process shutdown MAY force-close active and retired clients to keep shutdown bounded.
+Callers using the default shared outbound HTTP session or retry client MUST lease the current shared client throughout their upstream operation. Rotation MUST direct new callers to the replacement and defer closing the retired client until all its active leases are released. Process shutdown MAY force-close active and retired clients to keep shutdown bounded.
 
 #### Scenario: in-flight request keeps using retired client until release
 
@@ -107,7 +107,7 @@ Callers that use the default shared outbound HTTP session or retry client MUST l
 
 ### Requirement: Process-wide network failures rotate shared transport state
 
-The service MUST classify local DNS resolver and host-route failures separately from account-specific upstream failures. Classification MUST come from typed exception provenance or an already-preserved stable internal code, not from matching arbitrary upstream message text. When such a failure affects the current shared outbound HTTP client, the service MUST make subsequent callers use a replacement client while preserving active leases on the retired client. Concurrent failures from the same retired generation MUST NOT cause repeated client rotations. Replacement construction and cleanup MUST remain cancellation-safe: an interrupted or failed replacement MUST close partially created resources and leave the previous generation current.
+The service MUST classify local DNS resolver and host-route failures separately from account-specific upstream failures. It MUST use typed exception provenance or an already-preserved stable internal code, not arbitrary upstream message text. When the current shared outbound HTTP client has such a failure, the service MUST replace it for subsequent callers while preserving the retired client's active leases. Concurrent failures from one retired generation MUST NOT cause repeated rotations.
 
 #### Scenario: DNS failure rotates the current shared client once
 
@@ -129,6 +129,10 @@ The service MUST classify local DNS resolver and host-route failures separately 
 - **AND** no typed local-network classification accompanies it
 - **THEN** the failure does not enter process-network recovery
 
+### Requirement: Shared-client replacement remains cancellation-safe
+
+Shared-client replacement construction and cleanup MUST remain cancellation-safe. An interrupted or failed replacement MUST close partially created resources and leave the previous generation current.
+
 #### Scenario: Cancelled replacement preserves the live generation
 
 - **WHEN** shared-client replacement is cancelled after creating only part of the replacement transport
@@ -137,7 +141,7 @@ The service MUST classify local DNS resolver and host-route failures separately 
 
 ### Requirement: Process-wide network failures are account neutral
 
-The proxy MUST NOT record a transient, permanent, quota, rate-limit, or circuit-breaker health failure against an account when an attempt fails because the local process cannot resolve or route to the upstream host. Routed proxy transport failures MUST retain a credential-safe machine-readable classification after the original exception message is sanitized. A permanent missing proxy hostname MUST remain an endpoint-scoped proxy failure rather than entering process-wide recovery.
+If an attempt fails because the local process cannot resolve or route to the upstream host, the proxy MUST NOT record a transient, permanent, quota, rate-limit, or circuit-breaker account-health failure. Routed proxy transport failures MUST retain a credential-safe machine-readable classification after sanitizing the original exception message. A permanently missing proxy hostname MUST remain an endpoint-scoped proxy failure, not trigger process-wide recovery.
 
 #### Scenario: Wi-Fi transition does not poison account health
 
@@ -160,9 +164,7 @@ The proxy MUST NOT record a transient, permanent, quota, rate-limit, or circuit-
 
 ### Requirement: Routed streaming upstream responses are released when the consumer stops before EOF
 
-When an upstream streaming request is issued through a resolved upstream proxy route, the response body is consumed unbuffered and the consumer routinely stops before the body reaches EOF: on the terminal stream event, on the stream idle timeout, on cancellation, on downstream disconnect, and when the response is mapped to an error before the body is drained. On every such exit the proxy MUST release or close the upstream response object before it closes the per-stream client that owns the connection, so the connection is returned or closed synchronously and no connection object is left to be finalized by the garbage collector.
-
-The release MUST work for every response shape the routed path can receive: an aiohttp response (`release()`), a response that exposes only `close()` or only `aclose()` (those methods MUST be invoked), a SOCKS-owned wrapped response that MUST be released before the private session that carried it is closed, and a buffered or duck-typed response that exposes neither `release()`, `close()`, nor `aclose()` (no-op). Release MUST run only after the last event block has been yielded to the consumer and MUST NOT change the forwarded bytes, the error mapping, the retry classification, or the cancellation semantics of the stream.
+Upstream streams through resolved upstream proxy routes consume response bodies unbuffered. Consumers routinely stop before EOF on terminal stream events, stream idle timeout, cancellation, downstream disconnect, or error mapping before drain. On each such exit, the proxy MUST release or close the response before closing its owning per-stream client. The connection MUST be returned or closed synchronously, with no connection object left for garbage-collector finalization.
 
 #### Scenario: Terminal event arrives while upstream holds the connection open
 
@@ -192,6 +194,10 @@ The release MUST work for every response shape the routed path can receive: an a
 - **WHEN** the proxy raises the mapped `ProxyResponseError`
 - **THEN** the upstream response is released before the per-stream client is closed
 
+### Requirement: Routed response release supports all response shapes
+
+Release MUST support every routed response shape: aiohttp (`release()`), `close()`-only or `aclose()`-only responses (invoke that method), SOCKS-owned wrappers (release before closing their private session), and buffered or duck-typed responses with none of these methods (no-op). Release MUST run only after the last event block is yielded to the consumer and MUST NOT change forwarded bytes, error mapping, retry classification, or stream cancellation semantics.
+
 #### Scenario: Close-only or aclose-only response is released
 
 - **GIVEN** a routed response object that exposes only `close()` or only `aclose()`
@@ -206,7 +212,7 @@ The release MUST work for every response shape the routed path can receive: an a
 
 ### Requirement: Routed aiohttp egress carries proxy credentials outside the proxy URL
 
-When the Codex upstream client dispatches a routed HTTP request or WebSocket connect through aiohttp, it MUST pass a credential-free proxy URL (`scheme://host:port`) and MUST carry the endpoint username and password as a `Proxy-Authorization` Basic header whose bytes are identical to the header aiohttp derives from URL userinfo (latin1 encoding). The client MUST NOT place proxy credentials in the aiohttp proxy URL. Because aiohttp forwards proxy headers only on the CONNECT tunnel, a route whose ordered pool contains any credentialed endpoint MUST fail closed for a non-TLS (`http`/`ws`) upstream target before any connection is opened and ahead of every transport branch (aiohttp and SOCKS), surfacing as a credential-free connect-phase transport error, so a credential-free fallback endpoint cannot absorb the misconfigured primary. Route resolution MUST fail closed for an `http` or `https` proxy username containing `:`. SOCKS5/SOCKS5H RFC 1929 usernames MAY contain `:`. SOCKS transports keep carrying credentials through their existing field inputs. HTTP/SOCKS endpoints MAY still store credentials; aiohttp dispatch MUST still pass a credential-free proxy URL.
+For routed HTTP requests or WebSocket connects through aiohttp, the Codex upstream client MUST use a credential-free proxy URL (`scheme://host:port`). It MUST send the endpoint username and password in a `Proxy-Authorization` Basic header, byte-identical to aiohttp's URL-userinfo header (latin1 encoding).
 
 #### Scenario: Credentialed https endpoint uses Proxy-Authorization
 
@@ -217,12 +223,20 @@ When the Codex upstream client dispatches a routed HTTP request or WebSocket con
 - **AND** the aiohttp connection-key repr and the proxy-error message text contain neither the password nor its Basic token
 - **AND** the proxy-error repr, which carries the tunnel request headers, renders with `Basic [REDACTED]` through the log formatters
 
+### Requirement: Credentialed proxy routes reject plaintext upstream targets
+
+aiohttp forwards proxy headers only on CONNECT. For non-TLS (`http`/`ws`) upstream targets, any credentialed endpoint in a route's ordered pool MUST cause the route to fail closed before opening connections or entering any transport branch (aiohttp or SOCKS). The failure MUST be a credential-free connect-phase transport error, preventing a credential-free fallback from absorbing the misconfigured primary.
+
 #### Scenario: Credentialed route to a plaintext target fails closed
 
 - **GIVEN** a resolved route whose primary proxy endpoint carries credentials and whose fallback does not
 - **WHEN** the Codex upstream client is asked to reach an `http` or `ws` upstream URL, for an idempotent or non-idempotent request or a WebSocket open
 - **THEN** the client fails before dispatch with a credential-free connect-phase transport error
 - **AND** no endpoint in the pool, including the credential-free fallback, receives the request on any transport
+
+### Requirement: Proxy route resolution preserves protocol-specific credential rules
+
+Route resolution MUST fail closed for `http` or `https` proxy usernames containing `:`. SOCKS5/SOCKS5H RFC 1929 usernames MAY contain `:`. SOCKS transports keep carrying credentials through their existing field inputs. HTTP/SOCKS endpoints MAY still store credentials.
 
 #### Scenario: HTTP username with a colon is rejected at resolution
 
@@ -236,7 +250,7 @@ When the Codex upstream client dispatches a routed HTTP request or WebSocket con
 
 ### Requirement: Dashboard rejects and reports proxy usernames the resolver cannot encode
 
-The dashboard MUST reject an `http` or `https` upstream proxy endpoint whose username contains `:` at creation with a 400 error coded `invalid_proxy_username`, mirroring the resolver rule (RFC 7617 Basic credentials cannot encode a colon in the user-id). SOCKS5/SOCKS5H RFC 1929 usernames MAY contain `:`. The endpoint test route MUST report a resolver rejection of an already persisted endpoint as a failed probe carrying the resolver reason rather than surfacing an unhandled error.
+At creation, the dashboard MUST reject `http` or `https` upstream proxy endpoints whose username contains `:` with a 400 `invalid_proxy_username` error, matching the resolver rule. RFC 7617 Basic credentials cannot encode a colon in the user-id. SOCKS5/SOCKS5H RFC 1929 usernames MAY contain `:`. When the resolver rejects a persisted endpoint, the endpoint test route MUST report a failed probe with the resolver reason, not an unhandled error.
 
 #### Scenario: HTTP colon username is rejected at creation
 

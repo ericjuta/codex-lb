@@ -5,6 +5,8 @@ import base64
 import json
 import logging
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -13,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from aiohttp import ClientSession, web
 from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.modules.oauth.service as oauth_module
 from app.core.auth import generate_unique_account_id
@@ -193,9 +196,38 @@ async def test_device_oauth_flow_creates_account(async_client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_starting_new_device_flow_cancels_previous_pending_poll(async_client, monkeypatch):
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("poll_stage", ["token_exchange", "rollback", "close"])
+async def test_starting_new_device_flow_cancels_previous_pending_poll(async_client, monkeypatch, poll_stage):
     await oauth_module._OAUTH_STORE.reset()
     issued = 0
+    route_sessions = 0
+    poll_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+    replacement_poll_started = asyncio.Event()
+    exchange_calls: list[str] = []
+    first_task: asyncio.Task[None] | None = None
+    original_background_session = oauth_module.get_background_session
+
+    @asynccontextmanager
+    async def gated_background_session() -> AsyncIterator[AsyncSession]:
+        nonlocal route_sessions
+        route_sessions += 1
+        async with original_background_session() as session:
+            # The first lookup is /start; the second is its background poll.
+            # Keep the real session context and its cancellation cleanup helpers.
+            if route_sessions == 2 and poll_stage != "token_exchange":
+                cleanup = session.rollback if poll_stage == "rollback" else session.close
+
+                async def gated_cleanup() -> None:
+                    poll_started.set()
+                    await release_cleanup.wait()
+                    await cleanup()
+                    cleanup_finished.set()
+
+                monkeypatch.setattr(session, poll_stage, gated_cleanup)
+            yield session
 
     async def fake_device_code(**_):
         nonlocal issued
@@ -208,40 +240,71 @@ async def test_starting_new_device_flow_cancels_previous_pending_poll(async_clie
             expires_in_seconds=300,
         )
 
-    async def fake_exchange_device_token(**_):
-        await asyncio.sleep(300)
+    async def fake_exchange_device_token(*, device_auth_id: str, **_) -> OAuthTokens | None:
+        exchange_calls.append(device_auth_id)
+        if device_auth_id == "dev_1" and poll_stage == "token_exchange":
+            poll_started.set()
+        elif device_auth_id == "dev_2":
+            replacement_poll_started.set()
+        await asyncio.Event().wait()
         raise AssertionError("device token polling should be cancelled by the test")
 
+    monkeypatch.setattr(oauth_module, "get_background_session", gated_background_session)
     monkeypatch.setattr(oauth_module, "request_device_code", fake_device_code)
     monkeypatch.setattr(oauth_module, "exchange_device_token", fake_exchange_device_token)
 
-    first = await async_client.post("/api/oauth/start", json={"forceMethod": "device"})
-    assert first.status_code == 200
-    await asyncio.sleep(0)
-    async with oauth_module._OAUTH_STORE.lock:
-        first_flow_id = first.json()["flowId"]
-        first_flow = oauth_module._OAUTH_STORE.get_flow_locked(first_flow_id)
-        assert first_flow is not None
-        first_task = first_flow.poll_task
-        assert first_task is not None
+    try:
+        first = await async_client.post("/api/oauth/start", json={"forceMethod": "device"})
+        assert first.status_code == 200
+        async with oauth_module._OAUTH_STORE.lock:
+            first_flow_id = first.json()["flowId"]
+            first_flow = oauth_module._OAUTH_STORE.get_flow_locked(first_flow_id)
+            assert first_flow is not None
+            first_task = first_flow.poll_task
+            assert first_task is not None
+        await poll_started.wait()
 
-    second = await async_client.post("/api/oauth/start", json={"forceMethod": "device"})
-    assert second.status_code == 200
-    second_flow_id = second.json()["flowId"]
-    await asyncio.sleep(0)
+        second = await async_client.post("/api/oauth/start", json={"forceMethod": "device"})
+        assert second.status_code == 200
+        second_flow_id = second.json()["flowId"]
 
-    async with oauth_module._OAUTH_STORE.lock:
-        pending_device_flows = [
-            flow
-            for flow in oauth_module._OAUTH_STORE._flows.values()
-            if flow.method == "device" and flow.status == "pending"
-        ]
-        assert [flow.flow_id for flow in pending_device_flows] == [second_flow_id]
-        assert oauth_module._OAUTH_STORE.get_flow_locked(first_flow_id) is None
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(first_task, timeout=1)
+        async with oauth_module._OAUTH_STORE.lock:
+            pending_device_flows = [
+                flow
+                for flow in oauth_module._OAUTH_STORE._flows.values()
+                if flow.method == "device" and flow.status == "pending"
+            ]
+            assert [flow.flow_id for flow in pending_device_flows] == [second_flow_id]
+            assert oauth_module._OAUTH_STORE.get_flow_locked(first_flow_id) is None
+        if poll_stage != "token_exchange":
+            assert not first_task.done()
+        release_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            # The timeout must not supply the cancellation we are asserting.
+            await asyncio.wait_for(asyncio.shield(first_task), timeout=1)
+        assert first_task.cancelled()
+        if poll_stage != "token_exchange":
+            assert cleanup_finished.is_set()
 
-    await oauth_module._OAUTH_STORE.reset()
+        await replacement_poll_started.wait()
+        assert exchange_calls == (["dev_1", "dev_2"] if poll_stage == "token_exchange" else ["dev_2"])
+        status = await async_client.get("/api/oauth/status", params={"flowId": second_flow_id})
+        assert status.status_code == 200
+        assert status.json() == {"status": "pending", "errorMessage": None}
+    finally:
+        release_cleanup.set()
+        async with oauth_module._OAUTH_STORE.lock:
+            poll_tasks = {
+                flow.poll_task for flow in oauth_module._OAUTH_STORE._flows.values() if flow.poll_task is not None
+            }
+        await oauth_module._OAUTH_STORE.reset()
+        if first_task is not None:
+            # A failed regression may leave the removed poll alive after it
+            # consumed the service's cancellation; reset no longer owns it.
+            if first_task not in poll_tasks and not first_task.done():
+                first_task.cancel()
+            poll_tasks.add(first_task)
+        await asyncio.gather(*poll_tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio

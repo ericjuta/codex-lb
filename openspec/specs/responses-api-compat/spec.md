@@ -6,7 +6,7 @@ Define Responses API compatibility contracts so Codex, OpenCode, and OpenAI-styl
 ## Requirements
 ### Requirement: Internal Responses Lite header is forwarded upstream
 
-The service MUST preserve an inbound `X-OpenAI-Internal-Codex-Responses-Lite` header when calling upstream Responses, compact, or WebSocket transports. The service MUST preserve the header value and MUST NOT disable Responses Lite behavior by removing the header.
+The service MUST forward the inbound `X-OpenAI-Internal-Codex-Responses-Lite` header unchanged to upstream Responses, compact, or WebSocket transports. It MUST NOT remove the header to disable Responses Lite.
 
 #### Scenario: HTTP and compact upstream headers preserve Lite
 
@@ -22,7 +22,7 @@ The service MUST preserve an inbound `X-OpenAI-Internal-Codex-Responses-Lite` he
 
 ### Requirement: GPT-5.6 bootstrap metadata advertises Lite Code Mode capabilities
 
-When the static bootstrap catalog is serving `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna`, the Codex model metadata MUST include `use_responses_lite=true`, `tool_mode=code_mode_only`, and `experimental_supported_tools=["exec", "wait"]`. The `multi_agent_version` MUST be `v2` for Sol and Terra and `v1` for Luna. A successful live model-catalog refresh MAY replace these fallback entries with upstream metadata.
+Static bootstrap metadata for `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` MUST include `use_responses_lite=true`, `tool_mode=code_mode_only`, and `experimental_supported_tools=["exec", "wait"]`. The `multi_agent_version` MUST be `v2` for Sol and Terra and `v1` for Luna. A successful live catalog refresh MAY replace these fallback entries with upstream metadata.
 
 #### Scenario: Offline GPT-5.6 model discovery preserves tool capabilities
 
@@ -34,7 +34,7 @@ When the static bootstrap catalog is serving `gpt-5.6-sol`, `gpt-5.6-terra`, or 
 
 ### Requirement: Responses Lite tool definitions survive input normalization
 
-When a Responses Lite request contains an input item with `type: "additional_tools"`, the service MUST preserve that item, including its `role` and complete `tools` array, in the upstream request payload. Instruction normalization MUST NOT move it into top-level `instructions` or drop it because it has no textual content.
+The service MUST preserve each Responses Lite `type: "additional_tools"` input item, including its `role` and complete `tools` array, in the upstream payload. Instruction normalization MUST NOT move it into top-level `instructions` or drop it for lacking text.
 
 #### Scenario: Codex Code Mode tools reach upstream
 
@@ -50,7 +50,7 @@ When a Responses Lite request contains an input item with `type: "additional_too
 - **AND** it remains in its original position relative to the other input items
 
 ### Requirement: Use prompt_cache_key as OpenAI cache affinity
-For OpenAI-style `/v1/responses`, `/v1/responses/compact`, and chat-completions requests mapped onto Responses, the service MUST treat a non-empty `prompt_cache_key` as the bounded upstream account affinity key for prompt-cache correctness even when a `session_id` header is present. OpenAI-style route wiring MUST NOT upgrade those requests to durable `CODEX_SESSION` affinity by default. This affinity MUST apply even when dashboard `sticky_threads_enabled` is disabled, the service MUST continue forwarding the same `prompt_cache_key` upstream unchanged, and the stored affinity MUST expire after the configured freshness window so older keys can rebalance. The freshness window MUST come from dashboard settings so operators can adjust it without restart.
+OpenAI-style `/v1/responses`, `/v1/responses/compact`, and Responses-mapped chat completions MUST use non-empty `prompt_cache_key` for bounded upstream account affinity, despite `session_id` or disabled `sticky_threads_enabled`. Routes MUST NOT default to durable `CODEX_SESSION`. The key MUST pass upstream unchanged. Affinity MUST expire after the dashboard freshness window, adjustable without restart, so old keys can rebalance.
 
 #### Scenario: OpenAI-style route ignores session header for durable codex-session pinning
 - **WHEN** a client sends `/v1/responses` or `/v1/responses/compact` with a non-empty `session_id` header and no explicit sticky-thread mode
@@ -63,11 +63,7 @@ For OpenAI-style `/v1/responses`, `/v1/responses/compact`, and chat-completions 
 
 ### Requirement: Responses requests reject uploaded input_image references
 
-The system SHALL accept `{"type":"input_file","file_id":"file_*"}` attached-file items in `/v1/responses`, `/backend-api/codex/responses`, and `/responses/compact` request payloads and forward them verbatim.
-
-When an `input_image` part contains a `file_id` field or an `image_url` starting with `sediment://`, the proxy MUST return HTTP 400 with `error.code = "unsupported_input_image_format"` and an explanation that the upstream Responses API only accepts inline `data:` URLs for `input_image`. The proxy MUST NOT fetch the upload, MUST NOT inline-convert the image, and MUST NOT trim, slim, or rewrite any conversation content.
-
-`app/core/openai/requests.py::extract_input_image_file_references` MAY be used to detect the unsupported shape. This request path MUST NOT fetch uploads, inline-convert images, or otherwise reshape inbound conversation payloads.
+The system SHALL accept and forward `input_file` items with `file_id: "file_*"` verbatim on `/v1/responses`, `/backend-api/codex/responses`, and `/responses/compact`. For `input_image` with `file_id` or `image_url` starting `sediment://`, the proxy MUST return HTTP 400 `error.code = "unsupported_input_image_format"`, explaining that upstream Responses only accepts inline `data:` URLs for `input_image`.
 
 #### Scenario: input_image file_id is rejected before forwarding
 
@@ -93,8 +89,18 @@ When an `input_image` part contains a `file_id` field or an `image_url` starting
 - **THEN** the bridge MUST be bypassed for that request and the request MUST be sent over raw HTTP
 - **AND** subsequent smaller requests MUST continue to use the bridge normally
 
+### Requirement: Uploaded input_image rejection does not reshape conversation content
+
+`app/core/openai/requests.py::extract_input_image_file_references` MAY detect unsupported uploaded `input_image` shapes. This request path MUST NOT fetch uploads, inline-convert images, or trim, slim, rewrite, or otherwise reshape inbound conversation content.
+
+#### Scenario: Rejected image leaves conversation content untouched
+
+- **WHEN** an `input_image` part references a `file_id` or `sediment://` URL
+- **THEN** rejection does not fetch the upload or inline-convert the image
+- **AND** no inbound conversation content is trimmed, slimmed, rewritten, or otherwise reshaped
+
 ### Requirement: Oversized responses request payloads fall back to HTTP
-When `upstream_stream_transport` is `"auto"` and the serialized request payload size exceeds the WebSocket frame budget, the proxy MUST use upstream HTTP `POST` instead of WebSocket. If the HTTP responses bridge is enabled and the same oversized request would otherwise route through the bridge, the proxy MUST bypass the bridge for that request only and send it over raw HTTP. Explicit `upstream_stream_transport` overrides MUST still take precedence.
+When `upstream_stream_transport` is `"auto"` and the serialized payload exceeds the WebSocket frame budget, the proxy MUST use upstream HTTP `POST`. If the request would otherwise use the enabled HTTP responses bridge, the proxy MUST bypass it for that request only and use raw HTTP. Explicit `upstream_stream_transport` overrides MUST still take precedence.
 
 #### Scenario: large request payload routes via HTTP transport on auto
 - **GIVEN** `upstream_stream_transport` is `"auto"` and the request payload size exceeds the WebSocket frame budget
@@ -110,7 +116,7 @@ When `upstream_stream_transport` is `"auto"` and the serialized request payload 
 
 ### Requirement: Clean upstream close before any response event fails fast
 
-When the HTTP responses bridge observes an upstream websocket close with `close_code = 1000` before any `response.*` event has been surfaced for the pending request, the proxy MUST classify the close as rejected input, surface HTTP 502 `upstream_rejected_input`, and MUST NOT trigger `retry_precreated` or `retry_fresh_upstream`.
+If the HTTP responses bridge sees upstream websocket `close_code = 1000` before surfacing any `response.*` event for the pending request, the proxy MUST classify it as rejected input and return HTTP 502 `upstream_rejected_input`. It MUST NOT trigger `retry_precreated` or `retry_fresh_upstream`.
 
 #### Scenario: clean close before response.created is not retried
 
@@ -119,7 +125,7 @@ When the HTTP responses bridge observes an upstream websocket close with `close_
 - **AND** does not transparently replay the pre-created request
 
 ### Requirement: Long Codex websocket turns tolerate extended upstream silence
-The default compact request budget MUST be at least 180 seconds, and the default upstream stream idle timeout MUST be at least 600 seconds, so long-running Codex turns can survive expensive compaction or tool execution without a local proxy watchdog ending the turn prematurely.
+The default compact request budget MUST be at least 180 seconds, and the default upstream stream idle timeout MUST be at least 600 seconds, allowing long compaction or tool execution.
 
 #### Scenario: compact and stream watchdog defaults leave room for long turns
 - **WHEN** the service starts with default configuration
@@ -128,7 +134,7 @@ The default compact request budget MUST be at least 180 seconds, and the default
 
 ### Requirement: Upstream websocket drops penalize affected accounts
 
-When an upstream websocket closes while one or more streamed response requests are pending and have not reached a terminal event, the proxy MUST record a transient upstream error for the account before signaling failure for those pending requests, except when the close carries a classified process-wide network failure. A classified process-wide network failure MUST remain account neutral and use its network error code. For other closes, the proxy MUST surface `stream_incomplete` to affected pending requests except when a direct Responses WebSocket request has already successfully emitted a finite integer `sequence_number`. For that sequenced direct-WebSocket case, the proxy MUST record the request outcome as `stream_incomplete` without emitting a synthetic terminal frame under the active response id, then MUST close the downstream WebSocket with code 1011, unless the request satisfies the verified no-generation prewarm recovery contract below and its one-shot replay succeeds.
+On upstream websocket close with streamed requests pending before a terminal event, the proxy MUST record a transient upstream account error before signaling failure. Classified process-wide network failures instead MUST remain account-neutral and use their network code. Other closes MUST surface `stream_incomplete`, except sequenced direct requests governed by 'Sequenced direct WebSocket drops settle without synthetic terminal frames'.
 
 #### Scenario: websocket closes before pending responses complete
 
@@ -166,8 +172,19 @@ When an upstream websocket closes while one or more streamed response requests a
 - **AND** it forwards only replay numeric sequences that advance beyond `0`
 - **AND** the recovered request is finalized and logged exactly once
 
+### Requirement: Sequenced direct WebSocket drops settle without synthetic terminal frames
+
+On upstream close before termination, except classified process-wide network failure, a direct Responses WebSocket request that successfully emitted a finite integer `sequence_number` MUST record `stream_incomplete` without a synthetic terminal under the active response id, then close downstream with 1011. This does not apply if verified no-generation prewarm recovery applies and its one-shot replay succeeds.
+
+#### Scenario: Sequenced request closes without terminal synthesis
+
+- **WHEN** an ordinary upstream close interrupts a direct request after successful finite integer sequence emission
+- **AND** verified no-generation prewarm replay does not recover it
+- **THEN** the request records `stream_incomplete` without a synthetic terminal frame under the active response id
+- **AND** the downstream WebSocket closes with code 1011
+
 ### Requirement: Single HTTP bridge previous-response misses recover or fail closed
-When an HTTP bridge session receives an anonymous upstream `previous_response_not_found` error for a single pending follow-up request, the service MUST treat the error as an internal continuity-loss signal. It MUST either recover through the existing previous-response rebind path or rewrite the error to a retryable continuity failure instead of forwarding the raw upstream invalid-request error.
+For an anonymous upstream `previous_response_not_found` error on a single pending HTTP bridge follow-up, the service MUST treat it as internal continuity loss. It MUST use the existing previous-response rebind recovery or rewrite the error as a retryable continuity failure, rather than forward the raw upstream invalid-request error.
 
 #### Scenario: single pending HTTP bridge follow-up loses previous-response continuity
 - **WHEN** an HTTP `/v1/responses` or `/backend-api/codex/responses` bridge session has exactly one pending request with `previous_response_id`
@@ -177,7 +194,7 @@ When an HTTP bridge session receives an anonymous upstream `previous_response_no
 - **AND** the downstream error code is not `previous_response_not_found`
 
 ### Requirement: WebSocket full-resend previous-response misses retry without stale anchor
-When a direct WebSocket `response.create` request includes both `previous_response_id` and a self-contained full resend payload, the service MUST retain a safe replay body without `previous_response_id`. If upstream rejects the anchor with `previous_response_not_found` before `response.created`, the service MUST reconnect and replay the retained full payload as a fresh turn instead of forwarding the raw upstream invalid-request error. A payload that only carries incremental tool outputs for tool calls that are not also present in the same request is not self-contained and MUST NOT be replayed as a fresh turn without `previous_response_id`.
+Direct WebSocket `response.create` with `previous_response_id` and self-contained full input MUST retain a safe replay body without that anchor. On `previous_response_not_found` before `response.created`, the service MUST reconnect and replay it fresh, not forward the raw error. Incremental tool-output-only input lacking its calls in the same request is not self-contained and MUST NOT replay fresh without `previous_response_id`.
 
 #### Scenario: full-resend WebSocket follow-up loses just-completed anchor
 - **WHEN** a WebSocket `/v1/responses` or `/backend-api/codex/responses` follow-up has `previous_response_id`
@@ -197,7 +214,7 @@ When a direct WebSocket `response.create` request includes both `previous_respon
 
 ### Requirement: WebSocket tool-search fresh retries require completed client-owned pairs
 
-The direct WebSocket fresh-retry predicate MUST treat `tool_search_call` / `tool_search_output` items as retry-safe only when they form a completed, ordered, self-contained pair whose declared execution owner is omitted or `client`. A status of `completed`, an omitted status, or a null status MUST be treated as completed-compatible; every other status MUST be rejected as incomplete. The call MUST carry dictionary `arguments`. The output MUST carry a `tools` list or a string `output`, but not both. The predicate MUST reject server-owned execution, an output without its matching preceding call, an incomplete status, or an otherwise malformed pair. This check MUST NOT change HTTP compact or HTTP fresh-resend pair policy, and MUST NOT change the ordinary anchored WebSocket trimming boundary.
+Direct WebSocket fresh retries MUST require ordered, self-contained `tool_search_call`/`tool_search_output` pairs with omitted/client execution. Status MUST be completed, omitted, or null. Others are incomplete. Calls MUST have dictionary `arguments`; outputs MUST have exactly one of list `tools` or string `output`. Server execution, missing preceding calls, incomplete/malformed pairs MUST be rejected. HTTP compact/fresh-resend policy and anchored WebSocket trimming MUST remain unchanged.
 
 #### Scenario: Completed client-owned tool-search pair is retry-safe
 
@@ -228,7 +245,7 @@ The direct WebSocket fresh-retry predicate MUST treat `tool_search_call` / `tool
 
 ### Requirement: WebSocket fresh retries omit response-owned tool-search IDs
 
-When the proxy retains a self-contained direct WebSocket `response.create` payload for a fresh retry without `previous_response_id`, it MUST remove the top-level `id` field from every `tool_search_call` and `tool_search_output` input item in that retained retry payload. It MUST preserve each paired item’s type, `call_id`, arguments or output, status, relative order, and all other input history. This requirement applies whether the original anchor was supplied by the client or injected from WebSocket continuity state. Preparing the retry MUST NOT mutate caller-owned input and MUST NOT change the ordinary anchored submission.
+Retained self-contained direct WebSocket `response.create` retries without `previous_response_id` MUST strip top-level `id` from every `tool_search_call`/`tool_search_output`. All other history, paired type, `call_id`, arguments/output, status, and order MUST remain unchanged. This applies to client and continuity-injected anchors. Retry preparation MUST NOT mutate caller input or ordinary anchored submissions.
 
 #### Scenario: Client-supplied anchor retains a sanitized full-history retry
 
@@ -261,22 +278,7 @@ When the proxy retains a self-contained direct WebSocket `response.create` paylo
 
 ### Requirement: Compact trimming preserves prioritised historical side effects
 
-The service MUST retain recognised historical side-effect tool calls as bounded
-priority context when an oversized compact input is trimmed. It MUST use the
-same side-effect classifier as downstream replay
-deduplication. This includes code-mode `exec` and `collaboration` wrapper calls
-as well as their lower-level tool spellings and recognised parallel batches.
-
-For each retained historical side effect, compact trimming MUST retain its
-matching call and output together. The service MUST reserve space for that
-complete pair before selecting optional ordinary head or tail context. Required
-state anchors and the current required item remain mandatory; if they leave no
-room for a historical pair, the service MAY drop that pair together and retain a
-trim marker instead.
-
-A recognised side-effect call without a non-empty `call_id` MUST NOT be
-retained as a historical side-effect anchor, because it cannot form a verified
-call/output pair.
+Oversized compact trimming MUST reserve bounded historical side-effect pairs before optional ordinary head/tail context, using downstream replay deduplication's classifier: code-mode `exec`/`collaboration` wrappers, lower-level spellings, and recognised parallel batches. Required state anchors/current item remain mandatory. Matching call/output pairs MUST stay together. If required state leaves no room, a pair MAY become a trim marker. Calls without non-empty `call_id` MUST NOT become anchors.
 
 
 #### Scenario: Code-mode side effect survives an oversized compact input
@@ -304,7 +306,7 @@ call/output pair.
 - **AND** it does not emit an unpaired historical side-effect call upstream
 
 ### Requirement: Public Responses errors mask previous-response misses
-Public Responses endpoints MUST NOT return an OpenAI-shaped `previous_response_not_found` error to clients. If a lower layer still raises or collects that error, the API layer MUST rewrite it to a retryable `stream_incomplete` continuity failure and remove the missing response id from the public payload.
+Public Responses endpoints MUST NOT return OpenAI-shaped `previous_response_not_found` errors. The API layer MUST rewrite any such error raised or collected below it as retryable `stream_incomplete` and remove the missing response id from the public payload.
 
 #### Scenario: API layer receives an upstream previous-response miss
 - **WHEN** a public `/responses`, `/v1/responses`, `/responses/compact`, or `/v1/responses/compact` handler receives an error with `code=previous_response_not_found`
@@ -314,7 +316,7 @@ Public Responses endpoints MUST NOT return an OpenAI-shaped `previous_response_n
 - **AND** the missing `previous_response_id` is not exposed in the response body
 
 ### Requirement: Public /v1 responses SSE stream emits only OpenAI Responses contract events
-When serving streaming `POST /v1/responses`, the service MUST emit only event types defined by the OpenAI Responses SSE contract (the `response.*` and `error` families) on the public stream. The service MUST drop any vendor-internal event types — specifically, any event whose `type` begins with `codex.` (for example `codex.rate_limits`) — before they reach the public stream. The `/backend-api/codex/*` routes are NOT subject to this requirement and MUST continue forwarding these events unchanged.
+Streaming `POST /v1/responses` MUST emit only OpenAI Responses SSE contract event types (`response.*` and `error`). The service MUST drop vendor-internal events, including all `codex.*` types such as `codex.rate_limits`. Exempt `/backend-api/codex/*` routes MUST continue forwarding these events unchanged.
 
 #### Scenario: Codex-internal rate-limit event is dropped before response.created
 - **WHEN** the upstream Codex backend emits `codex.rate_limits` before `response.created` for a streaming `/v1/responses` request
@@ -326,7 +328,7 @@ When serving streaming `POST /v1/responses`, the service MUST emit only event ty
 - **THEN** the response stream forwards the `codex.rate_limits` event to the Codex CLI client unchanged
 
 ### Requirement: Streamed /v1 responses terminal output is backfilled from item events
-When serving streaming `POST /v1/responses`, if the upstream's terminal `response.completed` or `response.incomplete` event carries `output` as missing or as an empty list, the service MUST reconstruct `output` from the `response.output_item.done` events emitted earlier in the same stream before yielding the terminal SSE event. The reconstructed `output` MUST preserve the `output_index` ordering and the raw item payloads. When the terminal `response.completed` / `response.incomplete` already carries a non-empty `output`, the service MUST forward it unchanged.
+For streaming `POST /v1/responses`, the service MUST fill terminal `response.completed` or `response.incomplete` `output` that is missing or `[]` from earlier `response.output_item.done` events in that stream before yielding the terminal event. It MUST preserve `output_index` order and raw item payloads, and MUST forward existing non-empty terminal `output` unchanged.
 
 #### Scenario: Terminal response.completed with empty output is backfilled from streamed items
 - **GIVEN** the upstream emits `response.output_item.done` events with valid message or function-call items
@@ -339,7 +341,7 @@ When serving streaming `POST /v1/responses`, if the upstream's terminal `respons
 - **THEN** the public stream's terminal event MUST carry that `output` array unchanged
 
 ### Requirement: Public /v1 responses SSE stream starts with response.created
-When serving streaming `POST /v1/responses`, the first OpenAI-contract event the public stream emits MUST be `response.created`. When the upstream's first standard `response.*` event is not `response.created` (for example when the Codex backend jumps directly to `response.failed` on upstream rejection mid-stream), the service MUST synthesize a `response.created` SSE event from the source event's `response` envelope and emit it before forwarding the source event, so that consumers using the OpenAI Python SDK's `responses.stream(...)` parser do not raise `RuntimeError`.
+Streaming `POST /v1/responses` MUST emit `response.created` as its first OpenAI-contract event. If upstream's first standard `response.*` event has another type, the service MUST synthesize `response.created` from that event's `response` envelope and emit it first, preventing OpenAI Python SDK `responses.stream(...)` initialization `RuntimeError`.
 
 #### Scenario: Upstream error stream that skips response.created is repaired
 - **WHEN** the upstream's first standard event is `response.failed` (no preceding `response.created`)
@@ -352,7 +354,7 @@ When serving streaming `POST /v1/responses`, the first OpenAI-contract event the
 
 ### Requirement: Upstream overload envelopes are classified as retryable transient failures
 
-When `classify_upstream_failure` observes an upstream error envelope whose `code` is `overloaded_error` or `server_is_overloaded`, the system MUST treat it as `retryable_transient` regardless of the accompanying HTTP status. Streamed Responses API traffic can deliver the overload envelope on a connection that has already returned HTTP 200, so a 5xx-only heuristic is insufficient to drive account fail-over and bounded retry.
+`classify_upstream_failure` MUST classify upstream envelopes with `code` `overloaded_error` or `server_is_overloaded` as `retryable_transient` regardless of HTTP status, including overloads streamed after HTTP 200.
 
 #### Scenario: `overloaded_error` without a 5xx status is retryable transient
 
@@ -381,20 +383,7 @@ When `classify_upstream_failure` observes an upstream error envelope whose `code
 
 ### Requirement: Strict function tool parameter schemas are pre-validated
 
-The service MUST pre-validate the JSON schema attached to a function tool when that tool sets `strict: true`, before opening any upstream connection. The validation rules mirror OpenAI's Structured Outputs strict-mode policy (https://platform.openai.com/docs/guides/structured-outputs) and the existing `enforce_strict_text_format` policy for `text.format.json_schema`:
-
-- Every `object` schema node MUST set `additionalProperties: false`.
-- Every property under `properties` MUST appear in `required`.
-- Every schema node MUST carry a `type` key (no empty `{}` schemas).
-- The same rules apply recursively to nested object / array / combinator (`anyOf` / `oneOf` / `allOf`) schemas.
-
-When any of those rules is violated, the service MUST reject the request with `HTTP 400 invalid_request_error` carrying:
-
-- `error.code = "invalid_function_parameters"`
-- `error.message = "Invalid schema for function '<name>': In context=<path>, <reason>."`
-- `error.param = "tools[<index>].parameters"` for native Responses-API requests; `error.param = "tools[<index>].function.parameters"` for chat-completions requests routed through the coercion pipeline.
-
-This brings strict function tool schema handling into parity with `text.format.json_schema`. Without it, an invalid strict tool schema reaches the upstream Codex backend, which closes the WebSocket with `close_code=1000` and surfaces as a generic `502 server_error / upstream_rejected_input`. Real OpenAI returns `400 invalid_function_parameters` for the identical payload. A 5xx on a deterministically-broken request also triggers retry / failover loops in well-behaved clients.
+Before any upstream connection, the service MUST validate `strict: true` function-tool schemas against OpenAI Structured Outputs (https://platform.openai.com/docs/guides/structured-outputs) and existing `enforce_strict_text_format` policy for `text.format.json_schema`. It MUST apply the recursive node constraints and native/coerced error-field contract below.
 
 #### Scenario: Strict tool missing `additionalProperties` is rejected with 400
 
@@ -421,15 +410,30 @@ This brings strict function tool schema handling into parity with `text.format.j
 - **WHEN** a client sends a function tool with `strict: false` or without a `strict` key, and the schema would have violated strict mode (e.g. missing `additionalProperties`)
 - **THEN** the proxy does not run the strict pre-validation and forwards the request unchanged, matching pre-fix behavior for non-strict tools
 
+### Requirement: Strict function tool schemas enforce recursive node constraints
+
+In `strict: true` function-tool schemas, every `object` node MUST set `additionalProperties: false`, every `properties` key MUST appear in `required`, and every node MUST have `type` (no empty `{}` schemas). These rules MUST apply recursively to objects, arrays, and `anyOf`/`oneOf`/`allOf` schemas.
+
+#### Scenario: Nested strict schema nodes receive the same validation
+
+- **WHEN** a strict function-tool schema nests an object in an array or combinator
+- **THEN** that object requires `additionalProperties: false`, all property keys in `required`, and a `type`
+- **AND** empty schema nodes are invalid
+
+### Requirement: Strict function schema failures preserve native and coerced error fields
+
+Strict function-schema violations MUST return `HTTP 400 invalid_request_error` with `error.code = "invalid_function_parameters"` and `error.message = "Invalid schema for function '<name>': In context=<path>, <reason>."`. `error.param` MUST be `"tools[<index>].parameters"` for native Responses requests or `"tools[<index>].function.parameters"` for chat completions routed through coercion.
+
+#### Scenario: Coerced chat tool reports its original parameter path
+
+- **WHEN** coercion detects an invalid strict function schema in chat-completions tool index 2
+- **THEN** the response is HTTP 400 `invalid_request_error` with code `invalid_function_parameters`
+- **AND** `error.param` is `tools[2].function.parameters`
+- **AND** the message follows the specified function-name, context-path, and reason template
+
 ### Requirement: Same-response side-effect tool-call replays are suppressed
 
-When the proxy receives multiple downstream `response.output_item.done` events for the same response that describe the same side-effecting local tool operation, the proxy SHALL forward only the first event to the client.
-
-The proxy SHALL treat `exec_command`, `write_stdin`, `multi_tool_use.parallel`, and `apply_patch_call` events as side-effecting. For these tools, a changed `call_id` alone MUST NOT make a same-response replay distinct.
-
-When a `multi_tool_use.parallel` event contains duplicate nested side-effect operations, the proxy SHALL remove the duplicate nested operations before forwarding the event. Duplicate nested `exec_command` operations MUST ignore volatile output/wait fields such as `yield_time_ms` and `max_output_tokens`. Duplicate nested `write_stdin` operations MUST be scoped by `session_id` and `chars`. Duplicate nested `wait_agent` operations MUST be scoped by the target set.
-
-Read-only function calls and matching operations under different response ids MUST continue to pass through.
+Only the first `response.output_item.done` per side-effect operation in a response SHALL pass (`exec_command`, `write_stdin`, `multi_tool_use.parallel`, `apply_patch_call`). `call_id` alone MUST NOT distinguish replays. Nested parallel matching ignores volatile `exec_command` wait/output fields (e.g. `yield_time_ms`, `max_output_tokens`), scopes `write_stdin` by `session_id`/`chars` and `wait_agent` by target set. Distinct operations, read-only calls and cross-response operations MUST pass.
 
 #### Scenario: side-effect call replay uses a new call id
 
@@ -454,7 +458,7 @@ Read-only function calls and matching operations under different response ids MU
 - **AND** does not forward the duplicate nested operation to the client
 
 ### Requirement: Continuity-dependent Responses follow-ups fail closed with retryable errors
-When a Responses follow-up depends on previously established continuity state, the service MUST return a retryable continuity error if that continuity cannot be reconstructed safely. The service MUST NOT expose raw `previous_response_not_found` for bridge-local metadata loss or similar internal continuity gaps.
+If a Responses follow-up's required continuity state cannot be safely reconstructed, the service MUST return a retryable continuity error. It MUST NOT expose raw `previous_response_not_found` for bridge-local metadata loss or similar internal gaps.
 
 #### Scenario: HTTP bridge loses local continuity metadata for a follow-up request
 - **WHEN** an HTTP `/v1/responses` or `/backend-api/codex/responses` follow-up request depends on `previous_response_id` or a hard continuity turn-state
@@ -506,13 +510,7 @@ When a request depends on hard continuity ownership, the service MUST fail close
 - **AND** it does not create or recover a local bridge session on the current replica
 
 ### Requirement: Request logs persist requested, actual, and billable service tiers separately
-For Responses proxy traffic, the system MUST persist the operator-requested tier, the upstream-reported actual tier when available, and the effective billable tier used for pricing as separate request-log fields.
-
-The legacy `fast` alias MUST be normalized to `priority` before forwarding and before it is stored as the requested tier. For streaming requests, `actual_service_tier` MUST come only from a nonblank service tier explicitly present in `response.completed.response`. Created, in-progress, failed, incomplete, cancelled, and disconnected streams MUST NOT supply actual-tier evidence. A completed response that omits the tier MUST leave actual-tier evidence absent even if earlier events supplied one. Non-streaming successful compact responses MAY supply actual-tier evidence directly.
-
-The system MUST preserve the existing billable-tier fallback independently of actual-tier evidence. An explicit terminal tier MUST take precedence for billing; otherwise the existing observed-event/request fallback remains available without being copied into `actual_service_tier`.
-
-Continuation reconstruction MUST preserve the final upstream terminal response's `service_tier`, including its absence. It MUST NOT inherit a tier from the initial created response when the terminal omits the field. Proxy-synthesized incomplete responses MUST NOT claim an upstream terminal tier from the created response.
+Responses request logs MUST separately persist the operator-requested tier, upstream-reported actual tier when available, and effective pricing tier. `fast` MUST normalize to `priority` before forwarding or requested-tier storage. Actual-tier evidence, independent billing fallback, and continuation reconstruction MUST follow the tier requirements below.
 
 #### Scenario: Upstream reports a downgraded actual tier
 - **WHEN** a client sends a Responses request with `service_tier: "priority"`
@@ -542,6 +540,34 @@ Continuation reconstruction MUST preserve the final upstream terminal response's
 - **WHEN** a stream reports a created tier but fails, is cancelled, disconnects, or finishes incomplete
 - **THEN** actual-tier evidence remains absent
 
+### Requirement: Actual service tier requires explicit terminal evidence
+
+Streaming `actual_service_tier` MUST come only from a nonblank explicit tier in `response.completed.response`. Created, in-progress, failed, incomplete, cancelled, or disconnected streams MUST NOT supply it. If completion omits it, actual-tier evidence MUST remain absent despite earlier tiers. Successful non-streaming compact responses MAY supply it directly.
+
+#### Scenario: Nonterminal tier does not establish actual-tier evidence
+
+- **WHEN** a stream reports a tier before completion but completion omits it
+- **THEN** `actual_service_tier` remains absent
+
+### Requirement: Billable tier fallback remains independent of actual-tier evidence
+
+Billing MUST independently preserve its existing fallback: explicit terminal tier takes precedence, otherwise observed-event/request fallback remains available without populating `actual_service_tier`.
+
+#### Scenario: Billing fallback does not become actual-tier evidence
+
+- **WHEN** no terminal tier is present but an observed-event or requested tier is available
+- **THEN** the existing billing fallback remains available
+- **AND** it does not populate `actual_service_tier`
+
+### Requirement: Continuation tier reconstruction preserves terminal absence
+
+Continuation reconstruction MUST preserve final upstream terminal `service_tier`, including absence. It MUST NOT inherit a created-response tier when the terminal omits it. Synthesized incomplete responses MUST NOT claim a created-response tier as an upstream terminal tier.
+
+#### Scenario: Synthesized incomplete response cannot inherit terminal evidence
+
+- **WHEN** the proxy synthesizes an incomplete response after a created event with a tier
+- **THEN** it does not claim that created-event tier as an upstream terminal tier
+
 ### Requirement: API key service tier enforcement applies to upstream Responses requests
 
 When an API key carries an enforced service tier, the proxy MUST override any incoming Responses request service tier with that enforced value before forwarding upstream. The legacy alias `fast` MUST be treated as `priority`.
@@ -559,10 +585,7 @@ When an API key carries an enforced service tier, the proxy MUST override any in
 
 ### Requirement: Cursor GPT-5 model aliases normalize to canonical slugs
 
-For Responses proxy traffic, the service MUST recognize Cursor-style GPT-5 model aliases formed by appending known suffix tokens
-(`minimal`, `low`, `medium`, `high`, `xhigh`, `extra`, `fast`, `priority`, `reasoning`, `thinking`) to supported GPT-5 family slugs. The alias
-resolver MUST match longer qualified canonical slugs before shorter family prefixes so aliases such as `gpt-5.4-mini-high` and `gpt-5.3-codex-fast` normalize
-to the intended model. Unknown suffix tokens MUST leave the requested model unchanged.
+For Responses traffic, the service MUST recognize Cursor-style aliases appending `minimal`, `low`, `medium`, `high`, `xhigh`, `extra`, `fast`, `priority`, `reasoning`, or `thinking` to supported GPT-5 slugs. It MUST match longer qualified canonical slugs before shorter family prefixes. Unknown suffixes MUST leave the requested model unchanged.
 
 #### Scenario: Qualified mini model alias normalizes reasoning
 
@@ -578,7 +601,7 @@ to the intended model. Unknown suffix tokens MUST leave the requested model unch
 
 ### Requirement: OpenAI-compatible Responses payload sanitation removes provider-specific thinking aliases
 
-The shared OpenAI-compatible Responses sanitation path MUST normalize third-party thinking aliases into the canonical `reasoning` object before upstream forwarding. Unknown provider-specific thinking controls MUST NOT be passed through unchanged to the upstream ChatGPT backend.
+Shared OpenAI-compatible Responses sanitation MUST normalize third-party thinking aliases into canonical `reasoning` before forwarding. It MUST NOT forward unknown provider-specific thinking controls unchanged to the upstream ChatGPT backend.
 
 #### Scenario: Shared payload sanitation maps enable_thinking
 
@@ -594,7 +617,7 @@ The shared OpenAI-compatible Responses sanitation path MUST normalize third-part
 - **AND** the forwarded upstream payload does not include `thinking`
 
 ### Requirement: Public Responses streams expose renderable final text
-For OpenAI-style streaming `/v1/responses` and `/backend-api/codex/responses`, the service MUST expose renderable `response.output_text.delta` events for assistant message text when upstream provides final text only in output item or terminal response output payloads. The service MUST NOT duplicate text deltas for an output item that already emitted a text delta.
+For OpenAI-style streaming `/v1/responses` and `/backend-api/codex/responses`, the service MUST emit renderable `response.output_text.delta` events when upstream supplies assistant text only in output items or terminal output. It MUST NOT duplicate deltas for an item that already emitted one.
 
 #### Scenario: final output item text is exposed as a text delta
 - **WHEN** upstream emits a `response.output_item.done` event with assistant message text and no prior text delta for that output item
@@ -609,7 +632,7 @@ For OpenAI-style streaming `/v1/responses` and `/backend-api/codex/responses`, t
 - **THEN** the service forwards the stream without synthesizing another text delta for that same output item
 
 ### Requirement: Tool call events and output items are preserved
-If the upstream model emits tool call deltas or output items, the service MUST forward those events in streaming mode and MUST include tool call items in the final response output for non-streaming mode.
+The service MUST forward upstream tool-call deltas and output items when streaming and MUST include tool-call items in non-streaming final output.
 
 #### Scenario: Tool call emitted
 - **WHEN** the upstream emits a tool call delta event
@@ -636,7 +659,7 @@ If the upstream model emits tool call deltas or output items, the service MUST f
 - **THEN** the value MUST be the upstream `call_...` identifier and MUST NOT be substituted with the internal `fc_...` item id used solely for routing
 
 ### Requirement: Responses routing prefers budget-safe accounts
-When serving Responses routes, the service MUST prefer eligible accounts that are still below the configured budget threshold over eligible accounts already above that threshold. If no below-threshold candidate exists, the service MAY fall back to the pressured candidates.
+Responses routing MUST prefer eligible accounts below the configured budget threshold over those above it. If none are below, the service MAY use pressured candidates.
 
 #### Scenario: Fresh Responses request avoids a near-exhausted account
 - **WHEN** `/backend-api/codex/responses`, `/backend-api/codex/responses/compact`, `/v1/responses`, or `/v1/responses/compact` selects among multiple eligible active accounts
@@ -652,7 +675,7 @@ The service SHALL allow upstream Responses SSE events and upstream websocket mes
 - **THEN** the proxy continues processing the event instead of closing the upstream websocket locally with `1009 message too big`
 
 ### Requirement: Upstream Responses transport strategy
-For streaming Codex/Responses proxy requests, the system MUST let operators choose the upstream transport strategy through dashboard settings. The resolved strategy MAY be `auto`, `http`, or `websocket`, and `default` MUST defer to the server configuration default.
+Operators MUST be able to select streaming Codex/Responses upstream transport through dashboard settings. The resolved strategy MAY be `auto`, `http`, or `websocket`. `default` MUST defer to server configuration.
 
 #### Scenario: Dashboard forces websocket upstream transport
 - **WHEN** the dashboard setting `upstream_stream_transport` is set to `"websocket"`
@@ -691,7 +714,7 @@ For streaming Codex/Responses proxy requests, the system MUST let operators choo
 - **THEN** the proxy MUST preserve the pre-feature HTTP transport default for model-preference auto-selection unless an explicit legacy websocket mode or native Codex websocket signal opts in
 
 ### Requirement: Responses-compatible tool payload handling
-The service SHALL accept built-in Responses tool definitions on `/backend-api/codex/responses` and `/v1/responses` without locally rejecting them. The service MAY normalize documented aliases, but upstream model/tool compatibility validation MUST remain the upstream contract.
+The service SHALL accept built-in Responses tools on `/backend-api/codex/responses` and `/v1/responses` without local rejection. It MAY normalize documented aliases, but model/tool compatibility validation MUST remain upstream.
 
 #### Scenario: full Responses request includes built-in tools
 - **WHEN** a client sends `/backend-api/codex/responses` or `/v1/responses` with built-in Responses tools such as `image_generation`, `computer_use`, `computer_use_preview`, `file_search`, or `code_interpreter`
@@ -708,7 +731,7 @@ The service SHALL remove `tools` and `tool_choice` from compact request payloads
 
 ### Requirement: Responses requests accept input_file content items with a file_id
 
-The system SHALL accept `input_file` content items that reference an upload by `file_id` in `/backend-api/codex/responses` and `/v1/responses` request payloads (both list-form and string-form `input`). These items MUST be forwarded to upstream verbatim. The same MUST apply to `/responses/compact` request bodies. The proxy MUST NOT raise `input_file.file_id is not supported` for these items.
+The system SHALL accept upload-referencing `input_file` items with `file_id` in list- or string-form `input` on `/backend-api/codex/responses` and `/v1/responses`. It MUST forward them verbatim upstream. The same MUST apply to `/responses/compact`. The proxy MUST NOT raise `input_file.file_id is not supported` for these items.
 
 #### Scenario: input_file with file_id is accepted in a /responses request
 
@@ -722,9 +745,7 @@ The system SHALL accept `input_file` content items that reference an upload by `
 
 ### Requirement: Responses requests with input_file.file_id route to the upload's account
 
-A `/v1/responses`, `/backend-api/codex/responses`, or `/responses/compact` request that references an `{type: "input_file", file_id}` content item SHALL be routed to the upstream account that registered the file via `POST /backend-api/files`, when an in-memory pin for that `file_id` is still live. Stronger affinity signals MUST take precedence over the file_id pin: an explicit `prompt_cache_key`, a session header (`StickySessionKind.CODEX_SESSION`), a turn-state header, or a `previous_response_id` MUST keep their existing routing semantics.
-
-When multiple `file_id`s are referenced and several are pinned, the most-recently-pinned one MUST be preferred (with a deterministic lexicographic tie-break on `file_id`).
+For `input_file.file_id` references on `/v1/responses`, `/backend-api/codex/responses`, or `/responses/compact`, a live in-memory pin SHALL route to the account that registered the file via `POST /backend-api/files`. Explicit `prompt_cache_key`, session (`StickySessionKind.CODEX_SESSION`), turn-state, and `previous_response_id` affinity MUST retain precedence and existing semantics. Among referenced live pins, the newest MUST win, breaking ties lexicographically by `file_id`.
 
 #### Scenario: file_id pin drives routing for an input_file response
 
@@ -740,15 +761,7 @@ When multiple `file_id`s are referenced and several are pinned, the most-recentl
 
 ### Requirement: File operation failover honors typed transport provenance
 
-For `POST /backend-api/files` and `POST /backend-api/files/{file_id}/uploaded`, the proxy MUST preserve typed routed-transport failure phase, error code, and replay eligibility from the file client through the service failover decision.
-
-Rules:
-- A typed transport failure proven to occur before dispatch MUST use the existing previsible unary account failover policy, even when its credential-safe message contains no transient-error phrase.
-- Typed transport failures MUST NOT gain replay eligibility from message text.
-- TLS verification failures, ambiguous request failures, response-body failures, and process-wide network failures MUST NOT invoke the file operation through another account.
-- Process-wide network failures MUST keep the `proxy_network_unavailable` error code.
-- Transport failures without typed provenance MUST keep the existing message-based classification.
-- File-finalize requests pinned to the account that registered the file MUST NOT be sent through another account.
+For `POST /backend-api/files` and `POST /backend-api/files/{file_id}/uploaded`, the proxy MUST preserve typed routed-transport failure phase, code, and replay eligibility through service failover. Proven typed pre-dispatch failures MUST use existing previsible unary account failover regardless of credential-safe message wording. Text MUST NOT grant typed failures replay eligibility. Untyped failures MUST retain message-based classification.
 
 #### Scenario: Routed pre-dispatch refusal on file create uses another account
 
@@ -783,9 +796,19 @@ Rules:
 - **WHEN** a finalize poll fails before dispatch with a replay-eligible transport failure
 - **THEN** the proxy returns an error without invoking a finalize poll through another account
 
+### Requirement: Unsafe file transport failures preserve account ownership
+
+For file create/finalize operations, TLS verification, ambiguous request, response-body, and process-wide network failures MUST NOT cause cross-account replay. Process-wide network failures MUST keep `proxy_network_unavailable`. Finalize requests pinned to the registering account MUST NOT change accounts.
+
+#### Scenario: Unsafe failure cannot override a file owner
+
+- **WHEN** a pinned finalize request encounters a typed transport failure
+- **THEN** it is not replayed through another account
+- **AND** a process-wide network failure retains `proxy_network_unavailable`
+
 ### Requirement: File finalization transport failures do not fail over after a poll response
 
-Once any upstream `POST /files/{file_id}/uploaded` poll for a finalize request returns an HTTP response, the proxy MUST treat every later transport failure of that request as not eligible for transport-failure account failover. The proxy MUST NOT use a later transport failure to invoke finalization through another account. This rule MUST hold for both account-routed proxy transport and direct upstream transport. It MUST NOT change the existing `401` forced-refresh and account-reselection path, and pinned finalize ownership MUST remain enforced.
+After any upstream `POST /files/{file_id}/uploaded` poll returns HTTP, later transport failures for that finalize request MUST NOT permit account failover or cross-account finalization. This applies to account-routed and direct transports. Existing `401` forced-refresh/reselection behavior MUST remain unchanged, and pinned finalize ownership MUST remain enforced.
 
 #### Scenario: Routed later poll refusal stays on the first account
 
@@ -808,7 +831,7 @@ Once any upstream `POST /files/{file_id}/uploaded` poll for a finalize request r
 - **THEN** the proxy completes finalization through the eligible fallback account within the request budget
 
 ### Requirement: Codex backend session_id preserves account affinity
-When a backend Codex Responses or compact request includes a non-empty accepted session header, the service MUST use that value as the routing affinity key for upstream account selection. If the request lacks a client-supplied `prompt_cache_key`, the service MUST derive and attach a stable `prompt_cache_key` before upstream forwarding so account affinity and upstream prompt-cache routing can coexist. Accepted session headers are `session_id`, `x-codex-session-id`, and `x-codex-conversation-id`, in that priority order.
+Backend Codex Responses and compact requests MUST use a non-empty accepted session header as upstream account affinity: `session_id`, `x-codex-session-id`, then `x-codex-conversation-id` in priority order. Without a client-supplied `prompt_cache_key`, the service MUST derive and attach a stable one before forwarding upstream.
 
 #### Scenario: Backend Codex request derives prompt_cache_key before codex-session routing
 - **WHEN** `/backend-api/codex/responses` is called with `session_id` and without `prompt_cache_key`
@@ -824,7 +847,7 @@ The service MUST provide a runtime flag that disables only proxy-generated promp
 - **AND** it does not generate a replacement key
 
 ### Requirement: HTTP Responses routes preserve upstream websocket session continuity
-When serving HTTP `/v1/responses` or HTTP `/backend-api/codex/responses`, the service MUST preserve upstream Responses websocket session continuity on a stable per-session bridge key instead of opening a brand new upstream session for every eligible request. The bridge key MUST use an explicit session/conversation header when present; otherwise it MUST use normalized `prompt_cache_key`, and when the client omits `prompt_cache_key` the service MUST derive a stable key from the same cache-affinity inputs already used for OpenAI prompt-cache routing. While bridged, the service MUST preserve the external HTTP/SSE contract, MUST continue request logging with `transport = "http"`, and MUST keep requests from different bridge keys isolated from one another.
+HTTP `/v1/responses` and `/backend-api/codex/responses` MUST reuse upstream websocket continuity by stable bridge key: explicit session/conversation header, else normalized `prompt_cache_key`. If the client omits that key, the service MUST derive it from existing OpenAI cache-affinity inputs. Bridging MUST preserve the HTTP/SSE contract, log `transport = "http"`, and isolate different keys.
 
 #### Scenario: bridge forwards hard continuity keys to the owner replica
 - **WHEN** operators configure multiple eligible bridge instance ids
@@ -853,13 +876,7 @@ When serving HTTP `/v1/responses` or HTTP `/backend-api/codex/responses`, the se
 
 ### Requirement: Fresh durable HTTP bridge preserves safe client-unanchored full resends
 
-The service MUST preserve a client-unanchored full resend as the first request on a fresh durable HTTP bridge when the request resolves a hard durable conversation, has no client-supplied `previous_response_id`, exactly matches the stored durable input prefix, and has neither a reusable local bridge nor a forwardable remote owner. After response-owned bookkeeping is removed, the resend suffix MUST either retain completed assistant output before fresh user input or consist only of complete direct tool call/output pairs that exactly settle the durable prior-response tool-call manifest.
-
-The durable manifest MUST include every observed supported direct tool-call `response.output_item.added` event, MUST require one matching `response.output_item.done` event with the same call ID and type, and MUST reconcile tool calls present in terminal response output. An incomplete, conflicting, duplicated, malformed, or unsupported lifecycle MUST persist an unknown manifest rather than a partial manifest. A manifest MUST be bound to the exact durable response ID, and readers MUST treat a response-ID mismatch as unknown.
-
-For a proven safe resend, the service MUST submit the original input without adding `previous_response_id`, MUST retain the durable preferred account and hard affinity, MUST NOT move the request through account-neutral replay, and MUST NOT trim the stored prefix before the first send. The service MUST NOT seed the new local session with the old durable response in a way that re-injects the anchor before submission.
-
-For a resend that omits prior output, contains an incomplete or orphaned tool sequence, omits any durable call, reuses a stored-prefix call ID, has no known manifest where a manifest is required, or otherwise fails the proof, the service MUST retain existing durable-anchor injection and verified-prefix trimming behavior. Client-supplied anchors, owner-forward recovery, and live-session continuation behavior MUST remain unchanged.
+Fresh durable HTTP bridges MUST preserve first client-unanchored full resends that resolve hard durable conversations, exactly match the stored input prefix, and have no client `previous_response_id`, reusable local bridge, or forwardable remote owner. Without response-owned bookkeeping, the suffix MUST retain completed assistant output before fresh user input or contain only complete direct call/output pairs exactly settling the durable prior-response tool-call manifest.
 
 #### Scenario: Retained assistant output opens a fresh bridge without an anchor
 
@@ -931,9 +948,37 @@ For a resend that omits prior output, contains an incomplete or orphaned tool se
 - **WHEN** a verified full resend continues that session
 - **THEN** existing session-level anchor injection and prefix trimming remain available
 
+### Requirement: Durable tool-call manifests cover the complete response lifecycle
+
+The durable manifest MUST include every observed supported direct `response.output_item.added` call, require one matching `response.output_item.done` with the same call ID and type, and reconcile terminal-output calls. Incomplete, conflicting, duplicated, malformed, or unsupported lifecycles MUST persist an unknown, not partial, manifest. Manifests MUST bind to the exact durable response ID. Readers MUST treat mismatches as unknown.
+
+#### Scenario: Manifest binding mismatch invalidates the proof
+
+- **WHEN** a durable manifest's response ID differs from the durable response being continued
+- **THEN** readers treat the manifest as unknown rather than proving a safe direct tool-loop resend
+
+### Requirement: Proven safe durable resends preserve original input and ownership
+
+For proven safe fresh durable bridge resends, the service MUST send original input without `previous_response_id`, retaining the durable preferred account and hard affinity. It MUST NOT use account-neutral replay, trim the stored prefix before first send, or seed the local session with the old durable response so it re-injects the anchor before submission.
+
+#### Scenario: Safe resend does not re-inject the old anchor
+
+- **WHEN** a proven safe full resend starts a fresh durable bridge
+- **THEN** the first send retains original input and durable account ownership without `previous_response_id`
+- **AND** local session initialization does not re-inject the old response anchor
+
+### Requirement: Unproven durable resends retain anchored continuation behavior
+
+Resends omitting prior output or any durable call, containing incomplete/orphaned tool sequences, reusing stored-prefix call IDs, lacking a required known manifest, or otherwise failing proof MUST retain existing durable-anchor injection and verified-prefix trimming. Client anchors, owner-forward recovery, and live-session continuation MUST remain unchanged.
+
+#### Scenario: Missing manifest preserves existing anchor injection
+
+- **WHEN** a durable direct tool-loop resend requires a manifest but none is known
+- **THEN** existing durable-anchor injection and verified-prefix trimming remain in effect
+
 ### Requirement: Responses account selection accounts for in-flight pressure
 
-For Responses API requests, usage-based routing MUST include immediate in-process account pressure in addition to persisted usage. Account selection MUST account for in-flight response-create work, active streams, leased token/cost estimates, recent selection pressure, account health, and configured account-local caps. Selection and lease acquisition MUST be atomic with respect to other in-process selections, and the critical section MUST NOT perform database calls, network calls, sleeps, or other blocking I/O.
+Responses usage-based routing MUST include persisted usage and immediate in-process pressure: in-flight response-create work, active streams, leased token/cost estimates, recent selection pressure, account health, and configured account-local caps. Selection and lease acquisition MUST be atomic relative to other in-process selections. The critical section MUST NOT perform database/network calls, sleeps, or other blocking I/O.
 
 #### Scenario: Concurrent burst spreads before upstream usage refreshes
 
@@ -958,7 +1003,7 @@ For Responses API requests, usage-based routing MUST include immediate in-proces
 
 ### Requirement: Account leases release on all terminal paths
 
-Every account-local lease acquired for a Responses request MUST be idempotently released or settled on success, upstream error, local startup error, bridge submit failure, startup probe conversion, non-streaming collect completion, failover, downstream disconnect, cancellation, timeout, retry, pending-request teardown, and request-to-connection ownership replacement. A bounded stale-lease watchdog MUST reclaim leases that survive unexpected task cancellation or exceptions, and stale reclamation MUST emit warning/metric evidence. Leases MUST NOT be persisted to the database.
+Responses account leases MUST release/settle idempotently on success, upstream/local-startup errors, bridge-submit failure, startup-probe conversion, non-stream collect completion, failover, downstream disconnect, cancellation, timeout, retry, pending teardown, and request-to-connection ownership replacement. A bounded stale watchdog MUST reclaim leases surviving unexpected task cancellation/exceptions and emit warning/metric evidence. Leases MUST NOT persist in the database.
 
 #### Scenario: Lease releases after downstream disconnect
 
@@ -1006,7 +1051,7 @@ Every account-local lease acquired for a Responses request MUST be idempotently 
 
 ### Requirement: Public Responses streaming is proxy-timeout friendly
 
-Streaming `/v1/responses` responses MUST include anti-buffering/cache headers suitable for SSE through common front-door proxies and MUST emit an early flushable SSE comment or event before long upstream startup waits can appear idle. Periodic SSE keepalive behavior MUST continue while waiting for upstream events. These heartbeat comments MUST NOT violate the public Responses event contract: OpenAI-contract events still begin with `response.created` when event parsing ignores comments.
+Streaming `/v1/responses` MUST include SSE anti-buffering/cache headers for common front-door proxies and emit an early flushable SSE comment or event before upstream startup appears idle. Periodic keepalives MUST continue while awaiting upstream events. Heartbeat comments MUST preserve the public event contract: ignoring comments, OpenAI-contract events begin with `response.created`.
 
 #### Scenario: Streaming response includes anti-buffering headers
 
@@ -1021,7 +1066,7 @@ Streaming `/v1/responses` responses MUST include anti-buffering/cache headers su
 - **AND** the first OpenAI-contract event remains `response.created` when upstream accepts the request
 
 ### Requirement: Codex WebSocket top-level previous-response errors are masked
-When serving the Codex-native `/backend-api/codex/responses` WebSocket route, the proxy MUST treat upstream `type: "error"` frames with top-level error fields as upstream error envelopes if the frame does not contain a nested `error` object. If those fields describe a `previous_response_not_found` continuity miss, the proxy MUST use the existing continuity fail-closed behavior and MUST NOT forward raw `previous_response_not_found` or the missing response id to the downstream Codex client.
+On Codex-native `/backend-api/codex/responses` WebSockets, the proxy MUST treat upstream `type: "error"` frames with top-level error fields and no nested `error` object as error envelopes. For `previous_response_not_found`, it MUST use existing fail-closed continuity handling and MUST NOT expose the raw code or missing response id downstream.
 
 #### Scenario: ChatGPT backend emits top-level previous-response miss on Codex websocket
 - **WHEN** a `/backend-api/codex/responses` WebSocket follow-up has `previous_response_id`
@@ -1031,7 +1076,7 @@ When serving the Codex-native `/backend-api/codex/responses` WebSocket route, th
 - **AND** the downstream payload does not expose the missing previous response id
 
 ### Requirement: Equal idle and request-budget stream deadlines preserve idle classification
-When the configured upstream stream idle timeout is equal to the proxy request budget, and an already-started streaming Responses body has had no upstream activity for the full shared window, the system MUST classify the timeout as `stream_idle_timeout` even if scheduler jitter observes the deadline after it has elapsed. When the request budget is strictly shorter than the stream idle timeout, when the generic total timeout fires before an upstream response has started, when the remaining request budget for the next read is shorter than a fresh idle window, or when a generic total timeout follows recent upstream body activity, the system MUST continue to classify the timeout as `upstream_request_timeout`.
+With equal upstream idle timeout and request budget, a started Responses body idle for that full window MUST time out as `stream_idle_timeout`, despite late scheduler observation. Classification MUST remain `upstream_request_timeout` if the budget is shorter than idle timeout, total timeout fires before response start, remaining next-read budget is shorter than a fresh idle window, or total timeout follows recent upstream body activity.
 
 #### Scenario: Direct HTTP stream body deadline tie is classified as idle
 - **GIVEN** `stream_idle_timeout_seconds` equals `proxy_request_budget_seconds`
@@ -1072,7 +1117,7 @@ When the configured upstream stream idle timeout is equal to the proxy request b
 - **THEN** the owner-forward timeout uses `error_code = "upstream_request_timeout"`
 
 ### Requirement: Multiplexed websocket timeout ties preserve younger pending requests
-When an upstream websocket or HTTP bridge session has multiple pending Responses turns and the oldest pending turn reaches an equal idle/request-budget deadline, the system MUST NOT fail all pending turns solely because the equal deadline is classified as `stream_idle_timeout`. It MUST fail only pending turns whose own request budget has elapsed, and it MUST keep younger pending turns queued until their own terminal event or timeout.
+When the oldest of multiple pending upstream websocket or HTTP bridge turns reaches equal idle/request-budget deadlines, `stream_idle_timeout` alone MUST NOT fail all turns. The system MUST fail only turns whose own budget elapsed and keep younger turns queued until their own terminal event or timeout.
 
 #### Scenario: Equal deadline on oldest pending request does not fail younger sibling
 - **GIVEN** two pending websocket Responses requests share an upstream session
@@ -1086,11 +1131,7 @@ When an upstream websocket or HTTP bridge session has multiple pending Responses
 
 ### Requirement: HTTP bridge streams emit downstream liveness frames while pending
 
-When an HTTP bridge Responses request is waiting for upstream queue events, the system MUST emit a downstream SSE liveness frame at the configured `sse_keepalive_interval_seconds` interval so downstream clients do not disconnect before the upstream terminal frame arrives. The first generated liveness frame MUST be delayed until after the HTTP bridge startup-error probe window so a local startup `ProxyResponseError` can still be surfaced as a non-2xx HTTP response. Once a generated liveness frame is emitted, the stream MUST be considered started for later HTTP-error propagation decisions, so a subsequent upstream `response.failed` is forwarded in-stream instead of being raised as a startup HTTP error.
-
-If the pending request already has a response id, the liveness frame MAY be a `response.in_progress` SSE event for that response id. Before a response id exists, a verified native Codex client on `/backend-api/codex/responses` MUST receive an event-bearing `codex.keepalive` JSON SSE frame even when payload-shape heuristics also require OpenAI-compatible response normalization, because comment-only frames do not reset the native client's parsed-event idle timer. Native identity MUST come from the existing native User-Agent or originator allowlist and MUST NOT be inferred from continuity headers.
-
-Explicit OpenAI SDK fingerprint markers, including `x-stainless-*` headers or an OpenAI User-Agent, MUST retain precedence for heartbeat framing and MUST receive comment liveness. Public `/v1/responses` and other non-native OpenAI SDK streams MUST retain comment heartbeats before `response.created`; public stream normalization MUST preserve those comments and MUST drop `codex.*` liveness events from the OpenAI contract surface. Heartbeat selection MUST NOT disable authentication, payload validation, event normalization, fingerprint normalization, or routing policy.
+While awaiting upstream queue events, HTTP bridge Responses requests MUST emit downstream SSE liveness at `sse_keepalive_interval_seconds`. The first generated frame MUST wait until after the startup-error probe window, allowing local startup `ProxyResponseError` to return non-2xx HTTP. A generated frame MUST mark the stream started for HTTP-error propagation: later `response.failed` events are forwarded in-stream, not raised as startup errors.
 
 #### Scenario: Native Desktop shape receives parsed-event liveness
 
@@ -1135,8 +1176,26 @@ Explicit OpenAI SDK fingerprint markers, including `x-stainless-*` headers or an
 - **THEN** it forwards the comment keepalive block unchanged
 - **AND** it continues normalizing the subsequent Responses events normally
 
+### Requirement: HTTP bridge native liveness uses verified client identity
+
+With a response id, HTTP bridge liveness MAY use `response.in_progress` for that id. Before one exists, verified native Codex clients on `/backend-api/codex/responses` MUST receive `codex.keepalive` JSON SSE events, even with payload-triggered OpenAI normalization. Native identity MUST use the existing native User-Agent or originator allowlist and MUST NOT come from continuity headers.
+
+#### Scenario: Continuity headers do not establish native identity
+
+- **WHEN** an HTTP bridge request supplies continuity headers without a verified native User-Agent or originator
+- **THEN** those headers alone do not select native Codex liveness
+
+### Requirement: HTTP bridge SDK liveness preserves public normalization policy
+
+Explicit OpenAI SDK fingerprints, including `x-stainless-*` or OpenAI User-Agent, MUST take heartbeat precedence and receive comments. Public `/v1/responses` and other non-native OpenAI SDK streams MUST retain pre-`response.created` comment heartbeats. Public normalization MUST preserve comments and drop `codex.*` liveness. Heartbeat selection MUST NOT disable authentication, payload validation, event/fingerprint normalization, or routing policy.
+
+#### Scenario: SDK heartbeat choice does not bypass request policy
+
+- **WHEN** an explicit OpenAI SDK fingerprint selects comment liveness for an HTTP bridge request
+- **THEN** authentication, payload validation, event and fingerprint normalization, and routing policy remain enabled
+
 ### Requirement: Codex WebSocket pre-created turns receive application heartbeats
-When serving the Codex-native `/backend-api/codex/responses` WebSocket route, the proxy SHALL emit a parseable Codex vendor heartbeat while a `response.create` request is pending but upstream has not yet emitted `response.created`. The heartbeat MUST be an application text frame so Codex clients reset stream-idle watchdogs that do not observe WebSocket protocol ping/pong frames. Once upstream assigns a response id, the proxy MUST continue using the existing `response.in_progress` heartbeat shape for that response id.
+On Codex-native `/backend-api/codex/responses` WebSockets, the proxy SHALL emit parseable Codex vendor heartbeats for pending `response.create` requests before upstream `response.created`. Heartbeats MUST be application text frames, resetting watchdogs that ignore protocol ping/pong. After upstream assigns a response id, the proxy MUST use the existing `response.in_progress` shape for that id.
 
 #### Scenario: Codex websocket upstream is silent before response.created
 - **GIVEN** a Codex-native WebSocket `/backend-api/codex/responses` request is pending
@@ -1153,7 +1212,7 @@ When serving the Codex-native `/backend-api/codex/responses` WebSocket route, th
 
 ### Requirement: WebSocket terminal auth failures recover before visible output
 
-When a Codex or OpenAI-compatible Responses WebSocket request receives an upstream terminal `response.failed` or `error` before downstream-visible output with `error.code = "invalid_api_key"` or `error.type = "authentication_error"`, the proxy MUST treat the failure as account-local auth state instead of immediately surfacing the terminal event. The proxy MUST preserve the existing no-replay rule after downstream-visible output or for non-replayable continuation requests.
+For Codex or OpenAI-compatible Responses WebSockets, pre-visible upstream terminal `response.failed` or `error` with `error.code = "invalid_api_key"` or `error.type = "authentication_error"` MUST be treated as account-local auth state, not immediately surfaced. The proxy MUST preserve no-replay rules after downstream-visible output and for non-replayable continuations.
 
 #### Scenario: Session-ended WebSocket auth failure uses another account
 
@@ -1179,7 +1238,7 @@ When a Codex or OpenAI-compatible Responses WebSocket request receives an upstre
 
 ### Requirement: Compact auth failures fail over after forced refresh
 
-The proxy MUST recover from account-local compact authentication failures before surfacing them to the compact client. When a `/backend-api/codex/responses/compact` request receives an upstream `401 invalid_api_key` or `401 token_invalidated` response for the selected account, the proxy MUST attempt one forced token refresh and retry the compact request on that same account. If the refreshed retry also returns `401`, the proxy MUST classify and record the account failure, exclude that account from the current compact request, and try another eligible account when one is available. If the forced refresh itself confirms a permanent credential failure, the proxy MUST mark the selected account for re-authentication, exclude it from the current compact request, and try another eligible account when account ownership permits. The proxy MUST NOT surface an account-local `401` before exhausting eligible accounts, and MUST NOT move a file-pinned or continuity-pinned compact request to another account. When no safe replacement is available, the proxy MUST preserve the terminal auth error and settlement behavior.
+Before surfacing account-local compact auth failures, `/backend-api/codex/responses/compact` MUST recover upstream `401 invalid_api_key` or `401 token_invalidated` with one forced refresh and same-account retry. Another `401` MUST classify/log the failure, exclude the account for this request, and try another eligible account if available. Compact auth ownership and settlement protections below remain mandatory.
 
 #### Scenario: Refreshed compact auth failure uses another account
 
@@ -1222,16 +1281,29 @@ The proxy MUST recover from account-local compact authentication failures before
 - **AND** the request is not sent to another account
 - **AND** the terminal authentication error is surfaced after settlement
 
+### Requirement: Permanent compact refresh failures require re-authentication and safe failover
+
+If forced compact token refresh confirms permanent credential failure, the proxy MUST mark the selected account re-authentication-required, exclude it from the current compact request, and try another eligible account when ownership permits.
+
+#### Scenario: Permanent refresh failure excludes the selected account
+
+- **WHEN** forced compact refresh confirms permanently revoked credentials
+- **THEN** the selected account is marked re-authentication-required and excluded from this compact request
+- **AND** another eligible account is tried only when ownership permits
+
+### Requirement: Compact auth recovery preserves account pins and terminal settlement
+
+The proxy MUST NOT expose account-local compact `401` before exhausting eligible accounts or move file-/continuity-pinned compact requests across accounts. Without a safe replacement, terminal auth errors and settlement behavior MUST remain unchanged.
+
+#### Scenario: No safe compact replacement preserves terminal settlement
+
+- **WHEN** a compact authentication failure has no safe replacement account
+- **THEN** the terminal auth error and existing settlement behavior are preserved
+- **AND** file or continuity ownership is not bypassed
+
 ### Requirement: Pre-visible proxy auth failures fail over after forced refresh
 
-The proxy MUST treat repeated account-local authentication failures as
-per-request account failures before any downstream-visible output is emitted.
-When a proxy request on a non-compact surface retries with a refreshed token and
-the refreshed retry still returns upstream `401 invalid_api_key`, the proxy MUST
-classify and record the selected account failure, exclude that account from the
-current request, and try another eligible account when one is available. The
-proxy MUST preserve the existing no-replay rule after downstream-visible stream
-or websocket output has been emitted.
+Before downstream-visible output, repeated account-local auth failures MUST become per-request account failures. If a refreshed non-compact retry still returns upstream `401 invalid_api_key`, the proxy MUST classify/log the failure, exclude that account for this request, and try another eligible account if available. Existing no-replay rules after visible stream or websocket output MUST remain unchanged.
 
 #### Scenario: Pre-visible streaming auth failure uses another account
 
@@ -1266,9 +1338,7 @@ or websocket output has been emitted.
 
 ### Requirement: Codex WebSocket wrapped errors follow official client shape
 
-When serving `/backend-api/codex/responses` or bridge-backed Responses WebSocket traffic, the service MUST classify upstream `type: "error"` frames using the same wrapped-error shape that the official Codex client accepts: a non-2xx `status` or `status_code` field indicates an upstream HTTP-style error, and the error detail MAY appear either in a nested `error` object or in top-level fields such as `code`, `message`, `param`, and `error_type`.
-
-Top-level error normalization MUST NOT treat the event discriminator `type: "error"` as the upstream error type. If the frame provides `error_type`, the service MUST use that value as the error type for classification/rewrites. Existing continuity protection remains authoritative: frames describing `previous_response_not_found` MUST be rewritten or recovered through the established `stream_incomplete` continuity path instead of exposing the raw upstream code or missing response id.
+On `/backend-api/codex/responses` or bridge-backed Responses WebSockets, upstream `type: "error"` MUST use Codex classification: non-2xx `status`/`status_code` signals HTTP error. Detail MAY be nested `error` or top-level (`code`, `message`, `param`, `error_type`). Classification/rewrites MUST use supplied `error_type`, never discriminator `type`. `previous_response_not_found` MUST use established `stream_incomplete` recovery/rewrites without exposing raw code or missing id.
 
 #### Scenario: status_code alias is classified as upstream error status
 
@@ -1291,13 +1361,7 @@ Top-level error normalization MUST NOT treat the event discriminator `type: "err
 - **AND** the downstream payload does not expose the missing previous response id
 
 ### Requirement: Backend Codex Responses preserve advertised image_generation tools
-The service MUST accept HTTP and websocket `/backend-api/codex/responses`
-request-create payloads that include top-level `tools` entries with
-`type: "image_generation"`. During shared Responses validation and upstream
-forwarding, the service MUST preserve those top-level `image_generation` tool
-entries so Codex clients can expose and use the built-in image-generation
-surface. The service MUST also preserve all other tool entries and the existing
-built-in tool forwarding policy for public `/v1/*` routes.
+HTTP and websocket `/backend-api/codex/responses` request-create payloads MUST accept top-level `type: "image_generation"` tools. Shared validation and upstream forwarding MUST preserve these and all other tool entries, along with the existing public `/v1/*` built-in tool forwarding policy.
 
 #### Scenario: Backend Codex HTTP request preserves advertised image_generation tool
 - **WHEN** a client sends `POST /backend-api/codex/responses` with
@@ -1324,7 +1388,7 @@ built-in tool forwarding policy for public `/v1/*` routes.
 
 ### Requirement: HTTP bridge startup waits fail with terminal local overload
 
-When the HTTP responses bridge cannot start upstream work because its local bridge startup waits do not make progress within the configured proxy admission wait timeout, the service MUST surface a terminal local-overload error instead of leaving `/v1/responses`, `/backend-api/codex/responses`, or compact responses streams on keepalives only.
+If local HTTP bridge startup waits prevent upstream work beyond the configured proxy admission wait timeout, the service MUST return terminal local overload, not keepalive-only `/v1/responses`, `/backend-api/codex/responses`, or compact streams.
 
 #### Scenario: HTTP bridge startup wait stalls before first upstream event
 
@@ -1335,7 +1399,7 @@ When the HTTP responses bridge cannot start upstream work because its local brid
 - **AND** the error payload identifies local proxy overload with `error.code = "proxy_overloaded"`
 
 ### Requirement: Accept duplicated /v1/ prefix under /backend-api/codex
-The service MUST treat any inbound request whose path begins with `/backend-api/codex/v1/` followed by a non-empty rest as a transparent alias for the same path with the `/v1` segment removed. Some OpenAI-compatible clients append `/v1/` to whatever the operator configured as the base URL, producing paths like `/backend-api/codex/v1/models` or `/backend-api/codex/v1/responses`. The aliasing MUST be applied before routing so the canonical handler runs unchanged. The aliasing MUST NOT trigger for `/backend-api/codex/v1` or `/backend-api/codex` with no further path. The top-level OpenAI-style `/v1/<rest>` routes are unaffected.
+Before routing, the service MUST transparently alias `/backend-api/codex/v1/<rest>` with non-empty `<rest>` to the path without `/v1`, using the unchanged canonical handler. Aliasing MUST NOT apply to bare `/backend-api/codex/v1` or `/backend-api/codex`. Top-level `/v1/<rest>` routes remain unchanged.
 
 #### Scenario: Misbehaving client requests duplicated prefix
 - **WHEN** a client requests `GET /backend-api/codex/v1/models`
@@ -1346,7 +1410,7 @@ The service MUST treat any inbound request whose path begins with `/backend-api/
 - **THEN** the request is routed to its existing handler without modification
 
 ### Requirement: Backend Responses endpoint accepts OpenAI-compatible request shapes
-The `/backend-api/codex/responses` HTTP endpoint SHALL accept the OpenAI-compatible Responses request shape used by `/v1/responses`, including a plain string `input` and omitted or explicit `null` `instructions`. The endpoint MUST normalize that request into the internal Responses request model before forwarding upstream, MUST continue returning `text/event-stream` SSE Responses events, and MUST preserve Codex-specific session/cache affinity behavior for the backend route.
+HTTP `/backend-api/codex/responses` SHALL accept `/v1/responses` request shapes, including string `input` and omitted/null `instructions`. It MUST normalize into the internal Responses model before forwarding, return `text/event-stream` Responses SSE events, and preserve backend Codex session/cache affinity.
 
 #### Scenario: OpenAI SDK streams through backend Responses path
 - **WHEN** an OpenAI-compatible client sends `POST /backend-api/codex/responses` with `stream=true`, a model, and a plain string `input`
@@ -1367,7 +1431,7 @@ The `/backend-api/codex/responses` HTTP endpoint SHALL accept the OpenAI-compati
 - **THEN** the proxy preserves the normalized request content and continues applying backend Codex session affinity
 
 ### Requirement: Codex WebSocket stale-anchor failures remain recoverable by a full-context retry
-When serving or consuming the Codex-native `/backend-api/codex/responses` WebSocket route, upstream `previous_response_id` MUST be treated as an ephemeral optimization rather than durable conversation state. A stale-anchor continuity failure during a long-wait tool-output continuation MUST NOT hard-end the user turn before one full-context retry without `previous_response_id` has been attempted.
+Servers and clients of Codex-native `/backend-api/codex/responses` WebSockets MUST treat upstream `previous_response_id` as ephemeral optimization, not durable state. Stale-anchor failure during long-wait tool-output continuation MUST NOT end the user turn before one full-context retry without `previous_response_id`.
 
 #### Scenario: Long-running terminal wait invalidates the upstream previous response anchor
 - **GIVEN** a Codex-native WebSocket session has completed a response with id `resp_old`
@@ -1389,7 +1453,7 @@ When serving or consuming the Codex-native `/backend-api/codex/responses` WebSoc
 - **AND** codex-lb MUST preserve the original error class as much as safely possible
 
 ### Requirement: Codex WebSocket continuity source of truth is centralized
-The behavior for Codex-native WebSocket previous-response continuity MUST be specified in this OpenSpec change rather than route-local or branch-local ad hoc patches. Future changes to this behavior MUST update the OpenSpec requirements before modifying code.
+This OpenSpec change MUST define Codex-native WebSocket previous-response continuity, not ad hoc route/branch patches. Future behavior changes MUST update OpenSpec requirements before code.
 
 #### Scenario: Previous-response fix changes behavior
 - **WHEN** a patch changes routing, replay, masking, retry, or failure behavior for Codex-native WebSocket `previous_response_id`
@@ -1397,7 +1461,7 @@ The behavior for Codex-native WebSocket previous-response continuity MUST be spe
 - **AND** direct `/backend-api/codex/responses` WebSocket tests or Codex client WebSocket tests cover the changed behavior
 
 ### Requirement: Direct WebSocket previous-response misses never leak raw upstream errors
-When a direct Responses WebSocket request depends on `previous_response_id`, the service MUST NOT send a raw upstream `previous_response_not_found` payload to the downstream client. This applies to `/v1/responses` and `/backend-api/codex/responses` WebSocket clients.
+For direct `/v1/responses` and `/backend-api/codex/responses` WebSockets depending on `previous_response_id`, the service MUST NOT send raw upstream `previous_response_not_found` payloads downstream.
 
 #### Scenario: Codex Desktop continue receives upstream previous-response miss before response.created
 - **WHEN** a direct WebSocket `response.create` request includes `previous_response_id`
@@ -1416,7 +1480,7 @@ When a direct Responses WebSocket request depends on `previous_response_id`, the
 
 ### Requirement: Failed precreated HTTP bridge replay retires stale sessions
 
-When an HTTP bridge request is still pending before upstream `response.completed` and the upstream websocket closes or times out before the pending request can be completed, the service MUST fail the pending request terminally and retire the affected bridge session if precreated replay does not reconnect and resend successfully.
+If upstream websocket close/timeout interrupts an HTTP bridge request before `response.completed` and precreated replay fails to reconnect and resend, the service MUST terminally fail the pending request and retire the bridge session.
 
 #### Scenario: Precreated replay fails after upstream disconnect
 
@@ -1473,7 +1537,7 @@ When an HTTP bridge request is still pending before upstream `response.completed
 
 ### Requirement: Pre-dispatch Responses requests recover from local network transitions
 
-When a Responses request encounters a classified local DNS or host-route failure and the transport proves that request dispatch did not occur, the proxy MUST retry on the same account with bounded backoff until the attempt succeeds or the existing request budget expires. A classified token-refresh network failure MUST receive the same bounded same-account recovery only when typed transport provenance proves the refresh POST was not dispatched. Recovery MUST NOT move account-owned continuation or file state to another account. Recovery client rotation, client construction, cleanup, and sleep MUST remain inside the original monotonic deadline, and existing keepalive behavior MUST remain active while an HTTP/SSE client waits. Post-connect send or receive failures, response/body-read failures, and serialized terminal response events with uncertain upstream delivery MUST retain the account-neutral network classification but MUST NOT be transparently replayed.
+For classified local DNS/host-route failures with transport proof of no dispatch, Responses requests MUST retry on the same account with bounded backoff until success or existing budget expiry. Classified token-refresh network failures MUST receive this recovery only with typed proof the refresh POST was not dispatched. Recovery MUST NOT transfer account-owned continuation/file state to another account.
 
 #### Scenario: HTTP stream survives a temporary DNS outage
 
@@ -1530,8 +1594,28 @@ When a Responses request encounters a classified local DNS or host-route failure
 - **THEN** the pending request fails with the account-neutral process-network code
 - **AND** the proxy does not transparently replay the request
 
+### Requirement: Network recovery remains within the original deadline
+
+For pre-dispatch Responses network recovery, client rotation/construction, cleanup, and sleep MUST stay within the original monotonic deadline. Existing HTTP/SSE keepalives MUST remain active while the client waits.
+
+#### Scenario: Recovery setup consumes the original request budget
+
+- **WHEN** pre-dispatch network recovery rotates or constructs a client, cleans up, or sleeps
+- **THEN** that work remains within the original monotonic deadline
+- **AND** existing HTTP/SSE keepalives remain active while waiting
+
+### Requirement: Uncertain-delivery network failures never replay transparently
+
+Post-connect send/receive failures, response/body-read failures, and serialized terminal response events with uncertain upstream delivery MUST retain account-neutral network classification and MUST NOT replay transparently.
+
+#### Scenario: Uncertain response-read failure remains account-neutral without replay
+
+- **WHEN** a Responses network failure occurs during response-body reading with uncertain upstream delivery
+- **THEN** the failure retains account-neutral network classification
+- **AND** the proxy does not transparently replay the request
+
 ### Requirement: Native `/backend-api/codex` routes accept the Codex tool surface
-The service MUST accept native `/backend-api/codex/responses` HTTP and websocket requests that include the Codex Desktop tool surface. This includes custom tools plus built-in Codex tool types such as `image_generation`, `file_search`, `code_interpreter`, and `computer_use_preview`. The service MUST continue normalizing `web_search_preview` to `web_search` before forwarding upstream. OpenAI-style `/v1/*` routes MUST keep rejecting unsupported built-in tools with an `invalid_request_error`.
+Native `/backend-api/codex/responses` HTTP/websocket requests MUST accept Codex Desktop tools, including custom tools and built-ins such as `image_generation`, `file_search`, `code_interpreter`, and `computer_use_preview`. The service MUST normalize `web_search_preview` to `web_search` before forwarding. OpenAI-style `/v1/*` routes MUST reject unsupported built-ins with `invalid_request_error`.
 
 #### Scenario: Auto transport prefers HTTP for image-generation tool requests
 - **WHEN** the resolved upstream transport strategy is `"auto"`
@@ -1548,7 +1632,7 @@ The service MUST accept native `/backend-api/codex/responses` HTTP and websocket
 
 ### Requirement: Bridge-enabled worker pools use addressable bridge owners
 
-When the HTTP responses session bridge is enabled and the configured runtime worker count is greater than one, the service MUST NOT start a plain Uvicorn multi-worker process group with a shared bridge instance id. It MUST instead start a front listener plus single-worker backend processes where each backend has a unique bridge instance id and an advertised endpoint that can route owner handoff to that worker-local bridge session map.
+With HTTP responses bridging enabled and runtime worker count above one, the service MUST NOT start plain Uvicorn workers sharing a bridge instance id. It MUST start one front listener and single-worker backends, each with a unique bridge id and advertised endpoint routing owner handoff to its local session map.
 
 #### Scenario: bridge-enabled multi-worker startup uses addressable workers
 
@@ -1566,7 +1650,7 @@ When the HTTP responses session bridge is enabled and the configured runtime wor
 
 ### Requirement: Pre-commit ambiguous websocket 403 failures fail over by account
 
-When a Responses-serving path has not yet emitted downstream bytes, events, or frames, the service MUST treat an ambiguous upstream websocket connect `403` as an account-scoped failure rather than immediately surfacing it to the client. The retry MUST stay on the same upstream transport family; the service MUST NOT silently downgrade to HTTP only because a websocket connect attempt returned `403`.
+Before a Responses path emits downstream bytes, events, or frames, ambiguous upstream websocket-connect `403` MUST be treated as account-scoped failure, not immediately surfaced. Retries MUST retain the upstream transport family. The service MUST NOT downgrade to HTTP solely because of that `403`.
 
 #### Scenario: Websocket connect 403 fails over to another eligible account
 
@@ -1587,7 +1671,7 @@ When a Responses-serving path has not yet emitted downstream bytes, events, or f
 - **AND** the proxy records the failure as a client-exposed pre-commit upstream error
 
 ### Requirement: Fresh websocket replays avoid failed accounts
-When an upstream websocket closes or rejects send while a pre-created Responses request can be replayed as a fresh request, the service MUST record a transient upstream stream error for the failed account and MUST exclude that account from account selection for the replay reconnect.
+If upstream websocket close or send rejection permits a pre-created Responses request to replay fresh, the service MUST record a transient upstream stream error against the failed account and exclude it from replay reconnect selection.
 
 #### Scenario: replay reconnect skips account that dropped the socket
 - **WHEN** a direct Responses websocket request is pending without previous_response_id
@@ -1605,13 +1689,7 @@ When an upstream websocket closes or rejects send while a pre-created Responses 
 
 ### Requirement: Upstream websocket handshakes exclude HTTP content-negotiation headers
 
-The service MUST exclude the HTTP content-negotiation headers `accept` and
-`content-type`, hop-by-hop headers, and websocket handshake control headers
-(`sec-websocket-*`, `accept-encoding`, `cookie`) whenever it builds upstream
-websocket handshake headers from inbound HTTP request headers, including HTTP
-responses bridge session creation and bridge session reconnection. Internal
-websocket protocol headers set by the service itself (such as the responses
-websocket beta header) are not affected.
+Upstream websocket handshakes built from inbound HTTP headers MUST exclude `accept`, `content-type`, hop-by-hop headers, `sec-websocket-*`, `accept-encoding`, and `cookie`, including HTTP bridge creation/reconnection. Service-set websocket protocol headers, such as the Responses websocket beta header, remain unaffected.
 
 #### Scenario: bridge session creation filters content-negotiation headers
 
@@ -1631,7 +1709,7 @@ websocket beta header) are not affected.
 
 ### Requirement: Codex compaction outputs preserve upstream item identity
 
-When Codex-affinity compaction selects an upstream compaction output item with opaque `encrypted_content` and a non-empty string `id`, the proxy MUST preserve that exact `id` with the encrypted content in the normalized compaction item. The proxy MUST NOT invent or replace a compaction item ID. The preserved normalized item MUST be identical across the direct Codex compact JSON response and both compaction item locations in a terminal-trigger SSE response. Public OpenAI-style compact behavior MUST remain unchanged.
+Codex-affinity compaction MUST preserve a selected upstream item's non-empty string `id` with its opaque `encrypted_content` in normalized output. The proxy MUST NOT invent or replace item IDs. The normalized item MUST match in direct Codex compact JSON and both terminal-trigger SSE locations. Public OpenAI-style compact behavior MUST remain unchanged.
 
 #### Scenario: Direct Codex compact response preserves the upstream ID
 
@@ -1653,19 +1731,7 @@ When Codex-affinity compaction selects an upstream compaction output item with o
 
 ### Requirement: Estimable context overflow is rejected before upstream connection
 
-The proxy MUST return HTTP 400 with an OpenAI error envelope using code
-'context_length_exceeded' and type 'invalid_request_error' when a normalized
-Responses request has an estimable inline context whose estimated input tokens
-reach the conservative guard limit for the effective model context window.
-The rejection MUST occur before admission, account selection, or upstream
-connection. Opaque prior-response, conversation, and file/image contexts MAY
-remain on the existing upstream handling path when their complete size is not
-locally knowable. A well-formed compaction-lane request — one whose final
-top-level input item is a single terminal `compaction_trigger` — MUST bypass
-the guard on every guarded path (HTTP stream, HTTP collect, and websocket
-`response.create`) so that remote-compaction recovery is never rejected by the
-guard it is recovering from. Malformed trigger placement MUST NOT receive the
-exemption.
+Normalized Responses inline estimates reaching the effective model's conservative guard limit MUST return HTTP 400 code `context_length_exceeded`, type `invalid_request_error` before admission, account selection, or upstream connect. Opaque prior-response/conversation/file/image context of unknown total size MAY retain upstream handling. A single final top-level `compaction_trigger` MUST bypass HTTP stream/collect and websocket `response.create` guards. Malformed placement MUST NOT qualify.
 
 #### Scenario: Spark request is rejected locally
 
@@ -1702,7 +1768,7 @@ exemption.
 - **THEN** the request does not receive the guard exemption
 
 ### Requirement: Proxy-injected continuity anchors preserve reasoning pairing
-When the service rewrites a client's self-contained websocket full replay into a proxy-injected `previous_response_id` plus a sliced input delta, it MUST verify that the sliced delta is reasoning-consistent before using it. A delta is reasoning-consistent unless it contains an assistant `message` item that is not preceded by a `reasoning` item within the same delta; re-sent `reasoning` items without a following message and complete `reasoning`-then-`message` groups are consistent because upstream accepts and dedupes them on anchored turns. If the delta would not be reasoning-consistent, the service MUST skip anchor injection for that request and forward the client's original full replay unchanged, and it MUST log a distinct skip reason for observability.
+Before replacing self-contained websocket full replay with injected `previous_response_id` and a sliced delta, the service MUST check reasoning consistency: every assistant `message` must have preceding `reasoning` within that delta. Reasoning without a following message and complete reasoning/message groups are consistent. Otherwise, the service MUST skip injection, forward the original full replay unchanged, and log a distinct skip reason.
 
 #### Scenario: slice boundary would orphan an assistant message from its reasoning item
 - **WHEN** a websocket `/backend-api/codex/responses` request has no `previous_response_id` and its input prefix matches the stored continuity fingerprint
@@ -1722,7 +1788,7 @@ When the service rewrites a client's self-contained websocket full replay into a
 - **THEN** the service injects `previous_response_id` and forwards the sliced delta
 
 ### Requirement: Orphaned-reasoning rejections of proxy-injected anchors recover via full replay
-When upstream rejects a websocket turn with an `invalid_request_error` stating that an item was provided without its required `reasoning` item, and the service injected the `previous_response_id` for that turn while retaining a retry-safe self-contained full replay body, the service MUST treat the failure like a stale-anchor continuity loss: reconnect and replay the retained full payload as a fresh turn without `previous_response_id` instead of forwarding the raw upstream error. If no retry-safe full replay body was retained, the service MUST surface a retryable continuity failure rather than the raw upstream invalid-request error. Client-authored payloads whose anchors were not proxy-injected MUST NOT trigger this recovery and continue to receive the upstream error unchanged.
+If upstream rejects a websocket turn with `invalid_request_error` for missing required `reasoning` after proxy anchor injection, the service MUST reconnect and replay retained retry-safe self-contained full input without `previous_response_id` as a fresh turn. Without that body, it MUST return retryable continuity failure, not the raw error. Non-proxy-injected client anchors MUST NOT trigger this recovery and MUST receive the upstream error unchanged.
 
 #### Scenario: proxy-injected anchor turn hits the orphaned-reasoning 400
 - **WHEN** the service injected `previous_response_id` into a websocket turn and retained a retry-safe full replay body
@@ -1744,9 +1810,7 @@ When upstream rejects a websocket turn with an `invalid_request_error` stating t
 
 ### Requirement: Direct WebSocket replay never mixes numeric response sequences
 
-For direct Responses WebSocket requests, the proxy MUST NOT transparently replay a request on a fresh upstream generation after any finite integer `sequence_number` frame for that request has been successfully sent downstream, except for the verified no-generation prewarm case defined below. When an upstream close would otherwise trigger replay, the proxy MUST settle the failed pending request without emitting frames from a new upstream generation under the existing downstream response id, and MUST close the downstream WebSocket with code 1011 so the client can retry on a fresh transport. When an upstream terminal error would otherwise trigger quota, authentication, security-work, or equivalent replay, the proxy MUST finalize and surface that terminal error without reconnecting. Suppressed frames and non-integer sequence sentinels MUST NOT by themselves disable otherwise-safe replay.
-
-The sole numeric-sequence exception MUST require `request_kind = "prewarm"`, a literal normalized `generate = false`, exactly one recorded `response.created`, no visible output, sequence watermark `0`, a single pending request, and the existing one-shot replay eligibility. The proxy MUST suppress the replayed `response.created` and MUST NOT renumber or synthesize sequences. If a later replay event has a finite integer sequence that does not advance beyond the exposed watermark, the proxy MUST settle it as `stream_incomplete`, emit no synthetic terminal frame, and close downstream with code 1011.
+Direct Responses WebSocket requests MUST NOT replay on fresh upstream generations after successfully sending any finite integer `sequence_number` downstream for that request, except verified no-generation prewarm below. If upstream close would trigger replay, the proxy MUST settle the failed request without new-generation frames under the existing response id and close downstream with 1011.
 
 #### Scenario: Sequenced model-generating response is interrupted
 
@@ -1815,9 +1879,28 @@ The sole numeric-sequence exception MUST require `request_kind = "prewarm"`, a l
 - **AND** the suppressed frame contains a numeric `sequence_number`
 - **THEN** that frame does not establish the downstream sequence watermark
 
+### Requirement: Direct WebSocket terminal replay guards respect actual sequence exposure
+
+After successful finite integer sequence emission for a direct Responses WebSocket request, terminal errors otherwise triggering quota, authentication, security-work, or equivalent replay MUST be finalized and surfaced without reconnecting. Suppressed frames and non-integer sequence sentinels MUST NOT alone disable otherwise-safe replay.
+
+#### Scenario: Terminal error cannot restart an exposed generation
+
+- **WHEN** a direct Responses WebSocket request emits a finite integer sequence and then receives a retryable terminal error
+- **THEN** the proxy finalizes and surfaces that error without reconnecting
+
+### Requirement: Verified no-generation prewarm is the sole numeric-sequence replay exception
+
+The exception MUST require `request_kind = "prewarm"`, literal normalized `generate = false`, exactly one recorded `response.created`, no visible output, watermark `0`, one pending request, and existing one-shot eligibility. The proxy MUST suppress replayed `response.created` and MUST NOT renumber/synthesize sequences. A later finite integer replay sequence not exceeding the exposed watermark MUST settle as `stream_incomplete`, emit no synthetic terminal, and close downstream with 1011.
+
+#### Scenario: Prewarm replay cannot regress the exposed watermark
+
+- **WHEN** an eligible no-generation prewarm replays after exposing sequence `0`
+- **THEN** replayed `response.created` is suppressed without renumbering or synthesizing sequences
+- **AND** any later finite integer sequence at or below `0` settles `stream_incomplete`, emits no synthetic terminal, and closes downstream with 1011
+
 ### Requirement: Opaque-context detection tolerates arbitrary JSON
 
-When deciding whether a Responses request contains opaque context that prevents local input estimation, the proxy MUST classify a mapping as an opaque `input_file` or `input_image` content item only when the mapping's `type` value is a string equal to one of those identifiers. A mapping containing a `file_id` key MUST still be treated as opaque. All other JSON values, including JSON Schema fragments where a `type` key maps to an object or array (for example `{"properties": {"type": {"const": "preview"}}}`), MUST be traversed recursively without raising an error.
+For Responses local input estimation, a mapping MUST qualify as opaque `input_file`/`input_image` only when `type` is that exact string. Any mapping with `file_id` MUST remain opaque. All other JSON, including schema fragments with object- or array-valued `type`, MUST be traversed recursively without error.
 
 #### Scenario: Tool schema with object-valued type key does not crash the guard
 
@@ -1837,7 +1920,7 @@ When deciding whether a Responses request contains opaque context that prevents 
 
 ### Requirement: Oversized response.create payloads are slimmed or rejected fail-fast before upstream send
 
-When the service prepares a Responses `response.create` request for the upstream websocket, it MUST measure the serialized outbound request size before sending it upstream. If the payload exceeds the upstream websocket budget, the service MUST first attempt to slim only the historical portion of `input` that precedes the most recent user turn: historical inline images MUST be replaced with textual omission notices, and oversized historical tool outputs MUST be replaced with textual omission notices that preserve the item in sequence. Historical slimming MUST cover tool-call output items of every supported type — `function_call_output`, `custom_tool_call_output`, and `apply_patch_call_output` — including inline images nested inside list- or mapping-valued `output` content parts, which MUST be replaced with the image omission notice while non-image parts, item order, `call_id`, and `status` fields are preserved. If the request still exceeds budget after slimming, the service MUST fail locally with status `400` — not `413` — carrying `error.code = "payload_too_large"`, `error.type = "invalid_request_error"`, and `error.param = "input"`, because the official Codex client treats `400` as a non-retryable invalid-request error surfaced immediately while `413` triggers five full-payload retries followed by a sticky session-wide websocket-to-HTTP transport downgrade.
+Before upstream websocket send, the service MUST measure serialized `response.create` size. Requests exceeding the upstream websocket budget MUST first slim only `input` before the latest user turn: historical inline images and oversized tool outputs MUST become textual omission notices preserving item sequence. Tool-output coverage and post-slimming rejection MUST follow the contracts below.
 
 #### Scenario: Inline images nested in historical tool-call outputs are slimmed
 
@@ -1859,11 +1942,29 @@ When the service prepares a Responses `response.create` request for the upstream
 - **THEN** the string output is replaced with the tool-output omission notice,
   matching the existing `function_call_output` behavior
 
+### Requirement: Historical slimming preserves tool-output identity and non-image content
+
+Historical slimming MUST cover `function_call_output`, `custom_tool_call_output`, and `apply_patch_call_output`, including inline images nested in list- or mapping-valued `output` content parts. Those images MUST become image omission notices while non-image parts, item order, `call_id`, and `status` remain unchanged.
+
+#### Scenario: Nested historical image replacement retains tool identity
+
+- **WHEN** historical slimming encounters an inline image nested in a supported tool output's list or mapping
+- **THEN** the image becomes an image omission notice
+- **AND** non-image parts, item order, `call_id`, and `status` remain unchanged
+
+### Requirement: Post-slimming websocket overflow returns a non-retryable input error
+
+A `response.create` still exceeding the upstream websocket budget after historical slimming MUST fail locally with HTTP 400, not 413, and `error.code = "payload_too_large"`, `error.type = "invalid_request_error"`, `error.param = "input"`.
+
+#### Scenario: Historical slimming cannot fit the websocket budget
+
+- **WHEN** a serialized `response.create` remains over the upstream websocket budget after historical slimming
+- **THEN** the proxy returns local HTTP 400 with code `payload_too_large`, type `invalid_request_error`, and param `input`
+- **AND** it does not send the oversized request upstream or return HTTP 413
+
 ### Requirement: Responses Lite signaling enforces all-turns reasoning context
 
-Every final upstream Responses payload that codex-lb advertises as Responses Lite—by the canonical HTTP header or the canonical per-request websocket client-metadata marker, whether body-derived, bridge-preserved, or continuity-trusted—MUST contain the exact JSON string `reasoning.context = "all_turns"`. Before upstream serialization, the service MUST create a reasoning object when it is omitted or null and MUST replace an absent, null, blank, differently-cased, otherwise different-string, or non-string context value with `"all_turns"`. It MUST preserve `reasoning.effort`, `reasoning.summary`, and every unrelated reasoning member.
-
-This normalization MUST be idempotent, MUST NOT establish Lite classification or continuity trust, MUST NOT reject an otherwise-valid Lite request solely for a context mismatch, and MUST NOT remove the Lite signal. For requests not advertised as Lite, this normalization MUST leave the client-supplied reasoning shape unchanged. An invalid non-object reasoning container remains subject to the existing client-payload validation contract.
+Canonical HTTP/per-request websocket client-metadata Lite signaling (body-derived, bridge-preserved, or continuity-trusted) MUST force exact `reasoning.context = "all_turns"` before serialization, creating missing/null reasoning and preserving all other members. Normalization MUST be idempotent, leave non-Lite shapes unchanged, and MUST NOT establish Lite/trust, remove signals, or reject otherwise-valid context mismatches. Invalid non-object reasoning keeps existing validation.
 
 #### Scenario: Body-derived Lite HTTP request omits reasoning
 
@@ -1912,13 +2013,7 @@ This normalization MUST be idempotent, MUST NOT establish Lite classification or
 
 ### Requirement: Responses HTTP ingress uses the expanded bounded budget
 
-HTTP requests to `/v1/responses` and `/backend-api/codex/responses`, including trailing-slash variants, MUST use the larger of `max_decompressed_body_bytes` and `max_decompressed_responses_body_bytes` as both the raw-body and decompressed-body ingress budget. The Responses-specific default MUST remain 128 MiB.
-
-The trailing-slash variants MUST be hidden aliases of the canonical HTTP handlers rather than redirects, so streamed bodies receive the same admission, authorization, and route behavior.
-
-If either representation exceeds that budget, the service MUST stop before route logic or upstream forwarding and return HTTP 413 with an OpenAI-compatible error envelope carrying `error.code = payload_too_large` and `error.type = invalid_request_error`.
-
-This transport-ingress 413 applies before parsing and is distinct from the existing application-level oversized-`response.create` guard. A request that fits the 128 MiB transport budget but still exceeds the upstream websocket budget after historical slimming MUST retain the existing HTTP 400 `payload_too_large` behavior and `param = input`.
+HTTP `/v1/responses` and `/backend-api/codex/responses`, including trailing slashes, MUST budget raw and decompressed bodies by the larger of `max_decompressed_body_bytes` and `max_decompressed_responses_body_bytes`. The Responses-specific default MUST remain 128 MiB. Trailing-slash routes MUST be hidden canonical-handler aliases, not redirects, preserving streamed admission, authorization, and routing.
 
 #### Scenario: Larger Responses request fits both ingress checks
 
@@ -1949,9 +2044,19 @@ This transport-ingress 413 applies before parsing and is distinct from the exist
 - **AND** its serialized `response.create` still exceeds the upstream websocket budget after historical slimming
 - **THEN** the existing application-level guard returns HTTP 400 with `error.code = payload_too_large`, `error.type = invalid_request_error`, and `error.param = input`
 
+### Requirement: Responses ingress overflow remains distinct from application overflow
+
+Exceeding either Responses raw or decompressed ingress budget MUST return pre-parsing HTTP 413 with OpenAI `error.code = payload_too_large`, `error.type = invalid_request_error` before route logic or upstream forwarding. Requests within the 128 MiB ingress budget but oversized for upstream websocket after historical slimming MUST retain application-level HTTP 400 `payload_too_large` and `param = input`.
+
+#### Scenario: Ingress rejection precedes application processing
+
+- **WHEN** either raw or decompressed Responses ingress exceeds its budget
+- **THEN** HTTP 413 `payload_too_large` / `invalid_request_error` is returned before parsing, route logic, or upstream forwarding
+- **AND** the separate post-slimming application overflow contract remains HTTP 400 with `param = input`
+
 ### Requirement: Ordered owner-unavailable settlement preserves external errors
 
-Settlement ordering for streaming Responses owner-unavailable failures MUST NOT change the downstream or request-log error envelope. The client and request log MUST continue to use `previous_response_owner_unavailable`. Account-health recovery MAY retain the original upstream recovery code internally and MUST NOT expose a raw stale-anchor identifier.
+Ordered streaming Responses owner-unavailable settlement MUST preserve downstream and logged error envelopes using `previous_response_owner_unavailable`. Account-health recovery MAY retain the original upstream recovery code internally and MUST NOT expose raw stale-anchor identifiers.
 
 #### Scenario: Ordered rewrite keeps the public and logged classifier
 
@@ -1962,7 +2067,7 @@ Settlement ordering for streaming Responses owner-unavailable failures MUST NOT 
 
 ### Requirement: Suppressed duplicate side-effect replays receive a dedicated terminal failure
 
-When a replayed side-effecting tool call is suppressed and its upstream turn subsequently reports `response.completed`, the proxy MUST deliver a `response.failed` terminal with code `duplicate_tool_call_replay_suppressed`. It MUST use the downstream response id, treat the request as non-success, and MUST NOT penalize the upstream account for the intentionally fenced terminal.
+If upstream completes a turn whose replayed side-effecting call was suppressed, the proxy MUST emit terminal `response.failed` with `duplicate_tool_call_replay_suppressed` using the downstream response id. It MUST treat the request as non-success and MUST NOT penalize the account for this intentional suppression.
 
 #### Scenario: Direct SSE reports the dedicated terminal
 

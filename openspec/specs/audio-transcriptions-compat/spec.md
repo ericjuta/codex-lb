@@ -1,10 +1,10 @@
 # audio-transcriptions-compat Specification
 
 ## Purpose
-TBD - created by archiving change add-transcription-proxy-compat. Update Purpose after archive.
+Describe native Codex and OpenAI-compatible audio transcription proxy behavior, including request validation, account selection, policy enforcement, and bounded retries.
 ## Requirements
 ### Requirement: Native transcription proxy endpoint
-The system SHALL expose `POST /backend-api/transcribe` for multipart audio transcription requests. The endpoint MUST accept a multipart `file` part and MAY accept a `prompt` part, and MUST forward requests to upstream `/transcribe` using selected account credentials. While forwarding multipart form data, the service MUST strip inbound `Content-Type` header values case-insensitively so the upstream client can generate a correct boundary. For a non-native Codex client, the upstream request MUST use the canonical `codex_cli_rs` values for `User-Agent`, `originator`, and `version`, and MUST NOT forward OpenAI SDK fingerprint headers, including `x-stainless-*`. For a native Codex client, upstream MUST receive its inbound `User-Agent` unchanged and MUST NOT receive the canonical `originator` or `version` headers.
+The system SHALL expose `POST /backend-api/transcribe` for multipart audio transcription. The endpoint MUST accept multipart `file`, MAY accept `prompt`, and MUST forward to upstream `/transcribe` with selected account credentials. It MUST strip inbound `Content-Type` case-insensitively so the upstream client can generate a correct multipart boundary.
 
 #### Scenario: Native transcription request is forwarded
 - **WHEN** a client sends multipart data with `file` (and optional `prompt`) to `/backend-api/transcribe`
@@ -25,6 +25,10 @@ The system SHALL expose `POST /backend-api/transcribe` for multipart audio trans
 #### Scenario: Multipart forwarding ignores inbound Content-Type case
 - **WHEN** inbound transcription headers include `content-type` or `Content-Type`
 - **THEN** the upstream multipart request is sent without forwarding that header and uses a freshly generated multipart boundary
+
+### Requirement: Transcription upstream fingerprints follow client type
+
+For transcription from non-native Codex clients, upstream MUST use canonical `codex_cli_rs` `User-Agent`, `originator`, and `version`, and MUST NOT receive OpenAI SDK fingerprint headers, including `x-stainless-*`. For native Codex clients, upstream MUST receive inbound `User-Agent` unchanged and MUST NOT receive canonical `originator` or `version`.
 
 #### Scenario: OpenAI SDK transcription fingerprint is normalized
 

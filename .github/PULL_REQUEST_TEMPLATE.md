@@ -72,4 +72,4 @@ Required: unit tests for new logic, integration tests for new endpoints.
 - [ ] Added or updated tests covering the change.
 - [ ] Ran `uv run pre-commit run local-ci --hook-stage manual --all-files` or the relevant `make <target>` subset locally.
 - [ ] If touching specs: `openspec validate --specs` passes and `/opsx:verify` is clean.
-- [ ] CHANGELOG is **not** edited by hand (release-please handles it).
+- [ ] CHANGELOG changes are approved by a release maintainer.

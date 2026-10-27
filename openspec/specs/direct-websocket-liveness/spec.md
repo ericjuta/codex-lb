@@ -10,7 +10,7 @@ session pending indefinitely.
 
 ### Requirement: Direct WebSocket connection establishment is bounded
 
-The service MUST enforce a dedicated total connection-establishment budget for direct upstream Responses WebSockets and MUST bound each upstream open attempt by the lesser of the remaining total budget and a dedicated per-attempt timeout. Selection, credential refresh, and socket-open work MUST NOT extend the total connection-establishment deadline. Both limits SHALL be positive, operator-configurable settings.
+For direct upstream Responses WebSockets, the service MUST enforce a dedicated total connection-establishment budget and cap each upstream open attempt at the lesser of the remaining budget and a dedicated per-attempt timeout. Selection, credential refresh, and socket-open work MUST NOT extend the total deadline. Both limits SHALL be positive, operator-configurable settings.
 
 #### Scenario: One slow account leaves time for an alternate
 
@@ -31,7 +31,7 @@ The service MUST enforce a dedicated total connection-establishment budget for d
 
 ### Requirement: Retryable open timeouts immediately use account failover
 
-When a direct upstream WebSocket open fails with `websocket_open_timeout` and is classified as retryable under the same request contract, the service MUST record the account error and MUST NOT retry the same account serially. A movable request MUST release the failed account lease, exclude that account for the current request, and select another eligible account when the attempt count and total connection budget allow. The failover decision log SHALL record action `failover_next` with the request, account, attempt, and failure classification fields.
+For direct upstream WebSocket `websocket_open_timeout` retryable under the same request contract, the service MUST record the account error and MUST NOT retry that account serially. Movable requests MUST release its lease, exclude it for this request, and select another eligible account if attempt count and total connection budget allow. The failover decision log SHALL record action `failover_next` with request, account, attempt, and failure classification fields.
 
 #### Scenario: Movable request fails over after its first open timeout
 
@@ -49,7 +49,7 @@ When a direct upstream WebSocket open fails with `websocket_open_timeout` and is
 
 ### Requirement: Exhausted direct WebSocket connection budgets terminate visibly
 
-When the direct WebSocket connection-establishment deadline is exhausted before an upstream socket is established, the service MUST emit a structured retryable terminal error to the downstream WebSocket and MUST persist terminal request-log settlement. It MUST NOT leave the request pending solely because the downstream WebSocket remains open.
+If the direct WebSocket connection-establishment deadline expires before an upstream socket is established, the service MUST emit a structured retryable terminal error downstream and persist terminal request-log settlement. It MUST NOT leave the request pending solely because the downstream WebSocket remains open.
 
 #### Scenario: Total connection budget expires
 

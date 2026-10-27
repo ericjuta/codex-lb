@@ -1,7 +1,7 @@
 # account-auth-export Specification
 
 ## Purpose
-TBD - created by manual sync from archived OpenSpec changes. Update Purpose after archive.
+Describe per-account OpenCode authentication export, including payload boundaries and audit handling.
 ## Requirements
 ### Requirement: Per-account OpenCode auth export
 The system SHALL let an authenticated dashboard user export one selected account as an OpenCode-compatible `auth.json` payload.

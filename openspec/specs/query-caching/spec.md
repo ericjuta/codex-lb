@@ -79,7 +79,7 @@ Selector and dashboard hot-path reads MUST avoid unbounded SQL window-ranking ov
 
 ### Requirement: Selector retry hint is bounded by the auto-recovery window
 
-When `select_account` cannot return a candidate, the surfaced `"Try again in {N}s"` value MUST be clamped to at most `SELECTOR_RETRY_HINT_MAX_SECONDS` (default 300). Clients reattempt within codex-lb's auto-recovery window (background `/wham/usage` refresh + per-status cooldown threshold) instead of waiting the worst-case persisted `reset_at`. The clamp affects only the user-visible string; `AccountState.reset_at` and `AccountState.cooldown_until` remain unchanged and continue to drive selection, telemetry, and dashboard reads.
+When `select_account` finds no candidate, the displayed `"Try again in {N}s"` MUST be capped at `SELECTOR_RETRY_HINT_MAX_SECONDS` (default 300). This allows retries within the auto-recovery window (background `/wham/usage` refresh + per-status cooldown threshold), not the worst-case persisted reset. Only the displayed string changes. `AccountState.reset_at` and `AccountState.cooldown_until` still drive selection, telemetry, and dashboard reads unchanged.
 
 #### Scenario: Quota-exceeded reset far in the future is clamped
 - **GIVEN** every selectable account has `status = QUOTA_EXCEEDED`

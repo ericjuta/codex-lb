@@ -5,7 +5,7 @@ Define how background usage refresh reacts to auth-like failures without permane
 ## Requirements
 ### Requirement: Usage refresh cools down repeated auth-like failures
 
-Background usage refresh MUST apply a cooldown to accounts that repeatedly fail usage refresh with ambiguous `401` or `403` responses. Accounts in that cooldown window MUST be skipped until the cooldown expires or a later successful refresh clears it.
+Background usage refresh MUST cool down accounts with repeated ambiguous `401` or `403` refresh failures. It MUST skip them until the cooldown expires or a later successful refresh clears it.
 
 #### Scenario: Ambiguous usage 401 enters cooldown
 - **WHEN** usage refresh receives a `401` that does not match a permanent deactivation signal
@@ -19,7 +19,7 @@ Background usage refresh MUST apply a cooldown to accounts that repeatedly fail 
 
 ### Requirement: Usage refresh deactivates on clear deactivation signals
 
-The system MUST change an account to `deactivated` or `reauth_required` during usage refresh only when the upstream error contains an explicit, account-specific terminal signal. A recognized permanent-failure error code MUST be mapped through the existing permanent-failure account-status policy, and an error message that explicitly says the account is deactivated MUST mark the account `deactivated`. A bare HTTP status, including `402` or `404`, MUST NOT change account status or routing availability and MUST remain a refresh failure for existing logging, error accounting, and later refresh retries.
+Usage refresh MUST change an account to `deactivated` or `reauth_required` only for an explicit, account-specific upstream terminal signal. Recognized permanent-failure codes MUST use the existing permanent-failure account-status policy. An error message explicitly saying the account is deactivated MUST mark it `deactivated`.
 
 #### Scenario: Bare usage 404 preserves account status
 
@@ -51,9 +51,19 @@ The system MUST change an account to `deactivated` or `reauth_required` during u
 - **THEN** the account is marked `deactivated`
 - **AND** the account is marked routing-unavailable
 
+### Requirement: Bare usage HTTP failures preserve account availability
+
+A bare usage HTTP status, including `402` or `404`, MUST NOT change account status or routing availability. It MUST remain a refresh failure for existing logging, error accounting, and later refresh retries.
+
+#### Scenario: Bare usage error retains retry accounting
+
+- **WHEN** usage refresh receives a bare HTTP error without an explicit account-specific terminal signal
+- **THEN** account status and routing availability remain unchanged
+- **AND** existing refresh-failure logging, error accounting, and later retries still apply
+
 ### Requirement: token_expired at the refresh boundary deactivates the account
 
-When the OAuth refresh endpoint fails with error code `token_expired`, the system MUST treat it as a permanent authentication failure on par with `refresh_token_expired` / `refresh_token_reused` / `refresh_token_invalidated`. The affected account MUST be deactivated and removed from the routing pool until it is re-authenticated.
+An OAuth refresh endpoint failure with `token_expired` MUST be treated as a permanent authentication failure, like `refresh_token_expired`, `refresh_token_reused`, or `refresh_token_invalidated`. The account MUST be deactivated and removed from the routing pool until re-authenticated.
 
 #### Scenario: Refresh-time `token_expired` is classified as permanent
 
@@ -74,7 +84,7 @@ When the OAuth refresh endpoint fails with error code `token_expired`, the syste
 
 ### Requirement: Usage capacity recognizes upstream ChatGPT plan types
 
-The system MUST recognize account plan types returned by upstream ChatGPT auth and usage payloads when calculating absolute usage capacity. `prolite` MUST be treated as a supported account plan with Plus x5 capacity values (`1125.0` primary and `37800.0` secondary), while preserving the stored plan type value for display and request-log context.
+Absolute usage capacity MUST recognize account plan types from upstream ChatGPT auth and usage payloads. `prolite` MUST be supported with Plus x5 capacity (`1125.0` primary, `37800.0` secondary), preserving the stored plan type for display and request-log context.
 
 #### Scenario: Pro Lite account contributes aggregate remaining credits
 
@@ -86,7 +96,7 @@ The system MUST recognize account plan types returned by upstream ChatGPT auth a
 
 ### Requirement: Pro Lite accounts are eligible for Pro-gated models
 
-The system MUST treat stored `prolite` account plan types as Pro-equivalent when evaluating model registry plan eligibility, while preserving the stored `prolite` value for display and request-log context.
+Model registry plan eligibility MUST treat stored `prolite` plans as Pro-equivalent, preserving `prolite` for display and request-log context.
 
 #### Scenario: Pro Lite account can be selected for a Pro-gated model
 
@@ -98,7 +108,7 @@ The system MUST treat stored `prolite` account plan types as Pro-equivalent when
 - **AND** the selection does not fail with `no_accounts`
 
 ### Requirement: Background usage refresh reconciles recoverable blocked statuses
-Background usage refresh SHALL reconcile persisted `rate_limited` and `quota_exceeded` accounts back to `active` after it writes fresh usage snapshots that prove the blocked window has recovered. This reconciliation SHALL be recovery-only and SHALL NOT promote `active` accounts into blocked statuses.
+Background usage refresh SHALL restore persisted `rate_limited` and `quota_exceeded` accounts to `active` after writing fresh usage snapshots that prove the blocked window recovered. Reconciliation SHALL be recovery-only and SHALL NOT move `active` accounts into blocked statuses.
 
 #### Scenario: Scheduler recovers a stale rate-limited account from fresh primary usage
 - **WHEN** an account is persisted as `rate_limited`
@@ -156,7 +166,7 @@ Background usage refresh SHALL reconcile persisted `rate_limited` and `quota_exc
 
 ### Requirement: Usage refresh does not trust elapsed reset windows
 
-Background usage refresh MUST treat a latest usage row as stale when that row's `reset_at` timestamp is in the past, even when the row's `recorded_at` timestamp is still within the normal refresh interval.
+Background usage refresh MUST treat a latest usage row with past `reset_at` as stale, even if its `recorded_at` is within the normal refresh interval.
 
 #### Scenario: Past reset_at bypasses freshness
 
@@ -168,7 +178,7 @@ Background usage refresh MUST treat a latest usage row as stale when that row's 
 
 ### Requirement: Blocked accounts refresh once their reset deadline elapses
 
-When an account is `RATE_LIMITED` or `QUOTA_EXCEEDED` and its persisted `reset_at` timestamp has elapsed, background usage refresh MUST bypass the normal freshness interval so the account can recover from the upstream post-reset state. The bypass MUST NOT apply before the persisted reset deadline elapses.
+For `RATE_LIMITED` or `QUOTA_EXCEEDED` accounts with elapsed persisted `reset_at`, background usage refresh MUST bypass normal freshness to permit recovery from upstream post-reset state. The bypass MUST NOT apply before that deadline.
 
 #### Scenario: Quota-exceeded account with fresh primary row reaches reset deadline
 
@@ -187,9 +197,7 @@ When an account is `RATE_LIMITED` or `QUOTA_EXCEEDED` and its persisted `reset_a
 
 ### Requirement: Credit-backed secondary quota remains usable
 
-When account status is derived from persisted usage snapshots, an exhausted secondary-window usage percentage MUST NOT by itself mark an account `quota_exceeded` if the governing usage snapshot reports usable credit-backed capacity. Usable credit-backed capacity is present only when `credits_unlimited` is true or `credits_balance` is positive. A `credits_has` value of true with `credits_balance` missing, zero, or negative MUST NOT by itself establish usable credit-backed capacity.
-
-This credit-aware interpretation MUST be shared by proxy account selection and account/dashboard summary status mapping so an account selected as usable by the proxy is not simultaneously displayed as `quota_exceeded` in the operator summary. Exhausted primary-window usage MUST still take precedence as `rate_limited`, and paused or deactivated accounts MUST NOT be reactivated solely because a usage snapshot reports usable credits.
+When deriving status from persisted usage snapshots, exhausted secondary-window usage alone MUST NOT mark an account `quota_exceeded` if the governing snapshot reports usable credit-backed capacity. Capacity is usable only if `credits_unlimited` is true or `credits_balance` is positive. `credits_has=true` with a missing, zero, or negative balance MUST NOT alone establish usable capacity.
 
 #### Scenario: Secondary quota exhausted with credits remains active
 
@@ -222,9 +230,18 @@ This credit-aware interpretation MUST be shared by proxy account selection and a
 - **WHEN** proxy selection or account-summary mapping derives the effective status
 - **THEN** the account remains `paused` or `deactivated`
 
+### Requirement: Credit-aware status mapping preserves shared precedence and disabled states
+
+Proxy selection and account/dashboard summary status mapping MUST share this credit-aware interpretation: an account selected as usable MUST NOT simultaneously appear as `quota_exceeded` in the operator summary. Exhausted primary usage MUST take precedence as `rate_limited`. Paused or deactivated accounts MUST NOT reactivate solely because a usage snapshot reports usable credits.
+
+#### Scenario: Credit-backed routing and dashboard status agree
+
+- **WHEN** proxy selection treats an account as usable through credit-backed capacity
+- **THEN** account/dashboard summary mapping does not simultaneously display it as `quota_exceeded`
+
 ### Requirement: Reset-confirmed limit warm-up
 
-The system SHALL support an optional limit warm-up mechanism that is disabled by default. When enabled globally and for an account, background usage refresh MAY send one minimal upstream Responses request after it confirms that a selected quota window has moved from an exhausted sample to a newly available reset window.
+Limit warm-up SHALL be optional and disabled by default. When enabled globally and for an account, background usage refresh MAY send one minimal upstream Responses request after confirming a selected quota window moved from an exhausted sample to a newly available reset window.
 
 #### Scenario: Warm-up is skipped unless reset is confirmed
 - **GIVEN** limit warm-up is enabled globally and for an account
@@ -270,7 +287,7 @@ The system SHALL support an optional limit warm-up mechanism that is disabled by
 
 ### Requirement: Standard usage refresh snapshots persist atomically
 
-For one account's successful upstream usage response, the system MUST persist every available normalized standard usage window (`primary`, `secondary`, and any applicable `monthly` window) in one database transaction. All standard rows from that response MUST use the same capture timestamp. If any standard row cannot be persisted or the transaction cannot commit, the system MUST roll back the transaction so none of that response's standard rows becomes visible, and a caller-owned database session MUST remain open and reusable. This atomic unit applies to standard `usage_history` rows; additional per-model usage history and independent live-ingest writes retain their existing persistence contracts.
+For each successful account usage response, the system MUST persist every available normalized standard window (`primary`, `secondary`, applicable `monthly`) in one database transaction with one capture timestamp. Any standard-row persistence or commit failure MUST roll back the transaction so none of that response's standard rows is visible. A caller-owned database session MUST remain open and reusable after rollback.
 
 #### Scenario: Multi-window response commits as one snapshot
 
@@ -287,11 +304,18 @@ For one account's successful upstream usage response, the system MUST persist ev
 - **WHEN** a caller-owned session is used for a standard usage snapshot and the snapshot transaction fails
 - **THEN** the repository leaves that session open and reusable after rolling back the failed transaction
 
+### Requirement: Standard snapshot atomicity preserves other usage persistence contracts
+
+Atomic snapshot persistence applies to standard `usage_history` rows. Additional per-model usage history and independent live-ingest writes MUST retain their existing persistence contracts.
+
+#### Scenario: Standard snapshot transactions do not redefine live ingestion
+
+- **WHEN** an independent live-ingest write occurs
+- **THEN** its existing persistence contract remains unchanged by standard snapshot atomicity
+
 ### Requirement: Background usage refresh is staggered across accounts
 
-Background usage refresh MUST distribute account refresh attempts across the configured usage refresh interval instead of refreshing every eligible account in one burst. Each scheduler slice MUST attempt at most one eligible account. Over a full cycle, all eligible accounts SHOULD be considered once.
-
-Each slice MUST select its account before reading usage history and MUST scope its latest-usage lookups, updater input, warm-up candidate evaluation, and recoverable-status evaluation to that selected account. The scheduler MAY retain the full eligible account roster only to choose the deterministic rotation and calculate staggered warm-up phases; that roster MUST NOT cause usage-history reads, upstream refresh attempts, warm-up sends, or status mutations for an unrelated account in the slice. A selected-account refresh failure MUST NOT trigger same-slice fallback to another account. Database sessions used to load scheduler state MUST close before upstream network I/O begins, and concurrent follow-up work MUST NOT share an `AsyncSession`.
+Background usage refresh MUST spread account refresh attempts across the configured interval, not refresh every eligible account in one burst. Each scheduler slice MUST attempt at most one eligible account. All eligible accounts SHOULD be considered once per full cycle.
 
 #### Scenario: Scheduler refreshes one account per slice
 
@@ -341,11 +365,37 @@ Each slice MUST select its account before reading usage history and MUST scope i
 - **THEN** the scheduler read session is already closed
 - **AND** any concurrent warm-up follow-up owns an independent database session
 
+### Requirement: Refresh slices isolate selected-account work and failures
+
+Each slice MUST select its account before reading usage history. Latest-usage lookups, updater input, warm-up candidate evaluation, and recoverable-status evaluation MUST be scoped to that account. A selected-account refresh failure MUST NOT trigger same-slice fallback to another account.
+
+#### Scenario: Failed selected-account refresh does not widen evaluation scope
+
+- **WHEN** the selected account's refresh fails
+- **THEN** that slice does not fall back to another account
+- **AND** its usage lookups and follow-up evaluations remain scoped to the selected account
+
+### Requirement: Scheduler roster retention permits only rotation and warm-up phase calculation
+
+The scheduler MAY retain the full eligible account roster only to choose deterministic rotation and calculate staggered warm-up phases. That roster MUST NOT cause usage-history reads, upstream refresh attempts, warm-up sends, or status mutations for an unrelated account in the slice.
+
+#### Scenario: Retained roster does not trigger unrelated account work
+
+- **WHEN** a slice retains the full eligible roster for rotation or warm-up phases
+- **THEN** the roster causes no usage-history reads, refresh attempts, warm-up sends, or status mutations for unrelated accounts
+
+### Requirement: Usage refresh releases scheduler sessions before network work
+
+Database sessions used to load scheduler state MUST close before upstream network I/O begins. Concurrent follow-up work MUST NOT share an `AsyncSession`.
+
+#### Scenario: Concurrent follow-up uses independent sessions
+
+- **WHEN** usage-refresh follow-up tasks run concurrently
+- **THEN** they do not share an `AsyncSession`
+
 ### Requirement: Force Probe upstream request omits unsupported output-token limit
 
-The direct upstream `responses.create` sent by dashboard Force Probe (`POST /api/accounts/{account_id}/probe`) MUST NOT contain a `max_output_tokens` key at any value. The system MUST NOT substitute another output-token cap, retry the probe without the field, or send more than one upstream request per probe.
-
-The probe body MUST still contain the probe model (the request's `model`, else `DEFAULT_PROBE_MODEL`), the fixed one-dot `instructions` and `input`, `stream=true`, and `store=false`. The request MUST still target `{upstream_base_url}/codex/responses` (with `/backend-api` inserted when absent), carry `Authorization: Bearer <decrypted access token>` and `Accept: text/event-stream`, and carry `chatgpt-account-id` unless the stored id is absent or starts with `email_` or `local_`. The request MUST remain bounded by `PROBE_REQUEST_TIMEOUT_SECONDS` total and `PROBE_CONNECT_TIMEOUT_SECONDS` socket connect, and MUST return once response headers arrive without consuming the SSE body. `probe_status_code` MUST remain the upstream HTTP status verbatim, or `0` when the request fails with a client or timeout error, and the post-probe forced usage refresh, before/after snapshot, audit entry, dashboard authentication, and existing `404`/`409` rejections MUST remain unchanged.
+Dashboard Force Probe (`POST /api/accounts/{account_id}/probe`) MUST omit `max_output_tokens` at every value from its direct upstream `responses.create`. It MUST NOT substitute another output-token cap, retry without the field, or send more than one upstream request per probe.
 
 #### Scenario: Probe body carries no output-token limit
 
@@ -378,3 +428,39 @@ The probe body MUST still contain the probe model (the request's `model`, else `
 - **WHEN** the probe is sent for an account whose stored `chatgpt_account_id` does not start with `email_` or `local_`
 - **THEN** the request carries `Authorization: Bearer <decrypted access token>`, `Accept: text/event-stream`, and `chatgpt-account-id` set to that id
 - **AND** the probe returns the status after response headers without reading the SSE body
+
+### Requirement: Force Probe preserves its minimal request body
+
+The probe body MUST contain the request's `model`, else `DEFAULT_PROBE_MODEL`, fixed one-dot `instructions` and `input`, `stream=true`, and `store=false`.
+
+#### Scenario: Probe without a requested model uses the default
+
+- **WHEN** a Force Probe request omits `model`
+- **THEN** its upstream body uses `DEFAULT_PROBE_MODEL`, one-dot `instructions` and `input`, `stream=true`, and `store=false`
+
+### Requirement: Force Probe preserves upstream target and account headers
+
+The probe MUST target `{upstream_base_url}/codex/responses`, inserting `/backend-api` when absent. It MUST carry `Authorization: Bearer <decrypted access token>` and `Accept: text/event-stream`. It MUST carry `chatgpt-account-id` unless the stored id is absent or starts with `email_` or `local_`.
+
+#### Scenario: Synthetic account id is omitted from the probe
+
+- **WHEN** the stored account id is absent or starts with `email_` or `local_`
+- **THEN** the probe omits `chatgpt-account-id` but retains its authorization and SSE accept headers
+
+### Requirement: Force Probe preserves bounded header-only status handling
+
+The probe MUST respect `PROBE_REQUEST_TIMEOUT_SECONDS` total and `PROBE_CONNECT_TIMEOUT_SECONDS` socket-connect limits. It MUST return when response headers arrive without consuming the SSE body. `probe_status_code` MUST be the upstream HTTP status verbatim, or `0` on client or timeout error.
+
+#### Scenario: Probe status does not depend on consuming the stream
+
+- **WHEN** the probe receives upstream response headers
+- **THEN** it returns that HTTP status without consuming the SSE body
+
+### Requirement: Force Probe preserves surrounding dashboard operations
+
+Force Probe MUST preserve post-probe forced usage refresh, before/after snapshot, audit entry, dashboard authentication, and existing `404`/`409` rejections.
+
+#### Scenario: Probe retains authenticated audit and refresh behavior
+
+- **WHEN** the dashboard performs Force Probe
+- **THEN** its existing authentication, rejection, audit, snapshot, and forced usage-refresh behavior remains unchanged

@@ -602,8 +602,13 @@ No new migrations or settings. The urllib3 floor is the only dependency change.
   cache poller/bus, oauth flow): **1580 passed, 1 failed**. The failure was
   `test_oauth_flow.py::test_starting_new_device_flow_cancels_previous_pending_poll`,
   a 1 s `wait_for` timeout on an untouched module. It then passed 3/3 alone,
-  32/32 with its module, and 3×39 alongside the new cache tests. It is
-  classified as a load-timing flake, not proven pre-existing.
+  32/32 with its module, and 3×39 alongside the new cache tests. It was
+  classified at that time as a load-timing flake, not proven pre-existing.
+  The 2026-10-27 source investigation identified cancellation consumption during
+  OAuth route-session rollback/close; see
+  [the scoped repair and evidence boundaries](../../changes/preserve-device-oauth-cancellation/design.md).
+  That path is not established as the cause of this historical run, whose record
+  contains no task stack; the repair's validation remains pending.
 - After the owner-rewrite fix, the seven proxy modules on the final tree:
   **1436 passed**. The new code-less owner-rewrite cases failed (2) with the
   fix stashed and passed with it.

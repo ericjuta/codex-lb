@@ -1,10 +1,10 @@
 # account-routing Specification
 
 ## Purpose
-TBD - created by archiving change add-relative-availability-routing. Update Purpose after archive.
+Describe relative-availability account routing, operator tuning, diagnostic privacy, and rate-limit recovery chronology.
 ## Requirements
 ### Requirement: Relative availability routing
-The proxy account selector SHALL support a `relative_availability` routing strategy. The strategy SHALL evaluate only accounts that have passed the existing eligibility, health-tier, model-plan, quota, cooldown, circuit-breaker, and budget-safety gates. For each candidate, it SHALL compute a raw score from remaining secondary-window credits divided by seconds until the secondary-window reset, using bounded fallbacks for unknown or near-immediate reset times, and SHALL select from the highest weighted candidates according to the configured power and top-K cutoff.
+The selector SHALL support `relative_availability` routing only after existing eligibility, health-tier, model-plan, quota, cooldown, circuit-breaker, and budget-safety gates. It SHALL compute raw scores as remaining secondary-window credits / seconds until that window resets, with bounded fallbacks for unknown or near-immediate resets. It SHALL select from the highest weighted candidates using configured power and top-K.
 
 #### Scenario: Soon-resetting usable credits are preferred
 - **GIVEN** two healthy eligible accounts with equal remaining secondary credits
@@ -18,7 +18,7 @@ The proxy account selector SHALL support a `relative_availability` routing strat
 - **THEN** that account is not selected by the relative-availability strategy
 
 ### Requirement: Relative availability dashboard tuning
-Dashboard settings SHALL expose `relative_availability_power` and `relative_availability_top_k` alongside the routing strategy. The backend SHALL validate power as positive and top-K as an integer from 1 through 20. The dashboard UI SHALL reject non-integer top-K input without truncating decimal values.
+Dashboard settings SHALL expose `relative_availability_power` and `relative_availability_top_k` alongside the routing strategy. The backend SHALL require positive power and integer top-K from 1 through 20. The dashboard UI SHALL reject non-integer top-K without truncation.
 
 #### Scenario: Sticky fallback uses configured tuning
 - **GIVEN** a sticky request has no usable pinned account
@@ -40,11 +40,7 @@ Relative-availability selection diagnostics SHALL identify accounts using stable
 
 ### Requirement: Local rate-limit recovery preserves exact event chronology
 
-When the process that observed the current upstream rate limit evaluates fresh-usage early recovery, it MUST compare usage evidence with that process's precise runtime block timestamp. Usage recorded before or at the exact runtime block timestamp MUST NOT reactivate the account, even when the usage timestamp is newer than the whole-second persisted `blocked_at` value. Usage recorded strictly after the exact runtime block timestamp MAY use the existing early-recovery path.
-
-While the account remains `RATE_LIMITED`, synchronizing derived selection state back into worker runtime state MUST NOT replace a current precise runtime block marker with an equal-or-older persisted marker. The precise marker MUST remain authoritative across repeated selection passes.
-
-Processes without a matching current runtime block marker MUST continue to enforce the persisted cooldown contract.
+For fresh-usage early recovery, the current upstream rate-limit observer MUST compare usage to its precise runtime block timestamp. Usage at/before it MUST NOT reactivate the account, even if newer than persisted whole-second `blocked_at`. Strictly later usage MAY use existing recovery. While `RATE_LIMITED`, derived-state synchronization MUST preserve that marker over equal/older persisted markers across selections. Processes lacking a matching current marker MUST enforce persisted cooldown.
 
 #### Scenario: Same-second pre-block usage does not recover the account
 
@@ -77,7 +73,7 @@ Processes without a matching current runtime block marker MUST continue to enfor
 
 ### Requirement: Account summaries preserve post-block recovery chronology
 
-When `/api/accounts` derives an active display status from a persisted `RATE_LIMITED` account, it MUST require the same qualifying usage-window evidence used by routing to be recorded strictly after persisted `blocked_at`. Credit fields or capacity rows recorded before or at the block MUST NOT make the account summary active while routing still excludes the account.
+To display a persisted `RATE_LIMITED` account as active, `/api/accounts` MUST require routing's qualifying usage-window evidence recorded strictly after persisted `blocked_at`. Credit fields or capacity rows recorded at or before the block MUST NOT activate the summary while routing excludes the account.
 
 #### Scenario: Stale credits do not reactivate the account summary
 

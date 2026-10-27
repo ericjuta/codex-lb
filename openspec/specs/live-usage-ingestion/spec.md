@@ -1,7 +1,7 @@
 # live-usage-ingestion Specification
 
 ## Purpose
-TBD - created by archiving change fix-rate-limit-recovery-chronology. Update Purpose after archive.
+Describe passive ingestion of account-attributed rate-limit snapshots from direct Responses WebSocket traffic without blocking the serving path.
 ## Requirements
 ### Requirement: Direct Responses WebSockets publish passive usage snapshots
 

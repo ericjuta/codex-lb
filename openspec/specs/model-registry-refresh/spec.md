@@ -1,7 +1,7 @@
 # model-registry-refresh Specification
 
 ## Purpose
-TBD - created by archiving change harden-upstream-403-recovery. Update Purpose after archive.
+Describe model-registry refresh failure handling through account cooldowns, last-good snapshot retention, and attributed diagnostics.
 ## Requirements
 ### Requirement: Model registry refresh cools down repeated auth-like failures
 

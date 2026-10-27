@@ -51,7 +51,7 @@ The chart MUST declare a minimum supported Kubernetes version of `1.32`, and CI 
 
 ### Requirement: Application data directory resolution is configurable and container-aware
 
-The application MUST resolve its default data directory from operator intent before container heuristics. A non-empty `CODEX_LB_DATA_DIR` value MUST be the highest-priority data directory override. When no override is configured, an existing `$HOME/.codex-lb` directory MUST remain preferred even if the process detects that it is running inside a container. The container data directory (`/var/lib/codex-lb`) MUST be used only when no override is configured, the home data directory does not already exist, and container detection is true.
+The application MUST prioritize operator intent over container heuristics: a non-empty `CODEX_LB_DATA_DIR` MUST be the highest-priority data directory override. Without an override, an existing `$HOME/.codex-lb` MUST remain preferred, even inside a detected container. `/var/lib/codex-lb` MUST be used only when no override is configured, `$HOME/.codex-lb` does not exist, and container detection is true.
 
 #### Scenario: Explicit data directory override wins
 
@@ -99,7 +99,7 @@ The application MUST resolve its default data directory from operator intent bef
 
 ### Requirement: Direct Docker respects addressable worker-pool startup
 
-The direct Docker helper MUST rebuild the current checkout and recreate the local container without forcing the runtime worker count to one. If the env file configures multiple workers while the HTTP responses session bridge is enabled, the image startup path MUST use the addressable bridge worker pool rather than a plain multi-worker Uvicorn process.
+The direct Docker helper MUST rebuild the current checkout and recreate the local container without forcing one runtime worker. With multiple env-file workers and the HTTP responses session bridge enabled, image startup MUST use the addressable bridge worker pool, not plain multi-worker Uvicorn.
 
 #### Scenario: direct Docker uses env-file worker count
 
@@ -144,7 +144,7 @@ Docker-based installation guidance MUST provide a PostgreSQL-backed path for ope
 
 ### Requirement: Greenfield Docker runtime baseline is explicit and bridge-safe
 
-Docker and operator installation guidance MUST define a greenfield runtime baseline for new sustained deployments. The baseline MUST be PostgreSQL-backed, MUST keep the standard `2455` API port and `1455` OAuth callback port, and MUST use a bridge-safe worker strategy when the HTTP Responses session bridge is enabled.
+Docker and operator installation guidance MUST define a PostgreSQL-backed greenfield runtime baseline for new sustained deployments. It MUST keep API port `2455` and OAuth callback port `1455` and use a bridge-safe worker strategy when the HTTP Responses session bridge is enabled.
 
 #### Scenario: Greenfield baseline combines PostgreSQL and worker settings
 
@@ -161,7 +161,7 @@ Docker and operator installation guidance MUST define a greenfield runtime basel
 
 ### Requirement: Greenfield baseline preserves operator tier preference
 
-Operator guidance for tiered traffic in the greenfield baseline MUST preserve the operator's selected Codex CLI service tier. The guidance MUST NOT recommend changing an existing ultrafast preference solely because the runtime is busy. The guidance MUST instead require verification of requested tier versus actual upstream served tier.
+Greenfield baseline guidance for tiered traffic MUST preserve the operator's selected Codex CLI service tier. It MUST NOT recommend changing an existing ultrafast preference solely because the runtime is busy, and MUST instead require verification of requested versus actual upstream served tier.
 
 #### Scenario: Greenfield baseline verifies ultrafast
 
@@ -198,7 +198,7 @@ explicit SHA MUST use the literal value 'unknown'.
 
 ### Requirement: Bridge front proxy preserves worker response encoding
 
-The addressable bridge worker pool front proxy MUST forward worker HTTP response bodies byte-for-byte without transparently decompressing them. When a worker response carries a `Content-Encoding` header, the body the front proxy sends downstream MUST remain the encoded bytes that match that header.
+The addressable bridge worker pool front proxy MUST forward worker HTTP response bodies byte-for-byte without transparent decompression. With a `Content-Encoding` header, the downstream body MUST retain the matching encoded bytes.
 
 #### Scenario: gzip-encoded dashboard asset passes through verbatim
 
@@ -208,7 +208,7 @@ The addressable bridge worker pool front proxy MUST forward worker HTTP response
 
 ### Requirement: Response-create dump directory is bounded without configuration
 
-The oversized response-create dump directory under `<data-dir>/debug/response-create-dumps` MUST be bounded on the base install path with no operator configuration. When the service captures an oversized `response.create` payload, it MUST NOT write a new dump if a dump for the same payload fingerprint is already stored, and after storing a dump it MUST remove the oldest stored dumps so that at most a fixed number of dump pairs remain. Each dump is a pair of a gzipped payload file and a meta file that MUST be added and removed together. Suppressing a duplicate MUST remain operator-visible in the logs, because the recurrence signal is the reason the dump path exists.
+Base installs MUST bound `<data-dir>/debug/response-create-dumps` without configuration. For oversized `response.create` payloads, the service MUST NOT write a dump whose fingerprint is already stored. After storing a dump, it MUST remove oldest dumps until at most a fixed number of pairs remain. Each pair's gzipped payload and meta file MUST be added and removed together. Duplicate suppression MUST be operator-visible in logs to preserve the dump path's recurrence signal.
 
 #### Scenario: Repeated identical payloads are stored once
 

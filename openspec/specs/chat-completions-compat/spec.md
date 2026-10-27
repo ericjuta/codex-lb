@@ -6,9 +6,7 @@ Ensure `/v1/chat/completions` behavior matches OpenAI Chat Completions expectati
 ## Requirements
 ### Requirement: Validate Chat Completions requests
 
-The service MUST accept POST requests to `/v1/chat/completions` with a JSON body and MUST validate required fields according to OpenAI
-Chat Completions expectations. The request MUST include `model` and either a non-empty `messages` array of objects or a Responses-shaped `input`
-payload. Invalid payloads MUST return a 4xx response with an OpenAI error envelope.
+The service MUST accept JSON POST requests to `/v1/chat/completions` and validate required fields per OpenAI Chat Completions expectations. Requests MUST include `model` and either a non-empty `messages` array of objects or a Responses-shaped `input` payload. Invalid payloads MUST return a 4xx OpenAI error envelope.
 
 #### Scenario: Responses-shaped chat payload accepted
 
@@ -24,7 +22,7 @@ payload. Invalid payloads MUST return a 4xx response with an OpenAI error envelo
 - **WHEN** the client sends `{ "model": "gpt-4.1", "messages": [{"role":"user","content":"hi"}] }`
 - **THEN** the service accepts the request and begins a response (streaming or non-streaming based on `stream`)
 ### Requirement: Enforce message content type rules
-The service MUST enforce role-specific message content rules: `system` and `developer` messages MUST contain text-only content, while `user` messages MAY contain text, image, or file content parts per OpenAI chat spec. Unsupported content types MUST return an OpenAI error envelope.
+`system` and `developer` messages MUST contain only text. `user` messages MAY contain text, image, or file parts per OpenAI chat spec. Unsupported content types MUST return an OpenAI error envelope.
 
 #### Scenario: Non-text system message
 - **WHEN** a `system` or `developer` message includes a non-text content part
@@ -36,7 +34,7 @@ The service MUST enforce role-specific message content rules: `system` and `deve
 
 ### Requirement: Map chat requests to Responses wire format
 
-The service MUST map chat messages into the Responses request format by merging `system`/`developer` content into `instructions` and forwarding all other messages as `input`. When `response_format.type` is `json_object`, the service MUST instead preserve `system`/`developer` messages as Responses input role messages so JSON-mode instructions remain in the request context. Tool definitions MUST be normalized to the Responses tool schema, and `tool_choice`, `reasoning_effort`, and `response_format` MUST be mapped consistently. Unsupported fields MUST not be silently ignored if they change behavior.
+The service MUST merge `system`/`developer` content into Responses `instructions` and forward other messages as `input`. For `response_format.type = "json_object"`, it MUST instead preserve `system`/`developer` messages and roles in `input`. Tool definitions MUST use the Responses tool schema. `tool_choice`, `reasoning_effort`, and `response_format` MUST be mapped consistently. Unsupported fields MUST not be silently ignored if they change behavior.
 
 #### Scenario: System message normalization
 - **WHEN** the client sends a `system` message followed by a `user` message
@@ -53,7 +51,7 @@ The service MUST map chat messages into the Responses request format by merging 
 - **THEN** the service forwards the value consistently in the mapped Responses request
 
 ### Requirement: Preserve service_tier in Chat Completions mapping
-When a Chat Completions request includes `service_tier`, the service MUST preserve that field when mapping the request to the internal Responses payload.
+The service MUST preserve any Chat Completions `service_tier` field in the internal Responses payload.
 
 #### Scenario: Chat request includes fast-mode tier
 - **WHEN** a client sends a valid Chat Completions request with `service_tier: "priority"`
@@ -61,11 +59,7 @@ When a Chat Completions request includes `service_tier`, the service MUST preser
 
 ### Requirement: Allow web_search tools in Chat Completions
 
-The service MUST accept Chat Completions requests that include tools with type `web_search` or `web_search_preview`. The service MUST normalize
-`web_search_preview` to `web_search` when mapping to the Responses tool schema. For requests with a non-empty `messages` array, the service MUST
-continue to reject other built-in tool types (file_search, code_interpreter, computer_use, computer_use_preview, image_generation) with an OpenAI
-invalid_request_error. For Responses-shaped chat payloads using `input` with `messages` absent or empty, the service MUST preserve Responses tool
-definitions and `tool_choice`, including built-in Responses tools accepted by `/v1/responses`.
+Chat Completions MUST accept `web_search` and normalize `web_search_preview` to it. Non-empty `messages` MUST reject other built-in types (file_search, code_interpreter, computer_use, computer_use_preview, image_generation) with an OpenAI invalid_request_error. Responses-shaped chat payloads using `input` with absent or empty `messages` MUST preserve Responses tool definitions and `tool_choice`, including built-in tools accepted by `/v1/responses`.
 
 #### Scenario: unsupported built-in tool rejected for chat messages
 
@@ -107,7 +101,7 @@ When `stream` is `false` or omitted, the service MUST return a single `chat.comp
 - **THEN** the returned `chat.completion` includes `tool_calls` and a `finish_reason` of `tool_calls`
 
 ### Requirement: response_format mapping
-If the client sends `response_format`, the service MUST translate it to the Responses `text.format` controls. For `json_schema`, the schema payload MUST be validated and missing `json_schema` MUST result in a 4xx error with an OpenAI error envelope.
+The service MUST map any `response_format` to Responses `text.format`. For `json_schema`, it MUST validate the schema payload and return a 4xx OpenAI error envelope if `json_schema` is missing.
 
 #### Scenario: JSON schema response format
 - **WHEN** the client sends `response_format: {"type":"json_schema","json_schema":{...}}`
@@ -122,7 +116,7 @@ If the client sends `response_format`, the service MUST translate it to the Resp
 - **THEN** the service returns a 4xx response with an OpenAI error envelope indicating the invalid name
 
 ### Requirement: Large image inputs are handled per OpenAI limits
-If a `user` message includes an image input larger than 8MB, the service MUST drop the image input from the request in accordance with OpenAI chat input limits.
+Per OpenAI chat input limits, the service MUST drop image inputs larger than 8MB from `user` messages.
 
 #### Scenario: Oversized image input
 - **WHEN** a `user` message includes an image input larger than 8MB
@@ -136,7 +130,7 @@ The service MUST reject chat user content parts with type `input_audio` and retu
 - **THEN** the service returns a 4xx OpenAI invalid_request_error indicating audio input is unsupported
 
 ### Requirement: Error mapping for chat requests
-For upstream failures or invalid requests, the service MUST return an OpenAI error envelope for non-streaming responses and MUST emit an error chunk followed by `data: [DONE]` for streaming responses. Error `code`, `type`, and `message` MUST be preserved or normalized into stable values.
+For upstream failures or invalid requests, the service MUST return an OpenAI error envelope for non-streaming responses or an error chunk followed by `data: [DONE]` for streaming responses. Error `code`, `type`, and `message` MUST be preserved or normalized into stable values.
 
 #### Scenario: Streaming error
 - **WHEN** the upstream returns a failure during streaming
@@ -144,11 +138,7 @@ For upstream failures or invalid requests, the service MUST return an OpenAI err
 
 ### Requirement: Drop unknown message-object fields during coercion
 
-The service MUST drop unknown keys on a chat message object when coercing the message into a Responses API input message item. Specifically, when a chat message is converted into an `input` message item (role `user` / `assistant` without tool_calls, or the message-content half of an assistant message that also has tool_calls), the emitted item MUST contain exactly the keys `role` and `content`. Other fields on the inbound chat message — the documented but unsupported `name` field, any other standard chat-message field that has no Responses input-item equivalent, and any arbitrary client-supplied key (including keys starting with `_`) — MUST NOT appear on the emitted item.
-
-This matches OpenAI's own `/v1/chat/completions`, which parses the known chat-message fields and silently ignores everything else rather than forwarding it. The Responses API input message item only accepts `role` + `content`; forwarding any other key triggers an upstream `unknown_parameter` rejection.
-
-The Requirement applies only to message-item shapes. The existing tool-call decomposition (`FunctionCallInputItem`) and tool-message conversion (`FunctionCallOutputInputItem`) paths already select fields explicitly and are unaffected.
+Chat-to-Responses `input` message coercion MUST emit only `role` and `content` for `user`/`assistant` messages without tool_calls and assistant message-content halves with tool_calls. It MUST omit `name`, standard fields without a Responses input-item equivalent and arbitrary keys (including `_`-prefixed keys). This applies only to message items. Tool-call decomposition (`FunctionCallInputItem`) and tool-message conversion (`FunctionCallOutputInputItem`) retain their field selection.
 
 #### Scenario: Standard `name` field is dropped
 
@@ -172,11 +162,7 @@ The Requirement applies only to message-item shapes. The existing tool-call deco
 
 ### Requirement: `_normalize_chat_tools` preserves the function tool strict flag
 
-The chat → responses coercion pipeline MUST preserve the `strict` field on `function` tools when normalizing the chat-completions `tools[]` array into the Responses-API tool item shape. Specifically, when a chat tool of shape `{ "type": "function", "function": { "name": "...", "parameters": {...}, "strict": <bool> } }` is normalized, the emitted Responses tool item MUST set `"strict": <bool>` (mirroring the inbound value) and not silently drop it.
-
-This is required because the chat-completions endpoint enters `enforce_strict_function_tools_format` via `to_responses_request()` after coercion. Dropping the strict flag during normalization would (a) mask spec-violating tool schemas, contradicting the strict-mode pre-validation requirement on the responses-api-compat capability, and (b) leave `/v1/chat/completions` and `/v1/responses` with divergent behavior for the same logical payload.
-
-For non-function tool types (`web_search`, etc.), the strict flag is not applicable and behavior is unchanged.
+Chat Completions `tools[]` normalization MUST preserve each `function` tool's nested `function.strict` as Responses `strict`. After coercion, `to_responses_request()` invokes `enforce_strict_function_tools_format`, preserving responses-api-compat strict-schema pre-validation and endpoint consistency for equivalent payloads. `strict` does not apply to non-function tools (`web_search`, etc.); their behavior is unchanged.
 
 #### Scenario: Chat tool with strict=true and compliant schema is forwarded with strict preserved
 
@@ -205,7 +191,7 @@ For non-function tool types (`web_search`, etc.), the strict flag is not applica
 
 ### Requirement: Chat Completions normalizes provider-specific thinking aliases
 
-When Chat Completions clients send provider-specific reasoning controls that are commonly used by non-OpenAI SDKs, the service MUST normalize those controls into the internal Responses `reasoning` shape before forwarding upstream. The original provider-specific fields MUST NOT be forwarded upstream unchanged.
+The service MUST normalize Chat Completions provider-specific reasoning controls commonly used by non-OpenAI SDKs into internal Responses `reasoning` before forwarding upstream. It MUST NOT forward the original fields unchanged.
 
 #### Scenario: Qwen-style enable_thinking is normalized
 
@@ -223,7 +209,7 @@ When Chat Completions clients send provider-specific reasoning controls that are
 
 ### Requirement: Preserve tool strictness semantics in Responses-shaped chat payloads
 
-When a Responses-shaped chat payload uses a flat Responses function tool, strict-mode validation MUST still run, and invalid strict schemas MUST be rejected before upstream is contacted. Rejection details MUST report the flat tool schema param path used by this path.
+Flat Responses function tools in Responses-shaped chat payloads MUST undergo strict-mode validation. Invalid strict schemas MUST be rejected before contacting upstream, with rejection details reporting the flat tool schema param path.
 
 #### Scenario: Responses-shaped chat payload with flat strict tool is rejected with 400
 
