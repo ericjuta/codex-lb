@@ -67,6 +67,8 @@ def test_get_pricing_for_model_gpt_5_4_alias():
 @pytest.mark.parametrize(
     ("requested_model", "canonical_model"),
     [
+        ("gpt-6.1-terra", "gpt-6.1-terra"),
+        ("gpt-6.1-terra-2026-10-27", "gpt-6.1-terra"),
         ("gpt-6", "gpt-6-astra"),
         ("gpt-6-astra", "gpt-6-astra"),
         ("gpt-6-astra-2026-09-05", "gpt-6-astra"),
@@ -246,6 +248,11 @@ def test_calculate_cost_from_usage_flex_service_tier():
 @pytest.mark.parametrize(
     ("model", "service_tier", "expected_cost"),
     [
+        ("gpt-6.1-terra", None, 5.105),
+        ("gpt-6.1-terra", "flex", 2.5525),
+        ("gpt-6.1-terra", "batch", 2.5525),
+        ("gpt-6.1-terra", "priority", 10.21),
+        ("gpt-6.1-terra", "fast", 10.21),
         ("gpt-6-astra", None, 51.1),
         ("gpt-6-astra", "flex", 25.55),
         ("gpt-6-astra", "batch", 25.55),
@@ -292,6 +299,11 @@ def test_calculate_cost_from_usage_gpt_family_service_tiers(
 @pytest.mark.parametrize(
     ("model", "service_tier", "expected_cost"),
     [
+        ("gpt-6.1-terra", None, 1.255),
+        ("gpt-6.1-terra", "priority", 2.51),
+        ("gpt-6.1-terra", "fast", 2.51),
+        ("gpt-6.1-terra", "flex", 0.6275),
+        ("gpt-6.1-terra", "batch", 0.6275),
         ("gpt-6-astra", None, 12.6),
         ("gpt-6-astra", "priority", 25.2),
         ("gpt-6-astra", "fast", 25.2),
@@ -330,6 +342,7 @@ def test_calculate_cost_from_usage_gpt_family_long_context(
 @pytest.mark.parametrize(
     ("model", "standard_input_rate", "long_context_input_rate"),
     [
+        ("gpt-6.1-terra", 1.0, 2.0),
         ("gpt-6-astra", 10.0, 20.0),
         ("gpt-6-sol", 2.0, 4.0),
         ("gpt-6-luna", 0.1, 0.2),
@@ -350,6 +363,40 @@ def test_calculate_cost_from_usage_gpt_family_uses_272k_long_context_boundary(
 
     assert at_boundary == pytest.approx(272_000 / 1_000_000 * standard_input_rate)
     assert above_boundary == pytest.approx(272_001 / 1_000_000 * long_context_input_rate)
+
+
+@pytest.mark.parametrize(
+    ("service_tier", "short_rates", "long_rates"),
+    [
+        (None, (1.0, 0.05, 5.0), (2.0, 0.1, 7.5)),
+        ("priority", (2.0, 0.1, 10.0), (4.0, 0.2, 15.0)),
+        ("fast", (2.0, 0.1, 10.0), (4.0, 0.2, 15.0)),
+        ("flex", (0.5, 0.025, 2.5), (1.0, 0.05, 3.75)),
+        ("batch", (0.5, 0.025, 2.5), (1.0, 0.05, 3.75)),
+    ],
+)
+@pytest.mark.parametrize("input_tokens", [272_000, 272_001])
+def test_terra_rate_breakdown_and_cache_discount_at_long_context_boundary(
+    service_tier: str | None,
+    short_rates: tuple[float, float, float],
+    long_rates: tuple[float, float, float],
+    input_tokens: int,
+) -> None:
+    # Cached tokens count toward the threshold, but are charged separately.
+    usage = UsageTokens(input_tokens=input_tokens, output_tokens=100_000, cached_input_tokens=100_000)
+    input_rate, cached_rate, output_rate = short_rates if input_tokens == 272_000 else long_rates
+
+    breakdown = calculate_cost_breakdown_from_usage(
+        usage, DEFAULT_PRICING_MODELS["gpt-6.1-terra"], service_tier=service_tier
+    )
+
+    assert breakdown is not None
+    assert breakdown.input_usd == pytest.approx((input_tokens - 100_000) / 1_000_000 * input_rate)
+    assert breakdown.cached_input_usd == pytest.approx(100_000 / 1_000_000 * cached_rate)
+    assert breakdown.output_usd == pytest.approx(100_000 / 1_000_000 * output_rate)
+    assert breakdown.input_usd is not None
+    assert breakdown.cached_input_usd is not None
+    assert breakdown.cached_input_usd / 100_000 == pytest.approx(breakdown.input_usd / (input_tokens - 100_000) * 0.05)
 
 
 def test_calculate_cost_from_usage_service_tier_trims_whitespace():

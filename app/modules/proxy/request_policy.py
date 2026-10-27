@@ -47,6 +47,7 @@ _DEFAULT_REASONING_EFFORT_FALLBACK = "low"
 # deliberately narrow: only strip known Cursor-style suffix tokens from known
 # GPT base model slugs, and leave every other model untouched.
 _GPT5_ALIAS_BASE_MODELS: tuple[str, ...] = (
+    "gpt-6.1-terra",
     "gpt-6-astra",
     "gpt-6-sol",
     "gpt-6-luna",

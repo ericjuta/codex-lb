@@ -9,6 +9,7 @@ from app.core.types import JsonValue
 pytestmark = pytest.mark.integration
 
 BOOTSTRAP_MODEL_SLUGS = {
+    "gpt-6.1-terra",
     "gpt-6-astra",
     "gpt-6-sol",
     "gpt-6-luna",
@@ -42,6 +43,7 @@ EXPECTED_CORE_MODEL_PLANS = {
 }
 
 EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS = {
+    "gpt-6.1-terra": "0.153.0",
     "gpt-6-astra": "0.153.0",
     "gpt-6-sol": "0.155.0",
     "gpt-6-luna": "0.155.0",
@@ -190,6 +192,16 @@ async def test_v1_models_uses_bootstrap_models_when_registry_not_populated(async
     assert "gpt-5.5-pro" not in ids
 
     entries = {item["id"]: item for item in payload["data"]}
+    terra = entries["gpt-6.1-terra"]
+    assert terra["metadata"]["context_window"] == 500_000
+    assert terra["metadata"]["input_context_window"] == 500_000
+    assert terra["metadata"]["max_output_tokens"] == 128_000
+    assert terra["capabilities"]["context_length"] == 500_000
+    assert terra["capabilities"]["max_output_tokens"] == 128_000
+    assert terra["context_length"] == 500_000
+    assert terra["contextLength"] == 500_000
+    assert terra["max_output_tokens"] == 128_000
+    assert terra["maxOutputTokens"] == 128_000
     for slug in ("gpt-6-astra", "gpt-6-sol", "gpt-6-luna"):
         entry = entries[slug]
         assert entry["metadata"]["context_window"] == 272_000
@@ -220,6 +232,43 @@ async def test_backend_codex_models_uses_bootstrap_upstream_metadata(async_clien
         assert entries[slug]["truncation_policy"]["mode"] in {"bytes", "tokens"}
         assert isinstance(entries[slug]["truncation_policy"]["limit"], int)
 
+    terra = entries["gpt-6.1-terra"]
+    assert terra["display_name"] == "GPT-6.1 Terra"
+    assert terra["description"] == "GPT-6.1 Terra Codex model."
+    assert terra["priority"] == 3
+    assert terra["context_window"] == 500_000
+    assert terra["max_context_window"] == 872_000
+    assert terra["default_reasoning_level"] == "low"
+    assert [level["effort"] for level in terra["supported_reasoning_levels"]] == [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    ]
+    assert terra["prefer_websockets"] is True
+    assert terra["tool_mode"] == "code_mode_only"
+    assert terra["multi_agent_version"] == "v2"
+    assert terra["multi_agent_reasoning_effort"] == "xhigh"
+    assert terra["use_responses_lite"] is True
+    assert terra["supports_reasoning_effort_updates"] is True
+    assert terra["experimental_supported_tools"] == ["send_user_message_async", "clock"]
+    assert terra["node_repl_auto_review_required"] is True
+    assert terra["guardian"] is None
+    assert terra["allow_only_codex_cloud_agent_orchestrator"] is False
+    assert terra["allow_only_chatgpt_workspace_executor"] is False
+    assert terra["supports_experimental_context"] is False
+    assert terra["available_access_programs"] == {"cyber": ["standard"]}
+    assert terra["default_service_tier"] is None
+    assert terra["service_tiers"] == [{"id": "priority", "name": "Fast", "description": "1.5x speed"}]
+    assert terra["additional_speed_tiers"] == ["fast"]
+    terra_only_plans = {"hc_consumption", "law", "rosalind_academic"}
+    for slug in ("gpt-6-astra", "gpt-6-sol", "gpt-6-luna"):
+        existing_plans = set(entries[slug]["available_in_plans"])
+        assert existing_plans.isdisjoint(terra_only_plans)
+        assert set(terra["available_in_plans"]) == existing_plans | terra_only_plans
+
     astra = entries["gpt-6-astra"]
     assert astra["display_name"] == "GPT-6-Astra"
     assert astra["context_window"] == 272_000
@@ -247,6 +296,7 @@ async def test_backend_codex_models_uses_bootstrap_upstream_metadata(async_clien
         assert entry["display_name"] == display_name
         assert entry["context_window"] == 272_000
         assert entry["max_context_window"] == 872_000
+        assert entry["default_reasoning_level"] == "medium"
         assert entry["prefer_websockets"] is True
         assert entry["tool_mode"] == "code_mode_only"
         assert entry["default_service_tier"] is None
@@ -1144,16 +1194,17 @@ async def test_v1_models_reports_backend_context_window(async_client, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_v1_models_prefers_raw_max_output_tokens_over_slug_fallback(async_client):
+@pytest.mark.parametrize("model_slug", ["gpt-6-sol", "gpt-6.1-terra"])
+async def test_v1_models_prefers_raw_max_output_tokens_over_slug_fallback(async_client, model_slug):
     registry = get_model_registry()
     raw = _raw_with_max_context_window(872_000)
     raw["max_output_tokens"] = 96_000
-    await registry.update({"pro": [_make_upstream_model("gpt-6-sol", raw=raw)]})
+    await registry.update({"pro": [_make_upstream_model(model_slug, raw=raw)]})
 
     resp = await async_client.get("/v1/models")
 
     assert resp.status_code == 200
-    entry = next(item for item in resp.json()["data"] if item["id"] == "gpt-6-sol")
+    entry = next(item for item in resp.json()["data"] if item["id"] == model_slug)
     assert entry["metadata"]["max_output_tokens"] == 96_000
     assert entry["capabilities"]["max_output_tokens"] == 96_000
     assert entry["maxOutputTokens"] == 96_000

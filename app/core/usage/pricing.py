@@ -94,6 +94,29 @@ def _normalize_usage(usage: UsageTokens | ResponseUsage | None) -> UsageTokens |
 
 
 DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
+    # Terra rates: https://developers.openai.com/api/docs/pricing (2026-10-27).
+    # Cached input is 5% of input; long context starts strictly above 272K input tokens.
+    "gpt-6.1-terra": ModelPrice(
+        input_per_1m=1.0,
+        cached_input_per_1m=0.05,
+        output_per_1m=5.0,
+        priority_input_per_1m=2.0,
+        priority_cached_input_per_1m=0.1,
+        priority_output_per_1m=10.0,
+        priority_long_context_input_per_1m=4.0,
+        priority_long_context_cached_input_per_1m=0.2,
+        priority_long_context_output_per_1m=15.0,
+        flex_input_per_1m=0.5,
+        flex_cached_input_per_1m=0.025,
+        flex_output_per_1m=2.5,
+        batch_input_per_1m=0.5,
+        batch_cached_input_per_1m=0.025,
+        batch_output_per_1m=2.5,
+        long_context_threshold_tokens=272_000,
+        long_context_input_per_1m=2.0,
+        long_context_cached_input_per_1m=0.1,
+        long_context_output_per_1m=7.5,
+    ),
     "gpt-6-astra": ModelPrice(
         input_per_1m=10.0,
         cached_input_per_1m=1.0,
@@ -392,6 +415,7 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
 }
 
 DEFAULT_MODEL_ALIASES: dict[str, str] = {
+    "gpt-6.1-terra*": "gpt-6.1-terra",
     "gpt-6": "gpt-6-astra",
     "gpt-6-astra*": "gpt-6-astra",
     "gpt-6-sol*": "gpt-6-sol",

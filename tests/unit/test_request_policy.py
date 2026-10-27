@@ -15,6 +15,9 @@ from app.modules.proxy.request_policy import apply_api_key_enforcement, validate
 @pytest.mark.parametrize(
     ("alias", "canonical", "expected_effort", "expected_service_tier"),
     [
+        ("gpt-6.1-terra-extra-high-fast", "gpt-6.1-terra", "high", "priority"),
+        ("gpt-6.1-terra-medium", "gpt-6.1-terra", "medium", None),
+        ("gpt-6.1-terra-thinking-high-priority", "gpt-6.1-terra", "high", "priority"),
         ("gpt-6-astra-extra-high-fast", "gpt-6-astra", "high", "priority"),
         ("gpt-6-astra-medium", "gpt-6-astra", "medium", None),
         ("gpt-6-sol-extra-high-fast", "gpt-6-sol", "high", "priority"),
@@ -55,6 +58,33 @@ def test_gpt5_cursor_aliases_target_canonical_models(
     assert request.service_tier == expected_service_tier
 
 
+@pytest.mark.parametrize(
+    ("model", "expected_effort"),
+    [
+        ("gpt-6.1-terra-fast", "medium"),
+        ("gpt-6.1-terra-extra-high-fast", "high"),
+    ],
+)
+def test_terra_alias_preserves_explicit_service_tier(model: str, expected_effort: str) -> None:
+    request = ResponsesRequest.model_validate(
+        {
+            "model": model,
+            "instructions": "",
+            "input": [],
+            "reasoning": {"effort": "medium"},
+            "service_tier": "flex",
+        }
+    )
+
+    apply_api_key_enforcement(request, None)
+
+    assert request.model == "gpt-6.1-terra"
+    assert request.service_tier == "flex"
+    # Existing policy: effort suffixes override explicit effort; tier suffixes do not.
+    assert request.reasoning is not None
+    assert request.reasoning.effort == expected_effort
+
+
 def test_minimal_reasoning_alias_uses_upstream_safe_fallback() -> None:
     request = ResponsesRequest.model_validate(
         {
@@ -71,10 +101,19 @@ def test_minimal_reasoning_alias_uses_upstream_safe_fallback() -> None:
     assert request.reasoning.effort == "low"
 
 
-def test_unknown_gpt5_suffix_is_not_rewritten() -> None:
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-5.5-preview",
+        "gpt-6.1-terra-preview",
+        "gpt-6.1-terra-extra-high-preview",
+        "gpt-6.1-terra-2026-10-27",
+    ],
+)
+def test_unknown_gpt5_suffix_is_not_rewritten(model: str) -> None:
     request = ResponsesRequest.model_validate(
         {
-            "model": "gpt-5.5-preview",
+            "model": model,
             "instructions": "",
             "input": [],
         }
@@ -82,12 +121,12 @@ def test_unknown_gpt5_suffix_is_not_rewritten() -> None:
 
     apply_api_key_enforcement(request, None)
 
-    assert request.model == "gpt-5.5-preview"
+    assert request.model == model
     assert request.reasoning is None
     assert request.service_tier is None
 
 
-@pytest.mark.parametrize("model", ["gpt-6-astra-ultra", "gpt-5.6-sol-ultra"])
+@pytest.mark.parametrize("model", ["gpt-6.1-terra-ultra", "gpt-6-astra-ultra", "gpt-5.6-sol-ultra"])
 def test_ultra_suffix_is_not_rewritten(model: str) -> None:
     # The Cursor-style suffix grammar has no ``ultra``/``max`` reasoning
     # tokens (they are not effort levels every known GPT-family base supports;

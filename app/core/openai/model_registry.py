@@ -208,8 +208,9 @@ def _gpt6_raw(
     """Raw GPT-6 catalog fields captured from the upstream live proxy.
 
     gpt-6-astra was captured on 2026-09-05; gpt-6-sol and gpt-6-luna were
-    captured on 2026-09-23. Only the fields that differ between the models are
-    parameters. The large instruction payload is intentionally not bundled;
+    captured on 2026-09-23; gpt-6.1-terra was captured on 2026-10-27.
+    Model-specific fields use parameters or per-entry overrides.
+    The large instruction payload is intentionally not bundled;
     live upstream registry refresh remains authoritative when available.
     """
     return {
@@ -257,6 +258,32 @@ def _gpt6_raw(
 # explicit rather than inherited from helper defaults; every slug must exist
 # upstream, and live upstream data always takes precedence once available.
 _BOOTSTRAP_STATIC_MODELS: tuple[UpstreamModel, ...] = (
+    _bootstrap_model(
+        "gpt-6.1-terra",
+        "GPT-6.1 Terra",
+        description="GPT-6.1 Terra Codex model.",
+        prefer_websockets=True,
+        minimal_client_version="0.153.0",
+        reasoning_levels=_REASONING_LEVELS_ULTRA,
+        context_window=500_000,
+        default_reasoning_level="low",
+        priority=3,
+        available_in_plans=_BOOTSTRAP_GPT6_AVAILABLE_IN_PLANS | {"hc_consumption", "law", "rosalind_academic"},
+        raw={
+            **_gpt6_raw(
+                default_service_tier=None,
+                service_tier_description="1.5x speed",
+                multi_agent_reasoning_effort="xhigh",
+                node_repl_auto_review_required=True,
+            ),
+            "supports_reasoning_effort_updates": True,
+            "guardian": None,
+            "allow_only_codex_cloud_agent_orchestrator": False,
+            "allow_only_chatgpt_workspace_executor": False,
+            "supports_experimental_context": False,
+            "available_access_programs": {"cyber": ["standard"]},
+        },
+    ),
     _bootstrap_model(
         "gpt-6-astra",
         "GPT-6-Astra",

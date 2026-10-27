@@ -55,6 +55,7 @@ EXPECTED_GPT6_MODEL_PLANS = {
 }
 
 EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS = {
+    "gpt-6.1-terra": "0.153.0",
     "gpt-6-astra": "0.153.0",
     "gpt-6-sol": "0.155.0",
     "gpt-6-luna": "0.155.0",
@@ -140,7 +141,7 @@ async def test_plan_types_for_model_returns_plans():
     assert registry.plan_types_for_model("model-c") == frozenset({"pro"})
 
 
-@pytest.mark.parametrize("model_slug", ["gpt-5.5", "gpt-5.3-codex-spark"])
+@pytest.mark.parametrize("model_slug", ["gpt-5.5", "gpt-5.3-codex-spark", "gpt-6.1-terra"])
 @pytest.mark.asyncio
 async def test_plan_types_for_bootstrap_model_uses_live_snapshot_after_refresh(model_slug: str):
     registry = ModelRegistry(ttl_seconds=60.0)
@@ -175,6 +176,7 @@ def test_prefers_websockets_uses_bootstrap_fallback_when_uninitialized():
     assert registry.prefers_websockets("gpt-5.6-sol") is True
     assert registry.prefers_websockets("gpt-5.6-terra") is True
     assert registry.prefers_websockets("gpt-5.6-luna") is True
+    assert registry.prefers_websockets("gpt-6.1-terra") is True
     assert registry.prefers_websockets("gpt-6-astra") is True
     assert registry.prefers_websockets("gpt-6-sol") is True
     assert registry.prefers_websockets("gpt-6-luna") is True
@@ -195,6 +197,46 @@ def test_bootstrap_models_include_representative_upstream_metadata():
     assert set(models) == set(EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS)
     for slug, expected_version in EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS.items():
         assert models[slug].minimal_client_version == expected_version
+
+    terra = models["gpt-6.1-terra"]
+    assert terra.display_name == "GPT-6.1 Terra"
+    assert terra.description == "GPT-6.1 Terra Codex model."
+    assert terra.context_window == 500_000
+    assert terra.raw["max_context_window"] == 872_000
+    assert terra.priority == 3
+    assert terra.prefer_websockets is True
+    assert terra.supported_in_api is True
+    assert terra.input_modalities == ("text", "image")
+    assert terra.default_reasoning_level == "low"
+    assert [level.effort for level in terra.supported_reasoning_levels] == [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    ]
+    assert terra.raw["tool_mode"] == "code_mode_only"
+    assert terra.raw["multi_agent_version"] == "v2"
+    assert terra.raw["multi_agent_reasoning_effort"] == "xhigh"
+    assert terra.raw["use_responses_lite"] is True
+    assert terra.raw["supports_reasoning_effort_updates"] is True
+    assert terra.raw["experimental_supported_tools"] == ["send_user_message_async", "clock"]
+    assert terra.raw["node_repl_auto_review_required"] is True
+    assert terra.raw["guardian"] is None
+    assert terra.raw["allow_only_codex_cloud_agent_orchestrator"] is False
+    assert terra.raw["allow_only_chatgpt_workspace_executor"] is False
+    assert terra.raw["supports_experimental_context"] is False
+    assert terra.raw["available_access_programs"] == {"cyber": ["standard"]}
+    assert terra.raw["default_service_tier"] is None
+    assert terra.raw["service_tiers"] == [{"id": "priority", "name": "Fast", "description": "1.5x speed"}]
+    assert terra.raw["additional_speed_tiers"] == ["fast"]
+    assert terra.available_in_plans == EXPECTED_GPT6_MODEL_PLANS | {
+        "hc_consumption",
+        "law",
+        "rosalind_academic",
+    }
+    assert registry.plan_types_for_model("gpt-6.1-terra") == terra.available_in_plans
 
     astra = models["gpt-6-astra"]
     assert astra.display_name == "GPT-6-Astra"
