@@ -5,6 +5,6 @@
 
 ## 2. Verification
 
-- [ ] 2.1 Focused registry, pricing, request-policy and `/v1/models` tests; Ruff
-- [ ] 2.2 Strict OpenSpec validation
-- [ ] 2.3 Deploy and confirm the live catalog and inference
+- [x] 2.1 Focused registry, pricing, request-policy and `/v1/models` tests; Ruff
+- [x] 2.2 Strict OpenSpec validation
+- [x] 2.3 Deploy and confirm the live catalog and inference
