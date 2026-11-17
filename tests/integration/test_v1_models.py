@@ -9,6 +9,8 @@ from app.core.types import JsonValue
 pytestmark = pytest.mark.integration
 
 BOOTSTRAP_MODEL_SLUGS = {
+    "gpt-6.2-sol",
+    "gpt-6.2-astra",
     "gpt-6.1-terra",
     "gpt-6-astra",
     "gpt-6-sol",
@@ -43,6 +45,8 @@ EXPECTED_CORE_MODEL_PLANS = {
 }
 
 EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS = {
+    "gpt-6.2-sol": "0.166.0",
+    "gpt-6.2-astra": "0.166.0",
     "gpt-6.1-terra": "0.153.0",
     "gpt-6-astra": "0.153.0",
     "gpt-6-sol": "0.155.0",
@@ -202,6 +206,14 @@ async def test_v1_models_uses_bootstrap_models_when_registry_not_populated(async
     assert terra["contextLength"] == 500_000
     assert terra["max_output_tokens"] == 128_000
     assert terra["maxOutputTokens"] == 128_000
+    sol62 = entries["gpt-6.2-sol"]
+    assert sol62["metadata"]["input_context_window"] == 500_000
+    assert sol62["context_length"] == 500_000
+    assert sol62["max_output_tokens"] == 128_000
+    astra62 = entries["gpt-6.2-astra"]
+    assert astra62["metadata"]["input_context_window"] == 272_000
+    assert astra62["context_length"] == 272_000
+    assert astra62["max_output_tokens"] == 128_000
     for slug in ("gpt-6-astra", "gpt-6-sol", "gpt-6-luna"):
         entry = entries[slug]
         assert entry["metadata"]["context_window"] == 272_000

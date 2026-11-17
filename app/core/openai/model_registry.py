@@ -148,6 +148,34 @@ _BOOTSTRAP_GPT6_AVAILABLE_IN_PLANS = frozenset(
 )
 
 
+# gpt-6.2-sol and gpt-6.2-astra dropped the free/k12 plans and added three
+# newer ones in the 2026-11-17 live catalog capture.
+_BOOTSTRAP_GPT62_AVAILABLE_IN_PLANS = (_BOOTSTRAP_GPT6_AVAILABLE_IN_PLANS - {"free", "free_workspace", "k12"}) | {
+    "hc_consumption",
+    "law",
+    "rosalind_academic",
+}
+
+_GPT62_RAW_OVERRIDES: dict[str, JsonValue] = {
+    "experimental_supported_tools": [
+        "request_user_input_async",
+        "send_message_to_user_async",
+        "clock",
+        "literature_search_query",
+        "multi_agent_v2_in_code_mode",
+    ],
+    "supports_reasoning_effort_updates": True,
+    "guardian": None,
+    "allow_only_codex_cloud_agent_orchestrator": False,
+    "allow_only_chatgpt_workspace_executor": False,
+    "supports_experimental_context": False,
+    "available_access_programs": {
+        "cyber": ["standard"],
+        "daybreak_availability": "unavailable_for_model",
+    },
+}
+
+
 def _bootstrap_model(
     slug: str,
     display_name: str,
@@ -208,7 +236,8 @@ def _gpt6_raw(
     """Raw GPT-6 catalog fields captured from the upstream live proxy.
 
     gpt-6-astra was captured on 2026-09-05; gpt-6-sol and gpt-6-luna were
-    captured on 2026-09-23; gpt-6.1-terra was captured on 2026-10-27.
+    captured on 2026-09-23; gpt-6.1-terra was captured on 2026-10-27;
+    gpt-6.2-sol and gpt-6.2-astra were captured on 2026-11-17.
     Model-specific fields use parameters or per-entry overrides.
     The large instruction payload is intentionally not bundled;
     live upstream registry refresh remains authoritative when available.
@@ -258,6 +287,58 @@ def _gpt6_raw(
 # explicit rather than inherited from helper defaults; every slug must exist
 # upstream, and live upstream data always takes precedence once available.
 _BOOTSTRAP_STATIC_MODELS: tuple[UpstreamModel, ...] = (
+    _bootstrap_model(
+        "gpt-6.2-sol",
+        "GPT-6.2-Sol",
+        description="Fast, go-to model for coding and everyday work.",
+        prefer_websockets=True,
+        minimal_client_version="0.166.0",
+        reasoning_levels=_REASONING_LEVELS_ULTRA,
+        context_window=500_000,
+        input_modalities=("text", "image", "audio"),
+        default_reasoning_level="low",
+        priority=1,
+        available_in_plans=_BOOTSTRAP_GPT62_AVAILABLE_IN_PLANS,
+        raw={
+            **_gpt6_raw(
+                default_service_tier=None,
+                service_tier_description="2x speed, increased usage",
+                multi_agent_reasoning_effort="xhigh",
+                node_repl_auto_review_required=True,
+            ),
+            **_GPT62_RAW_OVERRIDES,
+            "service_tiers": [
+                {"id": "priority", "name": "Fast", "description": "2x speed, increased usage"},
+                {
+                    "id": "ultrafast",
+                    "name": "Ultrafast",
+                    "description": "The fastest available responses for latency-sensitive work.",
+                },
+            ],
+            "additional_speed_tiers": ["fast", "ultrafast"],
+        },
+    ),
+    _bootstrap_model(
+        "gpt-6.2-astra",
+        "GPT-6.2-Astra",
+        description="Our most capable model for complex coding and professional work.",
+        prefer_websockets=True,
+        minimal_client_version="0.166.0",
+        reasoning_levels=_REASONING_LEVELS_ULTRA,
+        context_window=272_000,
+        default_reasoning_level="low",
+        priority=2,
+        available_in_plans=_BOOTSTRAP_GPT62_AVAILABLE_IN_PLANS,
+        raw={
+            **_gpt6_raw(
+                default_service_tier=None,
+                service_tier_description="2x speed, increased usage",
+                multi_agent_reasoning_effort="xhigh",
+                node_repl_auto_review_required=True,
+            ),
+            **_GPT62_RAW_OVERRIDES,
+        },
+    ),
     _bootstrap_model(
         "gpt-6.1-terra",
         "GPT-6.1 Terra",

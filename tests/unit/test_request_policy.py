@@ -15,6 +15,8 @@ from app.modules.proxy.request_policy import apply_api_key_enforcement, validate
 @pytest.mark.parametrize(
     ("alias", "canonical", "expected_effort", "expected_service_tier"),
     [
+        ("gpt-6.2-sol-extra-high-fast", "gpt-6.2-sol", "high", "priority"),
+        ("gpt-6.2-astra-medium", "gpt-6.2-astra", "medium", None),
         ("gpt-6.1-terra-extra-high-fast", "gpt-6.1-terra", "high", "priority"),
         ("gpt-6.1-terra-medium", "gpt-6.1-terra", "medium", None),
         ("gpt-6.1-terra-thinking-high-priority", "gpt-6.1-terra", "high", "priority"),

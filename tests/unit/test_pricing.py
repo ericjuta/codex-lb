@@ -67,6 +67,15 @@ def test_get_pricing_for_model_gpt_5_4_alias():
 @pytest.mark.parametrize(
     ("requested_model", "canonical_model"),
     [
+        ("gpt-6.2-astra-2026-11-10", "gpt-6.2-astra"),
+        ("gpt-6.2-sol-2026-11-10", "gpt-6.2-sol"),
+        ("gpt-6.1-sol", "gpt-6.1-sol"),
+        ("gpt-6-astra-law", "gpt-6-astra-law"),
+        ("gpt-6-cyber", "gpt-6-cyber"),
+        ("gpt-6-rosalind", "gpt-6-rosalind"),
+        ("gpt-5.6-cyber", "gpt-5.6-cyber"),
+        ("gpt-5.5-cyber-preview", "gpt-5.5-cyber"),
+        ("gpt-rosalind-research", "gpt-rosalind-research"),
         ("gpt-6.1-terra", "gpt-6.1-terra"),
         ("gpt-6.1-terra-2026-10-27", "gpt-6.1-terra"),
         ("gpt-6", "gpt-6-astra"),
@@ -516,6 +525,36 @@ def test_calculate_cost_from_usage_gpt_5_4_nano():
 
     expected = (900_000 / 1_000_000) * 0.20 + (100_000 / 1_000_000) * 0.02 + (1_000_000 / 1_000_000) * 1.25
     assert cost == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("model", "service_tier", "input_tokens", "expected_usd"),
+    [
+        # Half of the input is cached; every row has 100K output tokens.
+        ("gpt-6.2-astra", None, 200_000.0, 0.1 * 8 + 0.1 * 0.4 + 0.1 * 40),
+        ("gpt-6.2-astra", "priority", 200_000.0, 0.1 * 16 + 0.1 * 0.8 + 0.1 * 80),
+        ("gpt-6.2-astra", "ultrafast", 200_000.0, 0.1 * 24 + 0.1 * 1.2 + 0.1 * 120),
+        ("gpt-6.2-astra", "ultrafast", 400_000.0, 0.2 * 48 + 0.2 * 2.4 + 0.1 * 180),
+        ("gpt-6.2-astra", "batch", 200_000.0, 0.1 * 4 + 0.1 * 0.2 + 0.1 * 20),
+        ("gpt-6.2-astra", "flex", 200_000.0, 0.1 * 8 + 0.1 * 0.4 + 0.1 * 40),
+        ("gpt-6.2-sol", None, 400_000.0, 0.2 * 4 + 0.2 * 0.2 + 0.1 * 15),
+        ("gpt-6.2-sol", "priority", 400_000.0, 0.2 * 8 + 0.2 * 0.4 + 0.1 * 30),
+        ("gpt-6.2-sol", "ultrafast", 200_000.0, 0.1 * 6 + 0.1 * 0.3 + 0.1 * 30),
+        ("gpt-6.1-sol", "ultrafast", 200_000.0, 0.1 * 12 + 0.1 * 0.6 + 0.1 * 60),
+        # Models without an Ultrafast multiplier keep Fast rates.
+        ("gpt-6.1-terra", "ultrafast", 200_000.0, 0.1 * 2 + 0.1 * 0.1 + 0.1 * 10),
+    ],
+)
+def test_gpt_6_2_rate_card_and_ultrafast_multiplier(
+    model: str, service_tier: str | None, input_tokens: float, expected_usd: float
+) -> None:
+    resolved = get_pricing_for_model(model)
+    assert resolved is not None
+    usage = UsageTokens(input_tokens=input_tokens, output_tokens=100_000.0, cached_input_tokens=input_tokens / 2)
+
+    cost = calculate_cost_from_usage(usage, resolved[1], service_tier=service_tier)
+
+    assert cost == pytest.approx(expected_usd)
 
 
 def test_calculate_costs_aggregates_by_model():

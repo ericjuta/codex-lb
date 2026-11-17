@@ -55,6 +55,8 @@ EXPECTED_GPT6_MODEL_PLANS = {
 }
 
 EXPECTED_BOOTSTRAP_MINIMAL_CLIENT_VERSIONS = {
+    "gpt-6.2-sol": "0.166.0",
+    "gpt-6.2-astra": "0.166.0",
     "gpt-6.1-terra": "0.153.0",
     "gpt-6-astra": "0.153.0",
     "gpt-6-sol": "0.155.0",
@@ -188,6 +190,40 @@ def test_prefers_websockets_uses_bootstrap_fallback_when_uninitialized():
     assert registry.prefers_websockets("gpt-5.4-mini") is True
     assert registry.prefers_websockets("gpt-5.2") is True
     assert registry.prefers_websockets("gpt-5.1") is False
+
+
+def test_bootstrap_gpt_6_2_models_match_live_catalog_capture():
+    registry = ModelRegistry(ttl_seconds=60.0)
+    models = registry.get_models_with_fallback()
+    expected_plans = (EXPECTED_GPT6_MODEL_PLANS - {"free", "free_workspace", "k12"}) | {
+        "hc_consumption",
+        "law",
+        "rosalind_academic",
+    }
+
+    sol = models["gpt-6.2-sol"]
+    assert sol.display_name == "GPT-6.2-Sol"
+    assert sol.context_window == 500_000
+    assert sol.priority == 1
+    assert sol.input_modalities == ("text", "image", "audio")
+    assert [tier["id"] for tier in sol.raw["service_tiers"]] == ["priority", "ultrafast"]
+    assert sol.raw["additional_speed_tiers"] == ["fast", "ultrafast"]
+
+    astra = models["gpt-6.2-astra"]
+    assert astra.display_name == "GPT-6.2-Astra"
+    assert astra.context_window == 272_000
+    assert astra.priority == 2
+    assert astra.input_modalities == ("text", "image")
+    assert [tier["id"] for tier in astra.raw["service_tiers"]] == ["priority"]
+
+    for model in (sol, astra):
+        assert model.default_reasoning_level == "low"
+        assert model.supported_reasoning_levels[-1].effort == "ultra"
+        assert model.raw["max_context_window"] == 872_000
+        assert model.raw["default_service_tier"] is None
+        assert model.raw["multi_agent_reasoning_effort"] == "xhigh"
+        assert model.available_in_plans == expected_plans
+        assert registry.prefers_websockets(model.slug) is True
 
 
 def test_bootstrap_models_include_representative_upstream_metadata():
