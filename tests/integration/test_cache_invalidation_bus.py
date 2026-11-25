@@ -58,15 +58,22 @@ async def test_running_poll_loop_retries_a_failed_bump_until_peer_observes(db_se
     await writer.start()
     try:
         await writer.bump(NAMESPACE_FIREWALL)
+        assert writer._pending_bumps == {NAMESPACE_FIREWALL}  # the immediate publish failed
+        # Wait on the peer, not on the writer's pending set: the writer clears
+        # that marker before its write, so it reads empty while the publish is
+        # still in flight and stopping then would cancel the write.
         async with asyncio.timeout(5):
-            while writer._pending_bumps:
+            while not seen:
                 await asyncio.sleep(0.01)
+                await peer._poll_once()
     finally:
         await writer.stop()
     await peer._poll_once()
 
-    assert seen == [NAMESPACE_FIREWALL]
-    assert created[0] == 4  # three failed attempts, then one successful publish
+    assert seen == [NAMESPACE_FIREWALL]  # one publish reached the peer, no duplicate
+    # The poll loop's own reads share the factory, so the exact session count
+    # depends on timing; the publish can only have landed after every failing session.
+    assert created[0] > 3
 
 
 async def test_successful_bump_leaves_nothing_to_retry(db_setup) -> None:
