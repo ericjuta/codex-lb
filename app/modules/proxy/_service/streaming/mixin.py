@@ -501,7 +501,7 @@ class _StreamingMixin(_StreamingEntrypointMixin, _StreamingRetryMixin):
             if code is None:
                 return
             if api_key_reservation is None:
-                await proxy._handle_stream_error(account, error, code)
+                await proxy._handle_stream_error(account, error, code, model=model)
                 return
             settlement.error_code = code
             settlement.account_health_error = True

@@ -2884,7 +2884,7 @@ class _WebSocketMixin:
     ) -> str:
         proxy = cast(_WebSocketServiceProtocol, self)
         _ = proxy
-        classified = await proxy._handle_websocket_connect_error(account, exc)
+        classified = await proxy._handle_websocket_connect_error(account, exc, model=request_state.model)
         failure_class = classified["failure_class"] if isinstance(classified, dict) else "non_retryable"
         candidates_remaining = max_attempts - attempt
         error = _parse_openai_error(exc.payload)
@@ -3198,7 +3198,13 @@ class _WebSocketMixin:
         )
         return account_id
 
-    async def _handle_websocket_connect_error(self, account: Account, exc: ProxyResponseError) -> ClassifiedFailure:
+    async def _handle_websocket_connect_error(
+        self,
+        account: Account,
+        exc: ProxyResponseError,
+        *,
+        model: str | None = None,
+    ) -> ClassifiedFailure:
         proxy = cast(_WebSocketServiceProtocol, self)
         _ = proxy
         error = _parse_openai_error(exc.payload)
@@ -3210,6 +3216,7 @@ class _WebSocketMixin:
             error_code,
             http_status=exc.status_code,
             phase="connect",
+            model=model,
         )
 
     async def _mark_websocket_replay_account_failure(
@@ -3223,9 +3230,7 @@ class _WebSocketMixin:
             return
         proxy = cast(_WebSocketServiceProtocol, self)
         await proxy._handle_stream_error(
-            account,
-            {"message": error_message},
-            "stream_incomplete",
+            account, {"message": error_message}, "stream_incomplete", model=request_state.model
         )
         if request_state.previous_response_id is None:
             request_state.replay_excluded_account_ids.add(account.id)
@@ -4195,6 +4200,7 @@ class _WebSocketMixin:
                 account,
                 {"message": _websocket_event_error_message(event_type, payload) or "Upstream error"},
                 retry_error_code,
+                model=request_state.model,
             )
             event, payload, event_type, downstream_text = _rewrite_websocket_previous_response_owner_unavailable_event(
                 request_state=request_state,
@@ -4207,6 +4213,7 @@ class _WebSocketMixin:
                     account,
                     {"message": _websocket_event_error_message(event_type, payload) or "Upstream error"},
                     retry_error_code,
+                    model=request_state.model,
                 )
                 event, payload, event_type, downstream_text = (
                     _rewrite_websocket_previous_response_owner_unavailable_event(
@@ -4307,6 +4314,7 @@ class _WebSocketMixin:
                     account,
                     {"message": _websocket_event_error_message(event_type, payload) or "Upstream error"},
                     retry_error_code,
+                    model=request_state.model,
                 )
             if retry_error_code is not None:
                 return downstream_text
@@ -4686,11 +4694,12 @@ class _WebSocketMixin:
                 account,
                 _stream_settlement_error_payload(settlement),
                 settlement.error_code or "upstream_error",
+                model=request_state.model,
             )
             upstream_control.reconnect_requested = True
             upstream_control.retire_after_drain = True
         elif settlement.record_success:
-            await proxy._load_balancer.record_success(account)
+            await proxy._load_balancer.record_success(account, model=request_state.model)
             for remembered_response_id in _websocket_continuity_response_ids(request_state, response_id):
                 proxy._remember_websocket_previous_response_owner(
                     previous_response_id=remembered_response_id,
@@ -4930,6 +4939,7 @@ class _WebSocketMixin:
 
         penalty_code: str | None = None
         penalty_message: str | None = None
+        penalty_model: str | None = None
         if penalize_account:
             for request_state in remaining:
                 request_error_code = request_state.error_code_override or error_code
@@ -4938,6 +4948,7 @@ class _WebSocketMixin:
                 ):
                     penalty_code = request_error_code
                     penalty_message = request_state.error_message_override or error_message
+                    penalty_model = request_state.model
                     break
 
         if (
@@ -4948,7 +4959,12 @@ class _WebSocketMixin:
             and penalty_code is not None
         ):
             try:
-                await proxy._handle_stream_error(account, {"message": penalty_message or error_message}, penalty_code)
+                await proxy._handle_stream_error(
+                    account,
+                    {"message": penalty_message or error_message},
+                    penalty_code,
+                    model=penalty_model,
+                )
             except Exception:
                 _facade().logger.warning(
                     "Failed to record websocket pending-request health penalty account_id=%s error_code=%s",

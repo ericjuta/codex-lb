@@ -145,6 +145,12 @@ class AccountState:
     leased_tokens: float = 0.0
     routing_policy: str = ROUTING_POLICY_NORMAL
     ignore_standard_quota: bool = False
+    # Transient health recorded while this account served the requested model.
+    # Selection reads these and never writes them; the owner of the runtime
+    # state expires them.
+    model_error_count: int = 0
+    model_last_error_at: float | None = None
+    model_cooldown_until: float | None = None
 
 
 @dataclass
@@ -365,6 +371,31 @@ def _fallback_secondary_capacity_credits(plan_type: str | None) -> float:
     )
 
 
+def _error_backoff_seconds(error_count: int) -> float:
+    """Backoff applied once ``error_count`` consecutive transient errors reach three."""
+    return float(min(300, 30 * (2 ** (error_count - 3))))
+
+
+def model_error_backoff_active(state: AccountState, current: float) -> bool:
+    return (
+        state.model_error_count >= 3
+        and state.model_last_error_at is not None
+        and current - state.model_last_error_at < _error_backoff_seconds(state.model_error_count)
+    )
+
+
+def _error_backoff_expires_at(state: AccountState) -> float:
+    expires_at = 0.0
+    if state.error_count >= 3:
+        expires_at = (state.last_error_at or 0.0) + _error_backoff_seconds(state.error_count)
+    if state.model_error_count >= 3:
+        expires_at = max(
+            expires_at,
+            (state.model_last_error_at or 0.0) + _error_backoff_seconds(state.model_error_count),
+        )
+    return expires_at
+
+
 def select_account(
     states: Iterable[AccountState],
     now: float | None = None,
@@ -483,8 +514,10 @@ def select_account(
             state.error_count = 0
         if state.cooldown_until and current < state.cooldown_until:
             continue
+        if state.model_cooldown_until and current < state.model_cooldown_until:
+            continue
         if state.error_count >= 3:
-            backoff = min(300, 30 * (2 ** (state.error_count - 3)))
+            backoff = _error_backoff_seconds(state.error_count)
             if state.last_error_at and current - state.last_error_at < backoff:
                 in_error_backoff.append(state)
                 continue
@@ -496,6 +529,9 @@ def select_account(
             # return to maximum backoff on the very next transient error.
             state.error_count = 0
             state.last_error_at = None
+        if model_error_backoff_active(state, current):
+            in_error_backoff.append(state)
+            continue
         available.append(state)
 
     if traffic_class == TRAFFIC_CLASS_OPPORTUNISTIC and available:
@@ -519,12 +555,7 @@ def select_account(
             for state in all_states
         )
         if allow_backoff_fallback and (len(in_error_backoff) > 1 or (in_error_backoff and hard_blocked_exists)):
-
-            def _backoff_expires_at(s: AccountState) -> float:
-                backoff = min(300, 30 * (2 ** (s.error_count - 3)))
-                return (s.last_error_at or 0.0) + backoff
-
-            available.append(min(in_error_backoff, key=_backoff_expires_at))
+            available.append(min(in_error_backoff, key=_error_backoff_expires_at))
             if traffic_class == TRAFFIC_CLASS_OPPORTUNISTIC:
                 opportunistic_available, reason = _filter_opportunistic_candidates(available, current)
                 if not opportunistic_available:
@@ -557,7 +588,12 @@ def select_account(
                 if reset_candidates:
                     wait_seconds = max(0, min(reset_candidates) - int(current))
                     return SelectionResult(None, _format_retry_hint(wait_seconds))
-            cooldowns = [s.cooldown_until for s in all_states if s.cooldown_until and s.cooldown_until > current]
+            cooldowns = [
+                until
+                for s in all_states
+                for until in (s.cooldown_until, s.model_cooldown_until)
+                if until and until > current
+            ]
             if cooldowns:
                 wait_seconds = max(0.0, min(cooldowns) - current)
                 return SelectionResult(None, _format_retry_hint(wait_seconds))

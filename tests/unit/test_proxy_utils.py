@@ -13133,8 +13133,8 @@ async def test_stream_responses_first_idle_timeout_fails_over_to_next_account(mo
     assert event["type"] == "response.completed"
     assert event["response"]["id"] == "resp_ok"
     assert seen_excluded_account_ids == [set(), {account_a.id}]
-    record_error.assert_awaited_once_with(account_a)
-    record_success.assert_awaited_once_with(account_b)
+    record_error.assert_awaited_once_with(account_a, model="gpt-5.1")
+    record_success.assert_awaited_once_with(account_b, model="gpt-5.1")
     assert [call["status"] for call in request_logs.calls] == ["error", "success"]
     assert request_logs.calls[0]["error_code"] == "stream_idle_timeout"
 
@@ -13181,7 +13181,7 @@ async def test_stream_responses_first_idle_timeout_surfaces_timeout_when_no_fail
     assert event["response"]["error"]["code"] == "stream_idle_timeout"
     assert event["response"]["error"]["message"] == "idle"
     assert seen_excluded_account_ids == [set(), {account.id}]
-    record_error.assert_awaited_once_with(account)
+    record_error.assert_awaited_once_with(account, model="gpt-5.1")
     record_success.assert_not_awaited()
     assert request_logs.calls[-1]["error_code"] == "stream_idle_timeout"
 
@@ -13220,7 +13220,7 @@ async def test_stream_responses_empty_upstream_emits_terminal_failure(monkeypatc
     event = json.loads(chunks[0].split("data: ", 1)[1])
     assert event["response"]["error"]["code"] == "stream_incomplete"
     assert request_logs.calls[0]["error_code"] == "stream_incomplete"
-    record_error.assert_awaited_once_with(account)
+    record_error.assert_awaited_once_with(account, model="gpt-5.1")
     record_success.assert_not_awaited()
 
 
@@ -13261,7 +13261,7 @@ async def test_stream_responses_post_yield_upstream_error_emits_terminal_failure
     assert terminal["type"] == "response.failed"
     assert terminal["response"]["error"]["code"] == "stream_incomplete"
     assert request_logs.calls[0]["error_code"] == "stream_incomplete"
-    record_error.assert_awaited_once_with(account)
+    record_error.assert_awaited_once_with(account, model="gpt-5.1")
     record_success.assert_not_awaited()
 
 
@@ -13309,7 +13309,7 @@ async def test_stream_responses_first_event_connection_reset_surfaces_without_re
     assert seen_excluded_account_ids == [set()]
     assert await service.drain_persistence_tasks(timeout_seconds=1)
     assert request_logs.calls[0]["error_code"] == "upstream_unavailable"
-    record_error.assert_awaited_once_with(account_a)
+    record_error.assert_awaited_once_with(account_a, model="gpt-5.1")
     record_success.assert_not_awaited()
 
 
@@ -13434,7 +13434,7 @@ async def test_stream_post_dispatch_network_failure_rotates_generation_for_next_
     assert generations.rotations == [("stream", cast(aiohttp.ClientSession, failed_session))]
     handle_stream_error.assert_not_awaited()
     record_error.assert_not_awaited()
-    record_success.assert_awaited_once_with(account)
+    record_success.assert_awaited_once_with(account, model="gpt-5.1")
     assert await service.drain_persistence_tasks(timeout_seconds=1)
     assert request_logs.calls[0]["error_code"] == "proxy_network_unavailable"
     assert request_logs.calls[1]["status"] == "success"
@@ -13513,7 +13513,7 @@ async def test_stream_websocket_network_drop_rotates_generation_for_next_request
     assert generations.rotations == [("stream", cast(aiohttp.ClientSession, failed_session))]
     handle_stream_error.assert_not_awaited()
     record_error.assert_not_awaited()
-    record_success.assert_awaited_once_with(account)
+    record_success.assert_awaited_once_with(account, model="gpt-5.1")
     assert await service.drain_persistence_tasks(timeout_seconds=1)
     assert request_logs.calls[0]["error_code"] == "proxy_network_unavailable"
     assert request_logs.calls[1]["status"] == "success"
@@ -13630,7 +13630,7 @@ async def test_stream_responses_first_event_raw_eof_with_response_id_surfaces_wi
     assert request_logs.calls[0]["failure_detail"] == "upstream_eof_before_terminal_event"
     assert request_logs.calls[-1]["status"] == "error"
     assert request_logs.calls[-1]["account_id"] == account_a.id
-    record_error.assert_awaited_once_with(account_a)
+    record_error.assert_awaited_once_with(account_a, model="gpt-5.1")
     record_errors.assert_not_awaited()
     record_success.assert_not_awaited()
 
@@ -15563,6 +15563,7 @@ async def test_connect_proxy_websocket_fails_over_on_handshake_forbidden_with_co
     assert cooldown_call is not None
     assert cooldown_call.args[0] == account_a
     assert cooldown_call.args[1] == 12.5
+    assert cooldown_call.kwargs == {"model": "gpt-5.4"}
     record_error.assert_not_awaited()
     websocket_send.assert_not_awaited()
     assert request_logs.calls == []
@@ -15854,7 +15855,7 @@ async def test_connect_proxy_websocket_fails_over_after_repeated_401_refresh_ret
     assert selected_account == account_b
     assert selected_upstream is upstream
     assert select_account.await_args_list[1].kwargs["exclude_account_ids"] == {account_a.id}
-    record_error.assert_awaited_once_with(account_a)
+    record_error.assert_awaited_once_with(account_a, model="gpt-5.1")
     websocket_send.assert_not_awaited()
     assert request_logs.calls == []
 
@@ -15911,7 +15912,7 @@ async def test_create_http_bridge_session_fails_over_after_repeated_401_refresh_
     assert seen_excluded_account_ids == [set(), {account_a.id}]
     assert session.account == account_b
     assert session.upstream is upstream
-    record_error.assert_awaited_once_with(account_a)
+    record_error.assert_awaited_once_with(account_a, model=None)
 
 
 @pytest.mark.asyncio
@@ -15971,7 +15972,7 @@ async def test_create_http_bridge_session_fails_over_after_401_refresh_open_time
     assert seen_excluded_account_ids == [set(), {account_a.id}]
     assert session.account == account_b
     assert session.upstream is upstream
-    record_error.assert_awaited_once_with(account_a)
+    record_error.assert_awaited_once_with(account_a, model="gpt-5.5")
 
 
 @pytest.mark.asyncio
@@ -16169,7 +16170,7 @@ async def test_connect_proxy_websocket_fails_over_after_refresh_transport_error(
 
     assert selected_account == second_account
     assert selected_upstream == upstream
-    record_error.assert_awaited_once_with(first_account)
+    record_error.assert_awaited_once_with(first_account, model="gpt-5.1")
     websocket_send.assert_not_awaited()
     release_reservation.assert_not_awaited()
 
@@ -16230,7 +16231,7 @@ async def test_connect_proxy_websocket_fails_over_after_upstream_connect_timeout
 
     assert selected_account == second_account
     assert selected_upstream == upstream
-    record_error.assert_awaited_once_with(first_account)
+    record_error.assert_awaited_once_with(first_account, model="gpt-5.1")
     websocket_send.assert_not_awaited()
     release_reservation.assert_not_awaited()
 
@@ -16286,7 +16287,7 @@ async def test_connect_proxy_websocket_surfaces_connect_timeout_when_no_failover
 
     assert selected_account is None
     assert selected_upstream is None
-    record_error.assert_awaited_once_with(first_account)
+    record_error.assert_awaited_once_with(first_account, model="gpt-5.1")
     await_args = websocket_send.await_args
     assert await_args is not None
     sent_payload = json.loads(await_args.args[0])
@@ -16636,7 +16637,7 @@ async def test_connect_proxy_websocket_open_timeout_keeps_previous_response_owne
     assert selected_upstream is None
     assert seen_excluded_account_ids == [set(), {account_owner.id}]
     open_upstream.assert_awaited_once()
-    record_error.assert_awaited_once_with(account_owner)
+    record_error.assert_awaited_once_with(account_owner, model="gpt-5.1")
     websocket_send_call = websocket_send.await_args
     assert websocket_send_call is not None
     sent_payload = json.loads(websocket_send_call.args[0])
@@ -16715,7 +16716,7 @@ async def test_mark_websocket_replay_account_failure_records_and_excludes_fresh_
         error_message="Upstream websocket closed before response.completed",
     )
 
-    record_error.assert_awaited_once_with(account)
+    record_error.assert_awaited_once_with(account, model="gpt-5.1")
     assert request_state.replay_excluded_account_ids == {account.id}
 
 
@@ -16742,7 +16743,7 @@ async def test_mark_websocket_replay_account_failure_keeps_previous_response_own
         error_message="Upstream websocket closed before response.completed",
     )
 
-    record_error.assert_awaited_once_with(account)
+    record_error.assert_awaited_once_with(account, model="gpt-5.1")
     assert request_state.replay_excluded_account_ids == set()
 
 
@@ -17505,7 +17506,7 @@ async def test_connect_proxy_websocket_fails_over_after_forced_refresh_transport
 
     assert selected_account == second_account
     assert selected_upstream == upstream
-    record_error.assert_awaited_once_with(first_account)
+    record_error.assert_awaited_once_with(first_account, model="gpt-5.1")
     websocket_send.assert_not_awaited()
     release_reservation.assert_not_awaited()
 
@@ -21615,6 +21616,7 @@ async def test_fail_pending_websocket_requests_penalizes_upstream_stream_drop(mo
         account,
         {"message": "Upstream websocket closed before response.completed"},
         "stream_incomplete",
+        model="gpt-5.5",
     )
     assert list(pending_requests) == []
     assert len(request_logs.calls) == 1
@@ -21875,7 +21877,7 @@ async def test_finalize_websocket_request_state_updates_balancer_state(monkeypat
         response_create_gate=asyncio.Semaphore(1),
     )
 
-    record_success.assert_awaited_once_with(account)
+    record_success.assert_awaited_once_with(account, model="gpt-5.1")
     handle_stream_error.assert_not_awaited()
     assert completed_upstream_control.reconnect_requested is False
     assert request_logs.calls[-1]["request_kind"] == "normal"
@@ -26015,7 +26017,7 @@ async def test_proxy_responses_websocket_transparent_replay_strips_client_turn_s
             return _make_account("acc_ws_sticky_1"), first_upstream
         return _make_account("acc_ws_sticky_2"), second_upstream
 
-    async def fake_handle_stream_error(self, account, error, code):
+    async def fake_handle_stream_error(self, account, error, code, *, model=None):
         del self, account, error
         handled_error_codes.append(code)
 
@@ -26769,8 +26771,10 @@ async def test_stream_unkeyed_owner_rewrite_records_health_before_terminal_deliv
         error: object,
         code: str,
         http_status: int | None = None,
+        *,
+        model: str | None = None,
     ) -> object:
-        del error, http_status
+        del error, http_status, model
         assert failed_account is account
         health_codes.append(code)
         return {"failure_class": "rate_limit"}
@@ -26871,8 +26875,10 @@ async def test_stream_responses_route_keyed_owner_rewrite_settles_before_origina
         error: object,
         code: str,
         http_status: int | None = None,
+        *,
+        model: str | None = None,
     ) -> object:
-        del error, http_status
+        del error, http_status, model
         assert failed_account is account
         order.append(f"health:{code}")
         return {"failure_class": "rate_limit"}
@@ -27061,8 +27067,10 @@ async def test_stream_with_retry_keyed_empty_terminal_queue_settles_before_termi
         error: object,
         code: str,
         http_status: int | None = None,
+        *,
+        model: str | None = None,
     ) -> object:
-        del error, http_status
+        del error, http_status, model
         assert failed_account is account
         order.append(f"health:{code}")
         return {"failure_class": "rate_limit"}
@@ -27110,7 +27118,7 @@ async def test_stream_with_retry_keyed_empty_terminal_queue_settles_before_termi
     monkeypatch.setattr(
         service._load_balancer,
         "record_success",
-        AsyncMock(side_effect=lambda _account: order.append("success")),
+        AsyncMock(side_effect=lambda _account, **_kwargs: order.append("success")),
     )
 
     payload = ResponsesRequest.model_validate({"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True})
@@ -27179,8 +27187,10 @@ async def test_stream_ordered_caller_cancel_completes_settlement_before_cancelle
         error: object,
         code: str,
         http_status: int | None = None,
+        *,
+        model: str | None = None,
     ) -> object:
-        del error, http_status
+        del error, http_status, model
         assert failed_account is account
         order.append(f"health:{code}")
         return {"failure_class": "rate_limit"}
@@ -31987,7 +31997,7 @@ async def test_stream_incomplete_records_success_without_account_error(monkeypat
 
     event = json.loads(chunks[0].split("data: ", 1)[1])
     assert event["type"] == "response.incomplete"
-    record_success.assert_awaited_once_with(account)
+    record_success.assert_awaited_once_with(account, model="gpt-5.1")
     record_error.assert_not_awaited()
     assert request_logs.calls[0]["status"] == "error"
     assert request_logs.calls[0]["error_code"] is None
@@ -32855,7 +32865,7 @@ async def test_compact_unsafe_network_failure_rotates_generation_for_next_reques
     assert generations.rotations == [("compact", cast(aiohttp.ClientSession, failed_session))]
     handle_stream_error.assert_not_awaited()
     record_error.assert_not_awaited()
-    record_success.assert_awaited_once_with(account)
+    record_success.assert_awaited_once_with(account, model="gpt-5.1")
     assert await service.drain_persistence_tasks(timeout_seconds=1)
     assert request_logs.calls[0]["error_code"] == "proxy_network_unavailable"
     assert request_logs.calls[1]["status"] == "success"
@@ -33330,8 +33340,8 @@ async def test_compact_responses_refresh_connection_reset_fails_over(monkeypatch
 
     assert response.model_extra == {"output": []}
     assert seen_excluded_account_ids == [set(), {account_a.id}]
-    record_error.assert_awaited_once_with(account_a)
-    record_success.assert_awaited_once_with(account_b)
+    record_error.assert_awaited_once_with(account_a, model="gpt-5.1")
+    record_success.assert_awaited_once_with(account_b, model="gpt-5.1")
     assert request_logs.calls[0]["status"] == "success"
     assert request_logs.calls[0]["account_id"] == account_b.id
 
@@ -33390,8 +33400,8 @@ async def test_compact_responses_forced_refresh_connection_reset_fails_over(monk
     assert response.model_extra == {"output": []}
     assert seen_excluded_account_ids == [set(), {account_a.id}]
     assert compact_account_ids == [account_a.chatgpt_account_id, account_b.chatgpt_account_id]
-    record_error.assert_awaited_once_with(account_a)
-    record_success.assert_awaited_once_with(account_b)
+    record_error.assert_awaited_once_with(account_a, model="gpt-5.1")
+    record_success.assert_awaited_once_with(account_b, model="gpt-5.1")
     assert request_logs.calls[0]["status"] == "success"
     assert request_logs.calls[0]["account_id"] == account_b.id
 
@@ -33559,7 +33569,7 @@ async def test_compact_responses_records_transient_error_for_generic_upstream_fa
     exc = _assert_proxy_response_error(exc_info.value)
     assert exc.status_code == 502
     assert _proxy_error_code(exc) == "upstream_unavailable"
-    record_error.assert_awaited_once_with(account)
+    record_error.assert_awaited_once_with(account, model="gpt-5.1")
     record_success.assert_not_awaited()
 
 
@@ -34803,7 +34813,7 @@ async def test_transcribe_records_transient_error_for_generic_upstream_failure(m
     exc = _assert_proxy_response_error(exc_info.value)
     assert exc.status_code == 502
     assert _proxy_error_code(exc) == "upstream_unavailable"
-    record_error.assert_awaited_once_with(account)
+    record_error.assert_awaited_once_with(account, model=None)
     record_success.assert_not_awaited()
 
 
@@ -36165,7 +36175,7 @@ async def test_reconnect_http_bridge_session_fails_over_after_repeated_401_refre
     assert seen_excluded_account_ids == [set(), {account_a.id}]
     assert session.account == account_b
     assert session.upstream is new_upstream
-    record_error.assert_awaited_once_with(account_a)
+    record_error.assert_awaited_once_with(account_a, model=None)
 
 
 @pytest.mark.asyncio
@@ -36240,7 +36250,10 @@ async def test_reconnect_http_bridge_session_fails_over_after_401_refresh_open_t
     assert seen_excluded_account_ids == [set(), set(), {account_a.id}]
     assert session.account == account_b
     assert session.upstream is new_upstream
-    assert record_error.await_args_list == [((account_a,),), ((account_a,),)]
+    assert record_error.await_args_list == [
+        ((account_a,), {"model": "gpt-5.5"}),
+        ((account_a,), {"model": "gpt-5.5"}),
+    ]
 
 
 @pytest.mark.asyncio
@@ -36386,7 +36399,7 @@ async def test_thread_goal_refresh_connection_reset_fails_over(monkeypatch):
 
     assert response == {"goal": {"id": "goal-ok"}}
     assert seen_excluded_account_ids == [set(), {account_a.id}]
-    record_error.assert_awaited_once_with(account_a)
+    record_error.assert_awaited_once_with(account_a, model=None)
     record_success.assert_awaited_once_with(account_b)
     assert request_logs.calls[0]["status"] == "success"
     assert request_logs.calls[0]["account_id"] == account_b.id
@@ -36442,7 +36455,7 @@ async def test_thread_goal_refresh_transport_error_fails_over(monkeypatch):
 
     assert response == {"goal": {"id": "goal-ok"}}
     assert seen_excluded_account_ids == [set(), {account_a.id}]
-    record_error.assert_awaited_once_with(account_a)
+    record_error.assert_awaited_once_with(account_a, model=None)
     record_success.assert_awaited_once_with(account_b)
     assert request_logs.calls[0]["status"] == "success"
     assert request_logs.calls[0]["account_id"] == account_b.id
@@ -36492,7 +36505,7 @@ async def test_thread_goal_upstream_connection_reset_fails_over_after_freshness(
     assert response == {"goal": {"id": "goal-ok-after-call-failover"}}
     assert upstream_accounts == [account_a.chatgpt_account_id, account_b.chatgpt_account_id]
     assert seen_excluded_account_ids == [set(), {account_a.id}]
-    record_error.assert_awaited_once_with(account_a)
+    record_error.assert_awaited_once_with(account_a, model=None)
     record_success.assert_awaited_once_with(account_b)
     assert request_logs.calls[0]["status"] == "success"
     assert request_logs.calls[0]["account_id"] == account_b.id
@@ -36559,7 +36572,7 @@ async def test_thread_goal_failover_401_force_refreshes_fallback_account(monkeyp
     assert upstream_tokens == ["access-token", "access-token", "access-refreshed-b"]
     assert refresh_forces == [(account_a.id, False), (account_b.id, False), (account_b.id, True)]
     assert seen_excluded_account_ids == [set(), {account_a.id}]
-    record_error.assert_awaited_once_with(account_a)
+    record_error.assert_awaited_once_with(account_a, model=None)
     record_success.assert_awaited_once_with(refreshed_b)
     assert request_logs.calls[0]["status"] == "success"
     assert request_logs.calls[0]["account_id"] == refreshed_b.id
@@ -36901,7 +36914,7 @@ async def test_thread_goal_upstream_connection_reset_without_failover_records_on
         await service.thread_goal_request("get", {}, {"session_id": "sid-thread-goal"})
 
     assert selection_calls == [set(), {account.id}]
-    record_error.assert_awaited_once_with(account)
+    record_error.assert_awaited_once_with(account, model=None)
 
 
 @pytest.mark.asyncio
@@ -36951,7 +36964,7 @@ async def test_codex_control_refresh_connection_reset_fails_over(monkeypatch):
 
     assert response.body == b"ok"
     assert seen_excluded_account_ids == [set(), {account_a.id}]
-    record_error.assert_awaited_once_with(account_a)
+    record_error.assert_awaited_once_with(account_a, model=None)
     record_success.assert_awaited_once_with(account_b)
     assert request_logs.calls[0]["status"] == "success"
     assert request_logs.calls[0]["account_id"] == account_b.id
@@ -37062,7 +37075,7 @@ async def test_transcribe_refresh_connection_reset_fails_over(monkeypatch):
 
     assert response == {"text": "ok"}
     assert seen_excluded_account_ids == [set(), {account_a.id}]
-    record_error.assert_awaited_once_with(account_a)
+    record_error.assert_awaited_once_with(account_a, model=None)
     record_success.assert_awaited_once_with(account_b)
     assert request_logs.calls[0]["status"] == "success"
     assert request_logs.calls[0]["account_id"] == account_b.id
@@ -37105,7 +37118,7 @@ async def test_files_create_refresh_connection_reset_fails_over(monkeypatch):
 
     assert response == {"file_id": "file_ok"}
     assert seen_excluded_account_ids == [set(), {account_a.id}]
-    record_error.assert_awaited_once_with(account_a)
+    record_error.assert_awaited_once_with(account_a, model=None)
     record_success.assert_awaited_once_with(account_b)
     assert request_logs.calls[0]["status"] == "success"
     assert request_logs.calls[0]["account_id"] == account_b.id
@@ -37193,7 +37206,7 @@ async def test_files_finalize_pinned_refresh_connection_reset_fails_closed(monke
     assert exc.status_code == 502
     assert _proxy_error_code(exc) == "upstream_unavailable"
     assert seen_excluded_account_ids == [set()]
-    record_error.assert_awaited_once_with(account)
+    record_error.assert_awaited_once_with(account, model=None)
     record_success.assert_not_awaited()
     assert request_logs.calls[0]["status"] == "error"
     assert request_logs.calls[0]["account_id"] == account.id

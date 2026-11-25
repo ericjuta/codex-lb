@@ -822,7 +822,16 @@ async def _handle_stream_error(
     phase: str = "first_event",
     *,
     privacy_policy: CodexControlRequestPrivacyPolicy = CodexControlRequestPrivacyPolicy.STANDARD,
+    model: str | None = None,
 ) -> ClassifiedFailure:
+    """Write the account-health consequence of an upstream failure.
+
+    ``model`` is the model the account was serving. Rate limits, quota and
+    permanent failures describe the account and stay account-wide. Transient
+    errors and the connect-phase 403 cooldown are scoped to ``model`` when it is
+    known, so a model upstream is throttling does not bench the account for the
+    others; without a model they stay account-wide.
+    """
     classified = _facade().classify_upstream_failure(
         error_code=code,
         error=error,
@@ -840,24 +849,26 @@ async def _handle_stream_error(
         await proxy._load_balancer.mark_permanent_failure(account, code)
     elif phase == "connect" and http_status == 403:
         cooldown_seconds = max(0.0, float(_facade().get_settings().proxy_connect_forbidden_cooldown_seconds))
-        await proxy._load_balancer.mark_temporary_cooldown(account, cooldown_seconds)
+        await proxy._load_balancer.mark_temporary_cooldown(account, cooldown_seconds, model=model)
         _facade().logger.info(
             "Applied connect-phase forbidden cooldown account_id=%s request_id=%s code=%s "
-            "status=%s cooldown_seconds=%.1f",
+            "status=%s cooldown_seconds=%.1f model=%s",
             "<redacted>" if privacy_policy.redacts_sensitive_details else account.id,
             get_request_id(),
             code,
             http_status,
             cooldown_seconds,
+            model,
         )
     else:
-        await proxy._load_balancer.record_error(account)
+        await proxy._load_balancer.record_error(account, model=model)
         _record_transient_error_metric(code)
         _facade().logger.info(
-            "Recorded transient account error account_id=%s request_id=%s code=%s",
+            "Recorded transient account error account_id=%s request_id=%s code=%s model=%s",
             "<redacted>" if privacy_policy.redacts_sensitive_details else account.id,
             get_request_id(),
             code,
+            model,
         )
     return classified
 

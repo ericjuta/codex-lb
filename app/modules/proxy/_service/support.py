@@ -277,6 +277,7 @@ class _RefreshFailoverProxy(Protocol):
         http_status: int | None = None,
         *,
         privacy_policy: CodexControlRequestPrivacyPolicy = CodexControlRequestPrivacyPolicy.STANDARD,
+        model: str | None = None,
     ) -> Any: ...
 
 

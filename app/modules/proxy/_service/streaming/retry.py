@@ -422,9 +422,12 @@ class _StreamingRetryMixin:
                         transient_error_payload,
                         transient_error_code,
                         http_status=transient_http_status,
+                        model=payload.model,
                     )
                     if transient_retry_count > 1:
-                        await proxy._load_balancer.record_errors(failed_account, transient_retry_count - 1)
+                        await proxy._load_balancer.record_errors(
+                            failed_account, transient_retry_count - 1, model=payload.model
+                        )
             return settled_result
 
         async def _settle_stream_usage_before_pending_penalty(
@@ -490,9 +493,10 @@ class _StreamingRetryMixin:
                         account,
                         _stream_settlement_error_payload(current_settlement),
                         current_settlement.error_code or "upstream_error",
+                        model=payload.model,
                     )
                 elif current_settlement.record_success:
-                    await proxy._load_balancer.record_success(account)
+                    await proxy._load_balancer.record_success(account, model=payload.model)
 
             finalize_task = asyncio.create_task(_finalize(), name=f"stream-terminal-settlement-{request_id}")
             _, cancellation = await _await_task_deferring_cancellation(finalize_task)
@@ -1509,9 +1513,7 @@ class _StreamingRetryMixin:
                             )
                         ):
                             await proxy._handle_stream_error(
-                                account,
-                                {"message": message},
-                                "upstream_unavailable",
+                                account, {"message": message}, "upstream_unavailable", model=payload.model
                             )
                             await _release_tracked_stream_lease(current_account_lease)
                             current_account_lease = None
@@ -1529,9 +1531,7 @@ class _StreamingRetryMixin:
                             and attempt + 1 < max_attempts
                         ):
                             await proxy._handle_stream_error(
-                                account,
-                                {"message": message},
-                                "upstream_unavailable",
+                                account, {"message": message}, "upstream_unavailable", model=payload.model
                             )
                             last_retryable_stream_error = _RetryableStreamError(
                                 "upstream_unavailable",
@@ -1733,6 +1733,7 @@ class _StreamingRetryMixin:
                                         account,
                                         _stream_settlement_error_payload(settlement),
                                         settlement.error_code or "upstream_error",
+                                        model=payload.model,
                                     )
                                 return
                             if isinstance(tex, ProxyResponseError) and tex.status_code != 500:
@@ -1863,6 +1864,7 @@ class _StreamingRetryMixin:
                                         previsible_upstream_error,
                                         code,
                                         http_status=tex.status_code,
+                                        model=payload.model,
                                     )
                                 if getattr(base_settings, "deterministic_failover_enabled", True):
                                     action = failover_decision(
@@ -1954,10 +1956,12 @@ class _StreamingRetryMixin:
                                     phase="first_event",
                                 )
                             )
-                            await proxy._handle_stream_error(account, error_payload, error_code)
+                            await proxy._handle_stream_error(account, error_payload, error_code, model=payload.model)
                             # Record remaining errors so total equals transient_retries,
                             # meeting the load balancer backoff threshold (error_count >= 3).
-                            await proxy._load_balancer.record_errors(account, transient_retries - 1)
+                            await proxy._load_balancer.record_errors(
+                                account, transient_retries - 1, model=payload.model
+                            )
                             # Preserve last ProxyResponseError for propagate_http_errors path.
                             if isinstance(tex, ProxyResponseError):
                                 last_transient_exc = tex
@@ -1991,9 +1995,10 @@ class _StreamingRetryMixin:
                                     account,
                                     _stream_settlement_error_payload(settlement),
                                     settlement.error_code or "upstream_error",
+                                    model=payload.model,
                                 )
                             elif settled and settlement.record_success:
-                                await proxy._load_balancer.record_success(account)
+                                await proxy._load_balancer.record_success(account, model=payload.model)
                         network_recovery.log_recovered()
                         upstream_transport_metric_status = settlement.status
                         _record_upstream_transport_metric_once(settlement.status)
@@ -2034,7 +2039,7 @@ class _StreamingRetryMixin:
                         require_security_work_authorized = True
                         last_security_work_retry_error = exc
                         continue
-                    await proxy._handle_stream_error(account, exc.error, exc.code)
+                    await proxy._handle_stream_error(account, exc.error, exc.code, model=payload.model)
                     last_retryable_stream_error = exc
                     if exc.exclude_account:
                         await _release_tracked_stream_lease(current_account_lease)
@@ -2059,6 +2064,7 @@ class _StreamingRetryMixin:
                                 account,
                                 _stream_settlement_error_payload(settlement),
                                 settlement.error_code or "upstream_error",
+                                model=payload.model,
                             )
                     return
                 except ProxyResponseError as exc:
@@ -2133,9 +2139,7 @@ class _StreamingRetryMixin:
                                 and attempt + 1 < max_attempts
                             ):
                                 await proxy._handle_stream_error(
-                                    account,
-                                    {"message": message},
-                                    "upstream_unavailable",
+                                    account, {"message": message}, "upstream_unavailable", model=payload.model
                                 )
                                 last_retryable_stream_error = _RetryableStreamError(
                                     "upstream_unavailable",
@@ -2255,6 +2259,7 @@ class _StreamingRetryMixin:
                                         _stream_settlement_error_payload(settlement),
                                         settlement.error_code or "upstream_error",
                                         http_status=retry_exc.status_code,
+                                        model=payload.model,
                                     )
                                 return
                             error = _parse_openai_error(retry_exc.payload)
@@ -2352,6 +2357,7 @@ class _StreamingRetryMixin:
                                     current_error_payload,
                                     current_error_code,
                                     http_status=retry_exc.status_code,
+                                    model=payload.model,
                                 )
                                 last_transient_exc = retry_exc
                                 await _release_tracked_stream_lease(current_account_lease)
@@ -2369,6 +2375,7 @@ class _StreamingRetryMixin:
                                     current_error_payload,
                                     current_error_code,
                                     http_status=retry_exc.status_code,
+                                    model=payload.model,
                                 )
                             if propagate_http_errors:
                                 raise
@@ -2399,9 +2406,10 @@ class _StreamingRetryMixin:
                                     account,
                                     _stream_settlement_error_payload(settlement),
                                     settlement.error_code or "upstream_error",
+                                    model=payload.model,
                                 )
                             elif health_write_allowed and settlement.record_success:
-                                await proxy._load_balancer.record_success(account)
+                                await proxy._load_balancer.record_success(account, model=payload.model)
                         else:
                             await _finalize_terminal_settlement_after_downstream_close(
                                 settlement,
@@ -2445,9 +2453,7 @@ class _StreamingRetryMixin:
                     health_write_allowed = await _drain_pending_post_refresh_penalty_on_terminal(settlement)
                     if health_write_allowed and _facade()._should_penalize_stream_error(error_code, error_message):
                         await proxy._handle_stream_error(
-                            account,
-                            _upstream_error_from_openai(error),
-                            error_code,
+                            account, _upstream_error_from_openai(error), error_code, model=payload.model
                         )
                     if propagate_http_errors:
                         raise

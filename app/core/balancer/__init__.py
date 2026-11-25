@@ -27,6 +27,7 @@ from app.core.balancer.logic import (
     handle_permanent_failure,
     handle_quota_exceeded,
     handle_rate_limit,
+    model_error_backoff_active,
     plausible_rate_limit_reset_at,
     select_account,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "handle_permanent_failure",
     "handle_quota_exceeded",
     "handle_rate_limit",
+    "model_error_backoff_active",
     "plausible_rate_limit_reset_at",
     "select_account",
 ]

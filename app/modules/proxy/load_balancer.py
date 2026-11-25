@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Iterable, Literal
 from uuid import uuid4
@@ -32,6 +32,7 @@ from app.core.balancer import (
     handle_permanent_failure,
     handle_quota_exceeded,
     handle_rate_limit,
+    model_error_backoff_active,
     plausible_rate_limit_reset_at,
     select_account,
 )
@@ -118,6 +119,19 @@ def _health_tier_metric_label(tier: int) -> str:
     return str(tier)
 
 
+# Model keys come from client requests, so one account's map is bounded.
+_MAX_MODEL_HEALTH_ENTRIES = 64
+
+
+@dataclass
+class ModelHealth:
+    """Transient health one account earned while serving one model."""
+
+    error_count: int = 0
+    last_error_at: float | None = None
+    cooldown_until: float | None = None
+
+
 @dataclass
 class RuntimeState:
     reset_at: float | None = None
@@ -134,6 +148,7 @@ class RuntimeState:
     inflight_streams: int = 0
     leased_tokens: float = 0.0
     leases: dict[str, "AccountLease"] | None = None
+    model_health: dict[str, ModelHealth] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -479,6 +494,7 @@ class LoadBalancer:
                         runtime=self._runtime,
                         routing_policy_override=selection_inputs.routing_policy_override,
                         ignore_standard_quota_account_ids=selection_inputs.ignore_standard_quota_account_ids,
+                        model=model,
                     )
                     effective_routing_costs = (
                         routing_costs_by_account_id
@@ -665,6 +681,7 @@ class LoadBalancer:
                         runtime=self._runtime,
                         routing_policy_override=selection_inputs.routing_policy_override,
                         ignore_standard_quota_account_ids=selection_inputs.ignore_standard_quota_account_ids,
+                        model=model,
                     )
                     effective_routing_costs = (
                         routing_costs_by_account_id
@@ -1094,6 +1111,7 @@ class LoadBalancer:
                 runtime=self._runtime,
                 routing_policy_override=selection_inputs.routing_policy_override,
                 ignore_standard_quota_account_ids=selection_inputs.ignore_standard_quota_account_ids,
+                model=model,
             )
             selection_states = _filter_states_for_account_caps(states, lease_kind=lease_kind)
             if not selection_states and states:
@@ -1673,15 +1691,26 @@ class LoadBalancer:
             mark_account_routing_unavailable(account.id)
             self._selection_inputs_cache.invalidate()
 
-    async def record_error(self, account: Account) -> None:
-        await self.record_errors(account, 1)
+    async def record_error(self, account: Account, *, model: str | None = None) -> None:
+        await self.record_errors(account, 1, model=model)
 
-    async def record_errors(self, account: Account, count: int) -> None:
-        """Record *count* transient errors in a single lock acquisition."""
+    async def record_errors(self, account: Account, count: int, *, model: str | None = None) -> None:
+        """Record *count* transient errors in a single lock acquisition.
+
+        With ``model`` the errors count only against that model on this account,
+        so a model upstream is throttling cannot bench the account for the
+        others. Without it they count against the whole account.
+        """
         if count < 1:
             return
         lock = await self._get_account_lock(account.id)
         async with lock:
+            model_key = _model_health_key(model)
+            if model_key is not None:
+                health = _model_health_for_write(self._runtime.setdefault(account.id, RuntimeState()), model_key)
+                health.error_count += count
+                health.last_error_at = time.time()
+                return
             account_snapshot = _clone_account(account)
             state = self._state_for(account)
             state.error_count += count
@@ -1699,12 +1728,21 @@ class LoadBalancer:
         cooldown_seconds: float,
         *,
         error_count: int = 1,
+        model: str | None = None,
     ) -> None:
         increment = max(error_count, 1)
         lock = await self._get_account_lock(account.id)
         async with lock:
-            state = self._state_for(account)
             now = time.time()
+            model_key = _model_health_key(model)
+            if model_key is not None:
+                health = _model_health_for_write(self._runtime.setdefault(account.id, RuntimeState()), model_key)
+                if cooldown_seconds > 0:
+                    health.cooldown_until = max(health.cooldown_until or 0.0, now + cooldown_seconds)
+                health.last_error_at = now
+                health.error_count += increment
+                return
+            state = self._state_for(account)
             if cooldown_seconds > 0:
                 candidate_until = now + cooldown_seconds
                 current_until = state.cooldown_until or 0.0
@@ -1716,11 +1754,18 @@ class LoadBalancer:
             if runtime and runtime.health_tier == HEALTH_TIER_PROBING:
                 runtime.probe_success_streak = 0
 
-    async def record_success(self, account: Account) -> None:
-        """Clear transient error state after a successful upstream request."""
+    async def record_success(self, account: Account, *, model: str | None = None) -> None:
+        """Clear transient error state after a successful upstream request.
+
+        A success always clears the account-wide count. It clears a model's own
+        count only when that model is the one that succeeded.
+        """
         lock = await self._get_account_lock(account.id)
         async with lock:
             runtime = self._runtime.get(account.id)
+            model_key = _model_health_key(model)
+            if runtime and model_key is not None:
+                runtime.model_health.pop(model_key, None)
             if runtime and runtime.error_count > 0:
                 runtime.error_count = 0
                 runtime.last_error_at = None
@@ -1900,9 +1945,12 @@ def _build_states(
     runtime: dict[str, RuntimeState],
     routing_policy_override: str | None = None,
     ignore_standard_quota_account_ids: frozenset[str] = frozenset(),
+    model: str | None = None,
 ) -> tuple[list[AccountState], dict[str, Account]]:
     states: list[AccountState] = []
     account_map: dict[str, Account] = {}
+    now = time.time()
+    model_key = _model_health_key(model)
 
     for account in accounts:
         secondary_entry: UsageHistory | AdditionalUsageHistory | None = latest_secondary.get(account.id)
@@ -1921,9 +1969,68 @@ def _build_states(
         if routing_policy_override is not None and account.id in ignore_standard_quota_account_ids:
             state.routing_policy = routing_policy_override
         state.ignore_standard_quota = account.id in ignore_standard_quota_account_ids
+        if model_key is not None:
+            _apply_model_health(state, runtime[account.id], model_key, now)
         states.append(state)
         account_map[account.id] = account
     return states, account_map
+
+
+def _model_health_key(model: str | None) -> str | None:
+    """The scope a health write or read uses; ``None`` means account-wide.
+
+    Bridge sessions already compare model slugs case-insensitively. A blank
+    model names nothing, so it is account-wide too.
+    """
+    if model is None:
+        return None
+    return model.strip().lower() or None
+
+
+def _model_health_for_write(runtime: RuntimeState, key: str) -> ModelHealth:
+    health = runtime.model_health.get(key)
+    if health is None:
+        if len(runtime.model_health) >= _MAX_MODEL_HEALTH_ENTRIES:
+            oldest = min(runtime.model_health, key=lambda item: runtime.model_health[item].last_error_at or 0.0)
+            del runtime.model_health[oldest]
+        health = runtime.model_health[key] = ModelHealth()
+    return health
+
+
+def _apply_model_health(state: AccountState, runtime: RuntimeState, key: str, now: float) -> None:
+    """Copy the requested model's transient health onto ``state``.
+
+    Expiry mirrors the account-wide rules in ``select_account``: an elapsed
+    cooldown or an elapsed error backoff drops the entry, so the model returns
+    with a clean count. Counts below the backoff threshold stay until that
+    model succeeds on this account.
+    """
+    health = runtime.model_health.get(key)
+    if health is None:
+        return
+    state.model_error_count = health.error_count
+    state.model_last_error_at = health.last_error_at
+    state.model_cooldown_until = health.cooldown_until
+    if health.cooldown_until is not None:
+        expired = now >= health.cooldown_until
+    else:
+        expired = health.error_count >= 3 and not model_error_backoff_active(state, now)
+    if expired:
+        del runtime.model_health[key]
+        state.model_error_count = 0
+        state.model_last_error_at = None
+        state.model_cooldown_until = None
+        return
+    settings = get_settings()
+    if (
+        state.health_tier == HEALTH_TIER_HEALTHY
+        and getattr(settings, "soft_drain_enabled", True)
+        and health.error_count >= getattr(settings, "drain_error_count_threshold", 2)
+        and health.last_error_at is not None
+        and now - health.last_error_at < getattr(settings, "drain_error_window_seconds", 60.0)
+    ):
+        # Deprioritize the account for this model only; the stored tier stays account-wide.
+        state.health_tier = HEALTH_TIER_DRAINING
 
 
 def _account_lease_stale_ttl_seconds(kind: AccountLeaseKind, settings: object) -> float:

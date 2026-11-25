@@ -30,7 +30,7 @@ class _DummyWebSocketService(_WebSocketMixin):
         self._encryptor = TokenEncryptor()
 
         class _LoadBalancer:
-            async def record_success(self, _account: object) -> None:
+            async def record_success(self, _account: object, *, model: str | None = None) -> None:
                 return None
 
         class _ConnectLease:

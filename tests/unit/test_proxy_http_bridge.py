@@ -15817,7 +15817,7 @@ async def test_create_http_bridge_session_fails_over_on_upstream_websocket_open_
     assert session.account is account_b
     assert session.upstream is upstream
     assert seen_excluded_account_ids == [set(), {account_a.id}]
-    record_error.assert_awaited_once_with(account_a)
+    record_error.assert_awaited_once_with(account_a, model="gpt-5.4")
     assert classified_errors == [("upstream_websocket_open_timeout", 502, "connect")]
 
 
@@ -15923,8 +15923,8 @@ async def test_reconnect_http_bridge_session_fails_over_on_upstream_websocket_op
     assert session.upstream is new_upstream
     assert seen_excluded_account_ids == [set(), set(), {account_a.id}]
     assert record_error.await_args_list == [
-        ((account_a,),),
-        ((account_a,),),
+        ((account_a,), {"model": "gpt-5.4"}),
+        ((account_a,), {"model": "gpt-5.4"}),
     ]
     assert classified_errors == [
         ("upstream_websocket_open_timeout", 502, "connect"),

@@ -1192,6 +1192,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                 session.account,
                 {"message": retry_error_message or "Upstream error"},
                 retry_error_code,
+                model=session.request_model,
             )
             setattr(status_request_state, "account_health_error_handled", True)
             retry_consumer_attached = (
@@ -1258,6 +1259,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                 session.account,
                 {"message": retry_error_message or "Upstream error"},
                 owner_pinned_quota_error,
+                model=session.request_model,
             )
             if status_request_state is not None:
                 setattr(status_request_state, "account_health_error_handled", True)
@@ -1384,6 +1386,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                 session.account,
                 {"message": retry_error_message or "Upstream error"},
                 retry_error_code,
+                model=session.request_model,
             )
             if status_request_state is not None:
                 setattr(status_request_state, "account_health_error_handled", True)

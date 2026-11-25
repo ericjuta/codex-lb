@@ -1262,9 +1262,9 @@ def _count_record_errors(monkeypatch) -> list[str]:
     recorded: list[str] = []
     original_record_errors = LoadBalancer.record_errors
 
-    async def record_errors(self, account, count):
+    async def record_errors(self, account, count, *, model=None):
         recorded.extend([account.id] * count)
-        return await original_record_errors(self, account, count)
+        return await original_record_errors(self, account, count, model=model)
 
     monkeypatch.setattr(LoadBalancer, "record_errors", record_errors)
     return recorded
@@ -1733,3 +1733,42 @@ async def test_compact_model_not_found_surfaces_without_account_health_penalty(a
     assert response.json()["error"]["code"] == "model_not_found"
     assert recorded_errors == []
     assert await _account_status(accounts["acc_compact_model_missing"]) == (AccountStatus.ACTIVE, None)
+
+
+# ===========================================================================
+# Transient health is scoped to the model the account was serving
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_stream_handshake_403_backoff_for_one_model_leaves_another_model_served(async_client, monkeypatch):
+    """Upstream refusing the websocket handshake for one model must not take the account away from another."""
+    await _import_account(async_client, "acc_model_scope", "model_scope@example.com")
+    upstream_models: list[str] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        upstream_models.append(payload.model)
+        if payload.model == "gpt-5.1":
+            # The shape an empty-body handshake 403 has when it leaves the upstream client.
+            raise ProxyResponseError(403, openai_error("upstream_error", "Invalid response status"))
+        yield _success_sse_event("resp_other_model")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+    throttled = {"model": "gpt-5.1", "instructions": "hi", "input": [], "stream": True}
+    other = {**throttled, "model": "gpt-5.2"}
+
+    for _ in range(3):
+        refused = await async_client.post("/backend-api/codex/responses", json=throttled)
+        assert refused.status_code == 403
+    assert upstream_models == ["gpt-5.1"] * 3
+
+    backed_off = await async_client.post("/backend-api/codex/responses", json=throttled)
+    failed = [e for e in _extract_events(backed_off.text.splitlines()) if e.get("type") == "response.failed"]
+    assert [e["response"]["error"]["code"] for e in failed] == ["no_accounts"]
+    assert upstream_models == ["gpt-5.1"] * 3
+
+    served = await async_client.post("/backend-api/codex/responses", json=other)
+    assert served.status_code == 200
+    events = _extract_events(served.text.splitlines())
+    assert [e["response"]["id"] for e in events if e.get("type") == "response.completed"] == ["resp_other_model"]
+    assert upstream_models == ["gpt-5.1"] * 3 + ["gpt-5.2"]

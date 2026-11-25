@@ -1898,7 +1898,7 @@ class _HTTPBridgeMixin(
                 break
             except ProxyResponseError as exc:
                 if _is_retryable_websocket_open_timeout(exc) and _remaining_budget_seconds(deadline) > 0:
-                    await self._handle_websocket_connect_error(account, exc)
+                    await self._handle_websocket_connect_error(account, exc, model=request_state.model)
                     if selected_is_preferred and retry_same_account_once:
                         retry_same_account_once = False
                         continue
@@ -1931,7 +1931,7 @@ class _HTTPBridgeMixin(
                     break
                 except ProxyResponseError as retry_exc:
                     if _is_retryable_websocket_open_timeout(retry_exc) and _remaining_budget_seconds(deadline) > 0:
-                        await self._handle_websocket_connect_error(account, retry_exc)
+                        await self._handle_websocket_connect_error(account, retry_exc, model=request_state.model)
                         if selected_is_preferred and retry_same_account_once:
                             retry_same_account_once = False
                             continue
@@ -2291,7 +2291,7 @@ class _HTTPBridgeMixin(
                 break
             except ProxyResponseError as exc:
                 if _is_retryable_websocket_open_timeout(exc) and _remaining_budget_seconds(deadline) > 0:
-                    await self._handle_websocket_connect_error(account, exc)
+                    await self._handle_websocket_connect_error(account, exc, model=request_state.model)
                     if selected_is_preferred and retry_same_account_once:
                         retry_same_account_once = False
                         continue
@@ -2321,7 +2321,7 @@ class _HTTPBridgeMixin(
                     break
                 except ProxyResponseError as retry_exc:
                     if _is_retryable_websocket_open_timeout(retry_exc) and _remaining_budget_seconds(deadline) > 0:
-                        await self._handle_websocket_connect_error(account, retry_exc)
+                        await self._handle_websocket_connect_error(account, retry_exc, model=request_state.model)
                         if selected_is_preferred and retry_same_account_once:
                             retry_same_account_once = False
                             continue

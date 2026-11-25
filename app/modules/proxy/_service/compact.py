@@ -122,6 +122,8 @@ class _CompactServiceProtocol(Protocol):
         error: Any,
         code: str,
         http_status: int | None = None,
+        *,
+        model: str | None = None,
     ) -> Any: ...
 
     async def _handle_proxy_error(self, account: Account, exc: ProxyResponseError) -> None: ...
@@ -1084,9 +1086,7 @@ class _CompactMixin:
                     if preferred_account_id is not None:
                         _raise_proxy_unavailable(message)
                     await proxy._handle_stream_error(
-                        account,
-                        {"message": message},
-                        "upstream_unavailable",
+                        account, {"message": message}, "upstream_unavailable", model=payload.model
                     )
                     last_exc = ProxyResponseError(502, openai_error("upstream_unavailable", message))
                     excluded_account_ids.add(account.id)
@@ -1125,7 +1125,7 @@ class _CompactMixin:
                         response = await _call_compact(account, account_response_create_lease)
                         network_recovery.log_recovered()
                         actual_service_tier = _service_tier_from_response(response)
-                        await proxy._load_balancer.record_success(account)
+                        await proxy._load_balancer.record_success(account, model=payload.model)
                         await settle_compact_usage(
                             api_key=api_key,
                             api_key_reservation=api_key_reservation,
@@ -1268,9 +1268,7 @@ class _CompactMixin:
                                     )
                                     _raise_proxy_unavailable(message)
                                 await proxy._handle_stream_error(
-                                    account,
-                                    {"message": message},
-                                    "upstream_unavailable",
+                                    account, {"message": message}, "upstream_unavailable", model=payload.model
                                 )
                                 last_exc = ProxyResponseError(502, openai_error("upstream_unavailable", message))
                                 excluded_account_ids.add(account.id)
@@ -1319,7 +1317,9 @@ class _CompactMixin:
                             await proxy._handle_proxy_error(account, exc)
                             # Record remaining errors so total equals transient_retries,
                             # meeting the load balancer backoff threshold (error_count >= 3).
-                            await proxy._load_balancer.record_errors(account, transient_retries - 1)
+                            await proxy._load_balancer.record_errors(
+                                account, transient_retries - 1, model=payload.model
+                            )
                             last_exc = exc
                             # The health writes above are separate from exclusion: model
                             # capacity describes the requested model, so the account stays
@@ -1398,6 +1398,7 @@ class _CompactMixin:
                                 _upstream_error_from_openai(error),
                                 code,
                                 http_status=exc.status_code,
+                                model=payload.model,
                             )
                             if affinity.key is not None and affinity.kind is not None:
                                 try:
@@ -1440,10 +1441,7 @@ class _CompactMixin:
                             await record_or_defer_permanent_health(account, code)
                         else:
                             classified = await proxy._handle_stream_error(
-                                account,
-                                upstream_error,
-                                code,
-                                http_status=exc.status_code,
+                                account, upstream_error, code, http_status=exc.status_code, model=payload.model
                             )
                         if getattr(base_settings, "deterministic_failover_enabled", True):
                             action = failover_decision(

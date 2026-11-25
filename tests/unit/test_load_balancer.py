@@ -3753,6 +3753,122 @@ def test_error_backoff_does_not_reset_when_still_active():
     assert state.error_count == 5
 
 
+def test_model_error_backoff_routes_around_the_backed_off_account():
+    now = 1_700_000_000.0
+    benched = AccountState(
+        "a",
+        AccountStatus.ACTIVE,
+        used_percent=5.0,
+        model_error_count=3,
+        model_last_error_at=now - 10,
+    )
+    healthy = AccountState("b", AccountStatus.ACTIVE, used_percent=50.0)
+
+    result = select_account([benched, healthy], now=now)
+
+    assert result.account is healthy
+    # Selection reads the model fields and leaves expiry to the runtime owner.
+    assert (benched.model_error_count, benched.model_last_error_at) == (3, now - 10)
+
+
+def test_model_error_backoff_on_the_only_account_leaves_no_candidate():
+    now = 1_700_000_000.0
+    state = AccountState(
+        "a",
+        AccountStatus.ACTIVE,
+        used_percent=5.0,
+        model_error_count=3,
+        model_last_error_at=now - 10,
+    )
+
+    result = select_account([state], now=now)
+
+    assert result.account is None
+    assert result.error_message == "No available accounts"
+
+
+def test_model_error_backoff_below_threshold_or_elapsed_keeps_the_account():
+    now = 1_700_000_000.0
+    below_threshold = AccountState(
+        "a",
+        AccountStatus.ACTIVE,
+        used_percent=5.0,
+        model_error_count=2,
+        model_last_error_at=now - 1,
+    )
+    elapsed = AccountState(
+        "b",
+        AccountStatus.ACTIVE,
+        used_percent=5.0,
+        model_error_count=3,
+        model_last_error_at=now - 30,
+    )
+
+    assert select_account([below_threshold], now=now).account is below_threshold
+    assert select_account([elapsed], now=now).account is elapsed
+
+
+def test_model_error_backoff_fallback_picks_the_account_nearest_recovery():
+    now = 1_700_000_000.0
+    recovers_in_25s = AccountState(
+        "a",
+        AccountStatus.ACTIVE,
+        used_percent=5.0,
+        model_error_count=3,
+        model_last_error_at=now - 5,
+    )
+    recovers_in_10s = AccountState(
+        "b",
+        AccountStatus.ACTIVE,
+        used_percent=90.0,
+        model_error_count=4,
+        model_last_error_at=now - 50,
+    )
+
+    result = select_account([recovers_in_25s, recovers_in_10s], now=now)
+
+    assert result.account is recovers_in_10s
+    assert select_account([recovers_in_25s, recovers_in_10s], now=now, allow_backoff_fallback=False).account is None
+
+
+def test_backoff_fallback_compares_the_later_of_account_and_model_expiry():
+    now = 1_700_000_000.0
+    account_backoff_ends_first_but_model_backoff_runs_on = AccountState(
+        "a",
+        AccountStatus.ACTIVE,
+        used_percent=5.0,
+        error_count=3,
+        last_error_at=now - 29,
+        model_error_count=3,
+        model_last_error_at=now - 1,
+    )
+    recovers_in_10s = AccountState(
+        "b",
+        AccountStatus.ACTIVE,
+        used_percent=90.0,
+        error_count=3,
+        last_error_at=now - 20,
+    )
+
+    result = select_account([account_backoff_ends_first_but_model_backoff_runs_on, recovers_in_10s], now=now)
+
+    assert result.account is recovers_in_10s
+
+
+def test_model_cooldown_skips_the_account_and_reports_the_wait():
+    now = 1_700_000_000.0
+    cooling = AccountState("a", AccountStatus.ACTIVE, used_percent=5.0, model_cooldown_until=now + 30)
+    other = AccountState("b", AccountStatus.ACTIVE, used_percent=50.0)
+
+    assert select_account([cooling, other], now=now).account is other
+
+    alone = select_account([cooling], now=now)
+    assert alone.account is None
+    assert alone.error_message is not None
+    assert "Try again in" in alone.error_message
+    assert cooling.model_cooldown_until == now + 30
+
+
 def test_error_backoff_expired_account_does_not_immediately_relock():
     now = 1_700_000_000.0
     state = AccountState(
